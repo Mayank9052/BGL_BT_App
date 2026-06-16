@@ -1,0 +1,188 @@
+/* ── Root ───────────────────────────────────────────────────── */
+.dash-root {
+  min-height: 100vh;
+  background: #f0f4f8;
+  font-family: 'Inter', 'Segoe UI', sans-serif;
+}
+
+/* ── Navbar ─────────────────────────────────────────────────── */
+.dash-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2rem;
+  height: 60px;
+  background: #0a2540;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+.dash-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+.dash-nav-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.dash-nav-email {
+  color: rgba(255,255,255,0.55);
+  font-size: 0.85rem;
+  display: none;
+}
+
+@media (min-width: 600px) { .dash-nav-email { display: block; } }
+
+.btn-logout {
+  padding: 0.4rem 1rem;
+  background: transparent;
+  color: rgba(255,255,255,0.8);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.btn-logout:hover {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+}
+
+/* ── Main ───────────────────────────────────────────────────── */
+.dash-main {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+/* Loading */
+.dash-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 5rem;
+  color: #64748b;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #0078d4;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Profile card ────────────────────────────────────────────── */
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  background: #fff;
+  border-radius: 16px;
+  padding: 1.75rem 2rem;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.07);
+  margin-bottom: 1.5rem;
+}
+
+.profile-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0077b6, #00b4d8);
+  color: #fff;
+  font-size: 1.6rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  letter-spacing: 1px;
+}
+
+.profile-name {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #0a2540;
+  margin: 0 0 0.2rem;
+  letter-spacing: -0.3px;
+}
+
+.profile-email {
+  color: #64748b;
+  font-size: 0.9rem;
+  margin: 0 0 0.75rem;
+}
+
+.profile-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.meta-chip {
+  padding: 3px 12px;
+  background: #f1f5f9;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  color: #475569;
+  font-weight: 500;
+}
+
+.role-chip {
+  padding: 3px 12px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.role-admin   { background: #fef3c7; color: #92400e; }
+.role-manager { background: #ede9fe; color: #5b21b6; }
+.role-user    { background: #dbeafe; color: #1e40af; }
+
+/* ── Info grid ──────────────────────────────────────────────── */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.info-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.info-label {
+  font-size: 0.73rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #94a3b8;
+}
+
+.info-value {
+  font-size: 0.95rem;
+  color: #1e293b;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+/* ── Responsive ─────────────────────────────────────────────── */
+@media (max-width: 500px) {
+  .profile-card { flex-direction: column; text-align: center; }
+  .profile-meta { justify-content: center; }
+  .dash-nav { padding: 0 1rem; }
+}

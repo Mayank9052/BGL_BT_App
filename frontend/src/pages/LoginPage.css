@@ -1,0 +1,227 @@
+/* ── Root layout ─────────────────────────────────────────── */
+.login-root {
+  display: flex;
+  min-height: 100vh;
+  font-family: 'Inter', 'Segoe UI', sans-serif;
+  background: #f0f4f8;
+}
+
+/* ── Left brand panel ─────────────────────────────────────── */
+.login-brand {
+  flex: 1.1;
+  background: linear-gradient(145deg, #0a2540 0%, #0d3b6e 55%, #0077b6 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Subtle circuit-board dot grid */
+.login-brand::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.login-brand-inner {
+  position: relative;
+  z-index: 1;
+  max-width: 420px;
+}
+
+.login-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 2.5rem;
+}
+
+.login-logo-text {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -0.5px;
+}
+
+.login-brand-headline {
+  font-size: clamp(2rem, 3.5vw, 3rem);
+  font-weight: 800;
+  color: #ffffff;
+  line-height: 1.15;
+  margin: 0 0 1rem;
+  letter-spacing: -1px;
+}
+
+.login-brand-sub {
+  font-size: 1rem;
+  color: rgba(255,255,255,0.65);
+  line-height: 1.7;
+  margin-bottom: 2.5rem;
+}
+
+/* Stats row */
+.login-stats {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.stat { text-align: center; }
+
+.stat-num {
+  display: block;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #00b4d8;
+}
+
+.stat-label {
+  font-size: 0.72rem;
+  color: rgba(255,255,255,0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-divider {
+  width: 1px;
+  height: 36px;
+  background: rgba(255,255,255,0.15);
+}
+
+/* ── Right card panel ─────────────────────────────────────── */
+.login-card-panel {
+  flex: 0.9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.login-card {
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 2.5rem 2.25rem;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.10);
+}
+
+.login-card-header { margin-bottom: 2rem; }
+
+.login-card-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #0a2540;
+  margin: 0 0 0.4rem;
+  letter-spacing: -0.5px;
+}
+
+.login-card-desc {
+  color: #64748b;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+/* Microsoft button */
+.btn-microsoft {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  padding: 0.875rem 1.25rem;
+  background: #0078d4;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+  box-shadow: 0 2px 8px rgba(0,120,212,0.35);
+}
+
+.btn-microsoft:hover:not(:disabled) {
+  background: #005fa3;
+  box-shadow: 0 4px 16px rgba(0,120,212,0.45);
+  transform: translateY(-1px);
+}
+
+.btn-microsoft:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-microsoft:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+/* Divider */
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 1.5rem 0;
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #e2e8f0;
+}
+
+/* Badges */
+.login-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.badge {
+  padding: 4px 12px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  color: #0369a1;
+  font-weight: 500;
+}
+
+.login-footer-note {
+  text-align: center;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── Responsive ───────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .login-root       { flex-direction: column; }
+  .login-brand      { padding: 2rem 1.5rem; flex: none; }
+  .login-brand-inner { max-width: 100%; }
+  .login-brand-headline { font-size: 1.8rem; }
+  .login-stats      { gap: 1rem; }
+  .login-card-panel { padding: 1.5rem; }
+  .login-card       { padding: 2rem 1.5rem; }
+}
+
+@media (max-width: 400px) {
+  .login-stats { flex-direction: column; gap: 0.75rem; }
+  .stat-divider { display: none; }
+}
