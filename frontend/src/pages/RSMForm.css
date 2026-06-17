@@ -1,0 +1,337 @@
+/* ── Page shell ───────────────────────────────────────────── */
+.rsm-page {
+  min-height: 100vh;
+  background: #f0f4f8;
+  font-family: 'Inter', 'Segoe UI', sans-serif;
+  color: #0a2540;
+}
+
+/* ── Top bar ──────────────────────────────────────────────── */
+.rsm-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.5rem;
+  background: linear-gradient(145deg, #0a2540 0%, #0d3b6e 60%, #0077b6 100%);
+  color: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.rsm-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rsm-brand-text {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.rsm-brand-divider {
+  width: 1px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.25);
+  margin: 0 4px;
+}
+
+.rsm-brand-sub {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 500;
+}
+
+.rsm-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.rsm-user {
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.rsm-signout {
+  padding: 0.45rem 0.9rem;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.rsm-signout:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* ── Main + card ──────────────────────────────────────────── */
+.rsm-main {
+  display: flex;
+  justify-content: center;
+  padding: 2rem 1.5rem 4rem;
+}
+
+.rsm-card {
+  background: #fff;
+  border-radius: 20px;
+  padding: 2.25rem;
+  width: 100%;
+  max-width: 960px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.08);
+}
+
+.rsm-card-head {
+  margin-bottom: 1.75rem;
+}
+
+.rsm-title {
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin: 0 0 0.3rem;
+}
+
+.rsm-subtitle {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+/* ── Sections ─────────────────────────────────────────────── */
+.rsm-section {
+  margin-bottom: 2rem;
+}
+
+.rsm-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.rsm-section-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #0369a1;
+  margin: 0 0 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.rsm-section-head .rsm-section-title {
+  margin: 0;
+  border: none;
+  padding: 0;
+}
+
+/* ── Grid + fields ────────────────────────────────────────── */
+.rsm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem 1.25rem;
+}
+
+.rsm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.rsm-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.rsm-input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #d8e0ea;
+  border-radius: 9px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  color: #0a2540;
+  background: #fff;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  box-sizing: border-box;
+}
+
+.rsm-input:focus {
+  outline: none;
+  border-color: #00b4d8;
+  box-shadow: 0 0 0 3px rgba(0, 180, 216, 0.15);
+}
+
+.rsm-input-sm {
+  padding: 0.45rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.rsm-textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+/* ── Activity table ───────────────────────────────────────── */
+.rsm-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.rsm-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+.rsm-table thead th {
+  text-align: left;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #64748b;
+  background: #f8fafc;
+  padding: 0.7rem 0.6rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.rsm-table tbody td {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+
+.rsm-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.rsm-add-btn {
+  padding: 0.5rem 0.9rem;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  color: #0369a1;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.rsm-add-btn:hover {
+  background: #e0f2fe;
+}
+
+.rsm-remove-btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  border-radius: 7px;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.rsm-remove-btn:hover:not(:disabled) {
+  background: #fee2e2;
+}
+
+.rsm-remove-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Summary ──────────────────────────────────────────────── */
+.rsm-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  padding: 1.25rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  margin-bottom: 2rem;
+}
+
+.rsm-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.rsm-summary-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #64748b;
+}
+
+.rsm-summary-value {
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #0a2540;
+}
+
+.rsm-summary-accent .rsm-summary-value {
+  color: #0077b6;
+}
+
+/* ── Actions ──────────────────────────────────────────────── */
+.rsm-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1rem;
+}
+
+.rsm-success {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #059669;
+}
+
+.rsm-submit-btn {
+  padding: 0.8rem 1.8rem;
+  background: #0078d4;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+  box-shadow: 0 2px 8px rgba(0, 120, 212, 0.35);
+}
+
+.rsm-submit-btn:hover {
+  background: #005fa3;
+  box-shadow: 0 4px 16px rgba(0, 120, 212, 0.45);
+  transform: translateY(-1px);
+}
+
+.rsm-submit-btn:active {
+  transform: translateY(0);
+}
+
+/* ── Responsive ───────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .rsm-card { padding: 1.5rem 1.25rem; }
+  .rsm-main { padding: 1.25rem 1rem 3rem; }
+  .rsm-user { display: none; }
+}

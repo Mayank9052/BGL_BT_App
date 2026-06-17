@@ -1,7 +1,7 @@
 import { useMsal } from "@azure/msal-react";
 import { InteractionStatus } from "@azure/msal-browser";
 import { loginRequest } from "../authConfig";
-import "./LoginPage.css";
+import "./LOginPage.css";
 
 export default function LoginPage() {
   const { instance, inProgress } = useMsal();
