@@ -10,6 +10,9 @@ public class AppDbContext : DbContext
     public DbSet<User> Users => Set<User>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
 
+    public DbSet<Proposal> Proposals => Set<Proposal>();
+    public DbSet<ProposalActivity> ProposalActivities => Set<ProposalActivity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // Users
@@ -36,6 +39,32 @@ public class AppDbContext : DbContext
              .WithMany(u => u.Sessions)
              .HasForeignKey(s => s.UserId);
             e.Property(s => s.LoginAt).HasDefaultValueSql("GETUTCDATE()");
+        });
+
+        // Proposals
+        modelBuilder.Entity<Proposal>(e =>
+        {
+            e.ToTable("Proposals");
+            e.HasKey(p => p.Id);
+            e.Property(p => p.SubmittedBy).HasMaxLength(200).IsRequired();
+            e.Property(p => p.TotalBudget).HasPrecision(18, 2);
+            e.Property(p => p.Cac).HasPrecision(18, 2);
+            e.Property(p => p.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+
+            e.HasMany(p => p.Activities)
+            .WithOne(a => a.Proposal!)
+            .HasForeignKey(a => a.ProposalId)
+            .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ProposalActivities
+        modelBuilder.Entity<ProposalActivity>(e =>
+        {
+            e.ToTable("ProposalActivities");
+            e.HasKey(a => a.Id);
+            e.Property(a => a.ActivityType).HasMaxLength(100);
+            e.Property(a => a.Budget).HasPrecision(18, 2);
+            e.Property(a => a.Incentive).HasPrecision(18, 2);
         });
     }
 }
