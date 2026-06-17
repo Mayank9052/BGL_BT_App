@@ -1,6 +1,4 @@
-using BGL_BT_App.Backend.DTOs;
-
-namespace BGL_BT_App.Backend.Dtos;
+namespace BGL_BT_App.Backend.DTOs;
 
 public record ProposalResponseDto(
     Guid Id,
@@ -18,4 +16,5 @@ public record ProposalResponseDto(
     decimal Cac,
     string SubmittedBy,
     DateTimeOffset CreatedAt,
-    List<ActivityResponseDto> Activities);
+    List<ActivityResponseDto> Activities
+);

@@ -1,7 +1,7 @@
 import { useMsal } from "@azure/msal-react";
 import { InteractionStatus } from "@azure/msal-browser";
 import { loginRequest } from "../authConfig";
-import "./LOginPage.css";
+import "./LoginPage.css";
 
 export default function LoginPage() {
   const { instance, inProgress } = useMsal();
@@ -17,11 +17,11 @@ export default function LoginPage() {
       <div className="login-brand">
         <div className="login-brand-inner">
           <div className="login-logo">
-            <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
-              <rect width="52" height="52" rx="14" fill="#00B4D8"/>
-              <path d="M13 26L22 16L31 26L22 36L13 26Z" fill="white" opacity="0.9"/>
-              <path d="M21 26L30 16L39 26L30 36L21 26Z" fill="white" opacity="0.5"/>
-            </svg>
+            <img
+              src="/BGauss_Logo.png"
+              alt="BGauss"
+              className="login-logo-img"
+            />
             <span className="login-logo-text">BGauss</span>
           </div>
           <h1 className="login-brand-headline">
