@@ -1,4 +1,6 @@
-namespace BGL_BT_App.Backend.DTOs;
+using BGL_BT_App.Backend.DTOs;
+
+namespace BGL_BT_App.Backend.Dtos;
 
 public record ProposalResponseDto(
     Guid Id,
