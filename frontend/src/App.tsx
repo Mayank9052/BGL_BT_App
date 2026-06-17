@@ -4,6 +4,7 @@ import { useMsal, useIsAuthenticated, AuthenticatedTemplate, UnauthenticatedTemp
 import { InteractionStatus } from "@azure/msal-browser";
 import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
+import RsmForm from "./pages/RSMForm";
 import { useAuthStore } from "./store/authStore";
 import { syncUserWithBackend } from "./services/authService";
 
@@ -25,8 +26,11 @@ export default function App() {
   return (
     <>
       <AuthenticatedTemplate>
-        <DashboardPage />
+        <RsmForm />
       </AuthenticatedTemplate>
+      {/* <AuthenticatedTemplate>
+        <DashboardPage />
+      </AuthenticatedTemplate> */}
       <UnauthenticatedTemplate>
         <LoginPage />
       </UnauthenticatedTemplate>
