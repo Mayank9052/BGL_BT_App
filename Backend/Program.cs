@@ -1,9 +1,8 @@
+using BGL_BT_App.Backend.Data;
+using BGL_BT_App.Backend.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using BGL_BT_App.Backend.Data;
-using BGL_BT_App.Backend.Models;
 using Microsoft.Identity.Web;
-
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -50,16 +49,11 @@ if (app.Environment.IsDevelopment())
     });
 }
 
+app.UseStaticFiles(); // serves wwwroot, e.g. /login/BGauss_Logo.png
+
 app.UseCors("FrontendPolicy");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
-
-// ── Auto-migrate on startup ───────────────────────────────────
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
-}
 
 app.Run();

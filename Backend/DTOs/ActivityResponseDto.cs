@@ -7,4 +7,5 @@ public record ActivityResponseDto(
     DateOnly? StartDate,
     DateOnly? EndDate,
     decimal Budget,
-    decimal Incentive);
+    decimal Incentive
+);

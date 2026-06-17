@@ -1,10 +1,12 @@
 import { useMsal } from "@azure/msal-react";
+import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/authStore";
 import "./DashboardPage.css";
 
 export default function DashboardPage() {
   const { instance } = useMsal();
   const { user, loading } = useAuthStore();
+  const navigate = useNavigate();
 
   const handleLogout = () => {
     instance.logoutRedirect({ postLogoutRedirectUri: "/" }).catch(console.error);
@@ -19,11 +21,7 @@ export default function DashboardPage() {
       {/* Top navbar */}
       <nav className="dash-nav">
         <div className="dash-nav-brand">
-          <svg width="32" height="32" viewBox="0 0 52 52" fill="none">
-            <rect width="52" height="52" rx="14" fill="#00B4D8"/>
-            <path d="M13 26L22 16L31 26L22 36L13 26Z" fill="white" opacity="0.9"/>
-            <path d="M21 26L30 16L39 26L30 36L21 26Z" fill="white" opacity="0.5"/>
-          </svg>
+          <img src="/BGauss_Logo.png" alt="BGauss" className="dash-nav-logo" />
           <span>BGauss Portal</span>
         </div>
         <div className="dash-nav-right">
@@ -57,6 +55,20 @@ export default function DashboardPage() {
                   </span>
                 </div>
               </div>
+            </div>
+
+            {/* Quick actions */}
+            <div className="quick-actions">
+              <button
+                className="action-card"
+                onClick={() => navigate("/rsm-form")}
+              >
+                <span className="action-icon">📋</span>
+                <span className="action-title">RSM Proposal Form</span>
+                <span className="action-desc">
+                  Submit a new marketing / sales activity proposal
+                </span>
+              </button>
             </div>
 
             {/* Info grid */}

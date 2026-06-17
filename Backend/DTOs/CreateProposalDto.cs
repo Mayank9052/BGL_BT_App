@@ -1,4 +1,4 @@
-namespace BGL_BT_App.Backend.Dtos;
+namespace BGL_BT_App.Backend.DTOs;
 public record CreateProposalDto(
     string State,
     string Location,
@@ -9,8 +9,5 @@ public record CreateProposalDto(
     string Month,
     string Eligibility,
     string? Remarks,
-    List<CreateActivityDto> Activities);
-
-/* ── Outgoing (back to the client) ──────────────────────────── */
-
-
+    List<CreateActivityDto> Activities
+);
