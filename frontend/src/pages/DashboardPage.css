@@ -26,6 +26,12 @@
   letter-spacing: -0.3px;
 }
 
+.dash-nav-logo {
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+}
+
 .dash-nav-right {
   display: flex;
   align-items: center;
@@ -63,7 +69,6 @@
   padding: 2rem 1.5rem;
 }
 
-/* Loading */
 .dash-loading {
   display: flex;
   flex-direction: column;
@@ -147,6 +152,48 @@
 .role-admin   { background: #fef3c7; color: #92400e; }
 .role-manager { background: #ede9fe; color: #5b21b6; }
 .role-user    { background: #dbeafe; color: #1e40af; }
+
+/* ── Quick actions ──────────────────────────────────────────── */
+.quick-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.action-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 1.25rem 1.5rem;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+  font-family: inherit;
+}
+
+.action-card:hover {
+  border-color: #00b4d8;
+  box-shadow: 0 6px 20px rgba(0, 120, 212, 0.12);
+  transform: translateY(-1px);
+}
+
+.action-icon { font-size: 1.5rem; margin-bottom: 4px; }
+
+.action-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0a2540;
+}
+
+.action-desc {
+  font-size: 0.8rem;
+  color: #64748b;
+}
 
 /* ── Info grid ──────────────────────────────────────────────── */
 .info-grid {

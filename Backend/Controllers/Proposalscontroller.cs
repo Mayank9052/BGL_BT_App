@@ -1,6 +1,5 @@
 using System.Security.Claims;
 using BGL_BT_App.Backend.Data;
-using BGL_BT_App.Backend.Dtos;
 using BGL_BT_App.Backend.DTOs;
 using BGL_BT_App.Backend.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -11,7 +10,7 @@ namespace BGL_BT_App.Backend.Controllers;
 
 [ApiController]
 [Route("api/proposals")]
-[Authorize]
+//[Authorize]
 public class ProposalsController : ControllerBase
 {
     private readonly AppDbContext _db;

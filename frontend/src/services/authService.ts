@@ -3,7 +3,7 @@ import { apiRequest, API_BASE_URL } from "../authConfig";
 import type { UserProfile } from "../types/user";
 
 export async function getAccessToken(instance: IPublicClientApplication): Promise<string> {
-  const account = instance.getActiveAccount();
+  const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
   if (!account) throw new Error("No active account");
 
   const result = await instance.acquireTokenSilent({
