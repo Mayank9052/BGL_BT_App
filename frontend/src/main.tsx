@@ -8,7 +8,6 @@ import "./index.css";
 
 export const msalInstance = new PublicClientApplication(msalConfig);
 
-// Set active account after login
 msalInstance.addEventCallback((event) => {
   if (
     event.eventType === EventType.LOGIN_SUCCESS &&
@@ -20,6 +19,10 @@ msalInstance.addEventCallback((event) => {
 });
 
 await msalInstance.initialize();
+
+// Handle the redirect response from Azure AD before rendering the app,
+// otherwise the auth state can flicker between unauthenticated/authenticated.
+await msalInstance.handleRedirectPromise().catch(console.error);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

@@ -1,7 +1,9 @@
-using BGL_BT_App.Backend.Models;
 using BGL_BT_App.Backend.Data;
-using Microsoft.EntityFrameworkCore;
 using BGL_BT_App.Backend.DTOs;
+using BGL_BT_App.Backend.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace BGL_BT_App.Backend.Services;
 
 public class UserService : IUserService
 {
@@ -55,11 +57,12 @@ public class UserService : IUserService
 
     public async Task<List<UserProfileDto>> GetAllUsersAsync()
     {
-        return await _db.Users
+        var users = await _db.Users
             .AsNoTracking()
             .OrderBy(u => u.DisplayName)
-            .Select(u => ToDto(u))
             .ToListAsync();
+
+        return users.Select(ToDto).ToList();
     }
 
     private static UserProfileDto ToDto(User u) => new(

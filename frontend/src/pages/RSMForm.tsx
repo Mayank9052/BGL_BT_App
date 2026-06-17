@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMsal } from "@azure/msal-react";
+import { useNavigate } from "react-router-dom";
 import { submitProposal } from "../services/proposalService";
 import "./RSMForm.css";
 
@@ -48,7 +49,7 @@ const MONTHS = [
 interface ActivityRow {
   id: string;
   activityType: string;
-  target: string;     // kept as string for controlled inputs
+  target: string;
   startDate: string;
   endDate: string;
   budget: string;
@@ -87,6 +88,7 @@ const inr = (v: number) =>
 
 export default function RSMProposalForm() {
   const { instance, accounts } = useMsal();
+  const navigate = useNavigate();
   const account = accounts[0];
 
   const [header, setHeader] = useState<ProposalHeader>({
@@ -94,7 +96,6 @@ export default function RSMProposalForm() {
     location: "",
     type: "",
     dealerName: "",
-    // Pre-fill from the signed-in Microsoft account; still editable.
     rsmName: account?.name ?? "",
     commandoName: "",
     month: "",
@@ -107,7 +108,6 @@ export default function RSMProposalForm() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  /* ── Derived totals ───────────────────────────────────── */
   const { totalBudget, totalTarget, cac } = useMemo(() => {
     const totalBudget = activities.reduce(
       (s, a) => s + num(a.budget) + num(a.incentive),
@@ -118,7 +118,6 @@ export default function RSMProposalForm() {
     return { totalBudget, totalTarget, cac };
   }, [activities]);
 
-  /* ── Handlers ─────────────────────────────────────────── */
   const setField = (key: keyof ProposalHeader, value: string) =>
     setHeader((h) => ({ ...h, [key]: value }));
 
@@ -137,6 +136,21 @@ export default function RSMProposalForm() {
 
   const handleSignOut = () =>
     instance.logoutRedirect().catch(console.error);
+
+  const resetForm = () => {
+    setHeader({
+      state: "",
+      location: "",
+      type: "",
+      dealerName: "",
+      rsmName: account?.name ?? "",
+      commandoName: "",
+      month: "",
+      eligibility: "",
+      remarks: "",
+    });
+    setActivities([emptyActivity()]);
+  };
 
   const handleSubmit = async () => {
     setError(null);
@@ -161,6 +175,7 @@ export default function RSMProposalForm() {
     try {
       await submitProposal(payload, instance);
       setSubmitted(true);
+      resetForm();
       window.setTimeout(() => setSubmitted(false), 4000);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -169,22 +184,23 @@ export default function RSMProposalForm() {
     }
   };
 
-  /* ── Render ───────────────────────────────────────────── */
   return (
     <div className="rsm-page">
-      {/* Top bar */}
       <header className="rsm-topbar">
         <div className="rsm-brand">
-          <svg width="34" height="34" viewBox="0 0 52 52" fill="none">
-            <rect width="52" height="52" rx="12" fill="#00B4D8" />
-            <path d="M13 26L22 16L31 26L22 36L13 26Z" fill="white" opacity="0.9" />
-            <path d="M21 26L30 16L39 26L30 36L21 26Z" fill="white" opacity="0.5" />
-          </svg>
+          <img
+            src="/BGauss_Logo.png"
+            alt="BGauss"
+            className="rsm-brand-logo"
+          />
           <span className="rsm-brand-text">BGauss</span>
           <span className="rsm-brand-divider" />
           <span className="rsm-brand-sub">RSM Proposal</span>
         </div>
         <div className="rsm-topbar-right">
+          <button className="rsm-back-btn" onClick={() => navigate("/dashboard")}>
+            ← Dashboard
+          </button>
           {account?.name && <span className="rsm-user">{account.name}</span>}
           <button className="rsm-signout" onClick={handleSignOut}>
             Sign out
@@ -201,7 +217,6 @@ export default function RSMProposalForm() {
             </p>
           </div>
 
-          {/* ── Section: Details ─────────────────────────── */}
           <section className="rsm-section">
             <h2 className="rsm-section-title">Proposal Details</h2>
             <div className="rsm-grid">
@@ -294,7 +309,6 @@ export default function RSMProposalForm() {
             </div>
           </section>
 
-          {/* ── Section: Activities ──────────────────────── */}
           <section className="rsm-section">
             <div className="rsm-section-head">
               <h2 className="rsm-section-title">Activities (Activity-wise)</h2>
@@ -404,7 +418,6 @@ export default function RSMProposalForm() {
             </div>
           </section>
 
-          {/* ── Section: Summary ─────────────────────────── */}
           <section className="rsm-summary">
             <div className="rsm-summary-item">
               <span className="rsm-summary-label">Total Target</span>
@@ -422,7 +435,6 @@ export default function RSMProposalForm() {
             </div>
           </section>
 
-          {/* ── Remarks ──────────────────────────────────── */}
           <section className="rsm-section">
             <Field label="Remarks">
               <textarea
@@ -435,7 +447,6 @@ export default function RSMProposalForm() {
             </Field>
           </section>
 
-          {/* ── Actions ──────────────────────────────────── */}
           <div className="rsm-actions">
             {submitted && <span className="rsm-success">✓ Proposal submitted</span>}
             {error && <span className="rsm-error">{error}</span>}
@@ -453,7 +464,6 @@ export default function RSMProposalForm() {
   );
 }
 
-/* Small labelled-field wrapper */
 function Field({
   label,
   children,

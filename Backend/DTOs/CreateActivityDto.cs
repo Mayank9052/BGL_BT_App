@@ -6,4 +6,5 @@ public record CreateActivityDto(
     string? StartDate,
     string? EndDate,
     decimal Budget,
-    decimal Incentive);
+    decimal Incentive
+);
