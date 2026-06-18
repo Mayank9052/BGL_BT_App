@@ -171,17 +171,23 @@ export default function RSMProposalForm() {
       totalTarget,
       cac,
     };
-
-    try {
+try {
       await submitProposal(payload, instance);
-      setSubmitted(true);
+ 
       resetForm();
-      window.setTimeout(() => setSubmitted(false), 4000);
+      setSubmitted(true);   // show success overlay
+ 
+      // ── Navigate to approver screen after 1.8 s ──────────────
+      setTimeout(() => {
+        navigate("/approver");
+      }, 1800);
+ 
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
-    } finally {
       setSubmitting(false);
     }
+    // Note: setSubmitting(false) intentionally NOT called on success —
+    // button stays disabled until navigation fires.
   };
 
   return (
