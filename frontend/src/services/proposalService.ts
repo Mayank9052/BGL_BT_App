@@ -2,7 +2,7 @@
 import { IPublicClientApplication } from "@azure/msal-browser";
 import { apiRequest, API_BASE_URL } from "../authConfig";
 
-/* ── Types ────────────────────────────────────────────────── */
+/* ── Types ────────────────────────────────────────────────────────────────── */
 export interface ActivityResponse {
   id: string;
   activityType: string;
@@ -59,6 +59,24 @@ interface ProposalPayload {
   eligibility: string;
   remarks: string;
   submittedBy: string | null;
+  docNumber: string;
+  activities: ActivityPayload[];
+  totalBudget: number;
+  totalTarget: number;
+  cac: number;
+}
+
+// Payload the reviewer sends when saving edits to a pending proposal
+export interface UpdateProposalPayload {
+  dealerName: string;
+  location: string;
+  state: string;
+  type: string;
+  rsmName: string;
+  commandoName: string;
+  month: string;
+  eligibility: string;
+  remarks: string;
   activities: ActivityPayload[];
   totalBudget: number;
   totalTarget: number;
@@ -71,7 +89,7 @@ export interface DecidePayload {
   approvedBy: string | null;
 }
 
-/* ── Token helper ─────────────────────────────────────────── */
+/* ── Token helper ─────────────────────────────────────────────────────────── */
 async function getAccessToken(instance: IPublicClientApplication): Promise<string> {
   const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
   if (!account) throw new Error("No active account — please sign in again.");
@@ -79,10 +97,12 @@ async function getAccessToken(instance: IPublicClientApplication): Promise<strin
   return result.accessToken;
 }
 
-/* ── API calls ────────────────────────────────────────────── */
+/* ── API calls ────────────────────────────────────────────────────────────── */
+
+/** Submit a new proposal (RSM → backend) */
 export async function submitProposal(
   payload: ProposalPayload,
-  instance: IPublicClientApplication
+  instance: IPublicClientApplication,
 ): Promise<ProposalResponse> {
   const token = await getAccessToken(instance);
   const res = await fetch(`${API_BASE_URL}/api/proposals`, {
@@ -100,8 +120,31 @@ export async function submitProposal(
   return res.json();
 }
 
+/** Update an existing pending proposal (reviewer edits before deciding) */
+export async function updateProposal(
+  id: string,
+  payload: UpdateProposalPayload,
+  instance: IPublicClientApplication,
+): Promise<ProposalResponse> {
+  const token = await getAccessToken(instance);
+  const res = await fetch(`${API_BASE_URL}/api/proposals/${id}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Failed to update proposal (${res.status})`);
+  }
+  return res.json();
+}
+
+/** Fetch all proposals submitted by the current RSM */
 export async function fetchMyProposals(
-  instance: IPublicClientApplication
+  instance: IPublicClientApplication,
 ): Promise<ProposalResponse[]> {
   const token = await getAccessToken(instance);
   const res = await fetch(`${API_BASE_URL}/api/proposals/mine`, {
@@ -111,8 +154,9 @@ export async function fetchMyProposals(
   return res.json();
 }
 
+/** Fetch all proposals (approver view) */
 export async function fetchProposals(
-  instance: IPublicClientApplication
+  instance: IPublicClientApplication,
 ): Promise<ProposalResponse[]> {
   const token = await getAccessToken(instance);
   const res = await fetch(`${API_BASE_URL}/api/proposals`, {
@@ -122,10 +166,11 @@ export async function fetchProposals(
   return res.json();
 }
 
+/** Approve or reject a proposal */
 export async function decideProposal(
   id: string,
   payload: DecidePayload,
-  instance: IPublicClientApplication
+  instance: IPublicClientApplication,
 ): Promise<ProposalResponse> {
   const token = await getAccessToken(instance);
   const res = await fetch(`${API_BASE_URL}/api/proposals/${id}/decide`, {
