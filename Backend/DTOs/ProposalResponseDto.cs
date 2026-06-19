@@ -16,5 +16,9 @@ public record ProposalResponseDto(
     decimal Cac,
     string SubmittedBy,
     DateTimeOffset CreatedAt,
-    List<ActivityResponseDto> Activities
-);
+    string Status,
+    string? ApproverNote,
+    string? ApprovedBy,
+    DateTimeOffset? DecidedAt,
+    string? TokenNumber,
+    List<ActivityResponseDto> Activities);
