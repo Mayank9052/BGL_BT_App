@@ -23,40 +23,30 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> LoginSync()
     {
         var oid = User.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier")
-               ?? User.FindFirstValue("oid");
+            ?? User.FindFirstValue("oid");
 
-        var email = User.FindFirstValue("preferred_username")
-                 ?? User.FindFirstValue(ClaimTypes.Email)
-                 ?? User.FindFirstValue(ClaimTypes.Upn)
-                 ?? "";
-
+        var email       = User.FindFirstValue("preferred_username")
+                    ?? User.FindFirstValue(ClaimTypes.Email)
+                    ?? User.FindFirstValue(ClaimTypes.Upn) ?? "";
         var displayName = User.FindFirstValue("name") ?? email;
-        var given  = User.FindFirstValue(ClaimTypes.GivenName) ?? User.FindFirstValue("given_name");
-        var family = User.FindFirstValue(ClaimTypes.Surname)   ?? User.FindFirstValue("family_name");
-        var jobTitle = User.FindFirstValue("jobTitle");
-        var dept     = User.FindFirstValue("department");
+        var given       = User.FindFirstValue(ClaimTypes.GivenName) ?? User.FindFirstValue("given_name");
+        var family      = User.FindFirstValue(ClaimTypes.Surname)   ?? User.FindFirstValue("family_name");
+        var jobTitle    = User.FindFirstValue("jobTitle");
+        var dept        = User.FindFirstValue("department");
 
         if (string.IsNullOrEmpty(oid))
             return Unauthorized(new { message = "Invalid token: missing OID claim." });
 
-        var profile = await _userService.UpsertFromAzureAsync(new LoginSyncRequest(
-            oid, email, displayName, given, family, jobTitle, dept
-        ));
+        // Capture IP + UA for session log
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString()
+            ?? Request.Headers["X-Forwarded-For"].FirstOrDefault();
+        var ua = Request.Headers["User-Agent"].ToString();
+
+        var profile = await _userService.UpsertFromAzureAsync(
+            new LoginSyncRequest(oid, email, displayName, given, family, jobTitle, dept),
+            ip, ua
+        );
 
         return Ok(profile);
-    }
-
-    // GET /api/auth/me
-    [HttpGet("me")]
-    public async Task<IActionResult> Me()
-    {
-        var oid = User.FindFirstValue("http://schemas.microsoft.com/identity/claims/objectidentifier")
-               ?? User.FindFirstValue("oid");
-
-        if (string.IsNullOrEmpty(oid))
-            return Unauthorized();
-
-        var profile = await _userService.GetByAzureIdAsync(oid);
-        return profile is null ? NotFound() : Ok(profile);
     }
 }

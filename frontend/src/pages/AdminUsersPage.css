@@ -1,0 +1,111 @@
+.admin-users-page {
+  max-width: 1100px;
+}
+
+.admin-users-head h1 {
+  font-size: 22px;
+  margin: 0 0 4px;
+  color: #1a2233;
+}
+
+.admin-users-head p {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0 0 18px;
+}
+
+.admin-error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.admin-users-table-wrap {
+  background: #fff;
+  border: 1px solid #e6e9ee;
+  border-radius: 10px;
+  overflow-x: auto;
+}
+
+.admin-users-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-users-table th {
+  text-align: left;
+  padding: 12px 14px;
+  background: #f7f8fa;
+  color: #5b6472;
+  font-weight: 600;
+  border-bottom: 1px solid #e6e9ee;
+  white-space: nowrap;
+}
+
+.admin-users-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #eef0f3;
+  vertical-align: middle;
+}
+
+.admin-readonly {
+  color: #9aa3b0;
+}
+
+.admin-name-inputs {
+  display: flex;
+  gap: 6px;
+}
+
+.admin-input {
+  width: 100%;
+  min-width: 90px;
+  padding: 6px 8px;
+  border: 1px solid #d7dbe2;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.admin-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.admin-edit-btn,
+.admin-save-btn,
+.admin-cancel-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.admin-edit-btn {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.admin-save-btn {
+  background: #16a34a;
+  color: #fff;
+}
+
+.admin-cancel-btn {
+  background: #f1f2f4;
+  color: #444;
+}
+
+.status-active { color: #15803d; font-weight: 600; }
+.status-inactive { color: #b91c1c; font-weight: 600; }
+
+.admin-loading {
+  display: flex;
+  justify-content: center;
+  padding: 60px 0;
+}

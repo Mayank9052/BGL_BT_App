@@ -227,6 +227,205 @@
   word-break: break-all;
 }
 
+/* ── My Proposals section ───────────────────────────────────── */
+.dash-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 1.75rem 0 0.9rem;
+}
+
+.dash-section-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #0a2540;
+  margin: 0;
+  letter-spacing: -0.2px;
+}
+
+.dash-view-all-btn {
+  background: none;
+  border: none;
+  color: #0078d4;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.dash-view-all-btn:hover { text-decoration: underline; }
+
+.dash-proposals-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 1.5rem;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.spinner-sm { width: 22px; height: 22px; border-width: 2px; }
+
+.dash-proposals-error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 0.9rem 1.1rem;
+  font-size: 0.85rem;
+  margin-bottom: 1.5rem;
+}
+
+.dash-proposals-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border: 1.5px dashed #e2e8f0;
+  border-radius: 14px;
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.dash-empty-icon { font-size: 2.2rem; }
+
+.dash-proposals-empty p {
+  color: #64748b;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.dash-empty-btn {
+  margin-top: 6px;
+  background: #0a2540;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.55rem 1.2rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dash-empty-btn:hover { background: #0e3a63; }
+
+.dash-proposals-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.dash-proposal-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 1.1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+.dash-proposal-card:hover {
+  box-shadow: 0 6px 18px rgba(0,0,0,0.06);
+  border-color: #cbd5e1;
+}
+
+.dash-proposal-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dash-proposal-main { min-width: 0; }
+
+.dash-proposal-token {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #475569;
+  background: #f1f5f9;
+  border-radius: 6px;
+  padding: 1px 7px;
+  margin-bottom: 4px;
+  letter-spacing: 0.3px;
+}
+
+.dash-proposal-dealer {
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: #0a2540;
+  margin: 0 0 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-proposal-meta {
+  font-size: 0.78rem;
+  color: #64748b;
+  margin: 0;
+}
+
+.dash-status-badge {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.dash-status-pending  { background: #fef3c7; color: #92400e; }
+.dash-status-approved { background: #dcfce7; color: #166534; }
+.dash-status-rejected { background: #fee2e2; color: #991b1b; }
+
+.dash-proposal-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.8rem;
+}
+
+.dash-proposal-budget {
+  font-weight: 700;
+  color: #0a2540;
+}
+
+.dash-proposal-date { color: #94a3b8; }
+
+.dash-proposal-decision {
+  border-top: 1px solid #f1f5f9;
+  padding-top: 8px;
+  margin-top: 2px;
+}
+
+.dash-decision-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.8rem;
+}
+
+.dash-decision-approved .dash-decision-row strong { color: #166534; }
+.dash-decision-rejected .dash-decision-row strong { color: #991b1b; }
+
+.dash-decision-meta {
+  color: #94a3b8;
+  font-size: 0.75rem;
+}
+
+.dash-decision-note {
+  font-size: 0.8rem;
+  color: #475569;
+  font-style: italic;
+  margin: 4px 0 0;
+}
+
 /* ── Responsive ─────────────────────────────────────────────── */
 @media (max-width: 500px) {
   .profile-card { flex-direction: column; text-align: center; }
