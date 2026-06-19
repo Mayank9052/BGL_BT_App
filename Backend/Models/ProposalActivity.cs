@@ -15,4 +15,5 @@ public class ProposalActivity
     public DateOnly? EndDate { get; set; }
     public decimal Budget { get; set; }
     public decimal Incentive { get; set; }
+    [MaxLength(1000)] public string? Remarks { get; set; }
 }

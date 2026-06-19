@@ -3,6 +3,8 @@ using BGL_BT_App.Backend.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
+using BGL_BT_App.Backend.Auth;
+using Microsoft.AspNetCore.Authentication;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -34,6 +36,9 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddTransient<IClaimsTransformation, DbRoleClaimsTransformation>();
+builder.Services.AddSingleton<IEmailService, EmailService>();
+builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 
 var app = builder.Build();
 

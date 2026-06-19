@@ -1,41 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMsal } from "@azure/msal-react";
 import { useNavigate } from "react-router-dom";
 import { submitProposal } from "../services/proposalService";
+import { fetchStates, fetchCitiesByState } from "../services/locationService";
+import type { StateOption, CityOption } from "../types/location";
 import "./RSMForm.css";
 
-/* ──────────────────────────────────────────────────────────
-   Dropdown option sources — replace these with API / master
-   data from your backend when available.
-   ────────────────────────────────────────────────────────── */
-const STATES = [
-  "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
-  "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka",
-  "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram",
-  "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu",
-  "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
-  "Delhi", "Jammu & Kashmir", "Ladakh", "Puducherry", "Chandigarh",
-];
-
-const LOCATION_TYPES = [
-  "Showroom / Dealership",
-  "Mall / High Street",
-  "RTO / Government Office",
-  "Corporate / Industrial",
-  "Rural / Mandi",
-  "Event / Exhibition",
-];
-
-const ACTIVITY_TYPES = [
-  "Test Ride Camp",
-  "Roadshow",
-  "Mall Activation",
-  "Corporate Activation",
-  "Society / Apartment Activity",
-  "Canopy Activity",
-  "Referral Drive",
-];
-
+const LOCATION_TYPES = ["Old", "New"];
+const ACTIVITY_TYPES = ["Old", "New"];
 const ELIGIBILITY_OPTIONS = ["Eligible", "Not Eligible", "Pending Approval"];
 
 const MONTHS = [
@@ -43,9 +15,6 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-/* ──────────────────────────────────────────────────────────
-   Types
-   ────────────────────────────────────────────────────────── */
 interface ActivityRow {
   id: string;
   activityType: string;
@@ -54,10 +23,12 @@ interface ActivityRow {
   endDate: string;
   budget: string;
   incentive: string;
+  remarks: string;
 }
 
 interface ProposalHeader {
   state: string;
+  stateId: number | null;
   location: string;
   type: string;
   dealerName: string;
@@ -76,6 +47,20 @@ const emptyActivity = (): ActivityRow => ({
   endDate: "",
   budget: "",
   incentive: "",
+  remarks: "",
+});
+
+const emptyHeader = (rsmName: string): ProposalHeader => ({
+  state: "",
+  stateId: null,
+  location: "",
+  type: "",
+  dealerName: "",
+  rsmName,
+  commandoName: "",
+  month: "",
+  eligibility: "",
+  remarks: "",
 });
 
 const num = (v: string) => {
@@ -91,22 +76,22 @@ export default function RSMProposalForm() {
   const navigate = useNavigate();
   const account = accounts[0];
 
-  const [header, setHeader] = useState<ProposalHeader>({
-    state: "",
-    location: "",
-    type: "",
-    dealerName: "",
-    rsmName: account?.name ?? "",
-    commandoName: "",
-    month: "",
-    eligibility: "",
-    remarks: "",
-  });
-
+  const [header, setHeader] = useState<ProposalHeader>(emptyHeader(account?.name ?? ""));
   const [activities, setActivities] = useState<ActivityRow[]>([emptyActivity()]);
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [states, setStates] = useState<StateOption[]>([]);
+  const [cities, setCities] = useState<CityOption[]>([]);
+  const [loadingCities, setLoadingCities] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchStates(instance)
+      .then(setStates)
+      .catch(() => setLocationError("Could not load states. Please refresh the page."));
+  }, [instance]);
 
   const { totalBudget, totalTarget, cac } = useMemo(() => {
     const totalBudget = activities.reduce(
@@ -120,6 +105,23 @@ export default function RSMProposalForm() {
 
   const setField = (key: keyof ProposalHeader, value: string) =>
     setHeader((h) => ({ ...h, [key]: value }));
+
+  const handleStateChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const id = e.target.value ? Number(e.target.value) : null;
+    const selected = states.find((s) => s.id === id) ?? null;
+
+    setHeader((h) => ({ ...h, state: selected?.name ?? "", stateId: id, location: "" }));
+    setCities([]);
+    setLocationError(null);
+
+    if (id) {
+      setLoadingCities(true);
+      fetchCitiesByState(id, instance)
+        .then(setCities)
+        .catch(() => setLocationError("Could not load cities for this state."))
+        .finally(() => setLoadingCities(false));
+    }
+  };
 
   const setActivity = (id: string, key: keyof ActivityRow, value: string) =>
     setActivities((rows) =>
@@ -138,18 +140,9 @@ export default function RSMProposalForm() {
     instance.logoutRedirect().catch(console.error);
 
   const resetForm = () => {
-    setHeader({
-      state: "",
-      location: "",
-      type: "",
-      dealerName: "",
-      rsmName: account?.name ?? "",
-      commandoName: "",
-      month: "",
-      eligibility: "",
-      remarks: "",
-    });
+    setHeader(emptyHeader(account?.name ?? ""));
     setActivities([emptyActivity()]);
+    setCities([]);
   };
 
   const handleSubmit = async () => {
@@ -157,7 +150,15 @@ export default function RSMProposalForm() {
     setSubmitting(true);
 
     const payload = {
-      ...header,
+      state: header.state,
+      location: header.location,
+      type: header.type,
+      dealerName: header.dealerName,
+      rsmName: header.rsmName,
+      commandoName: header.commandoName,
+      month: header.month,
+      eligibility: header.eligibility,
+      remarks: header.remarks,
       submittedBy: account?.username ?? null,
       activities: activities.map((a) => ({
         activityType: a.activityType,
@@ -166,6 +167,7 @@ export default function RSMProposalForm() {
         endDate: a.endDate,
         budget: num(a.budget),
         incentive: num(a.incentive),
+        remarks: a.remarks,
       })),
       totalBudget,
       totalTarget,
@@ -174,14 +176,20 @@ export default function RSMProposalForm() {
 
     try {
       await submitProposal(payload, instance);
-      setSubmitted(true);
+
       resetForm();
-      window.setTimeout(() => setSubmitted(false), 4000);
+      setSubmitted(true); // show success overlay
+
+      // ── Navigate to approver screen after 1.8 s ──────────────
+      setTimeout(() => {
+        navigate("/approver");
+      }, 1800);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
-    } finally {
       setSubmitting(false);
     }
+    // Note: setSubmitting(false) intentionally NOT called on success —
+    // button stays disabled until navigation fires.
   };
 
   return (
@@ -223,23 +231,35 @@ export default function RSMProposalForm() {
               <Field label="State">
                 <select
                   className="rsm-input"
-                  value={header.state}
-                  onChange={(e) => setField("state", e.target.value)}
+                  value={header.stateId ?? ""}
+                  onChange={handleStateChange}
                 >
                   <option value="">Select state</option>
-                  {STATES.map((s) => (
-                    <option key={s} value={s}>{s}</option>
+                  {states.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
                 </select>
               </Field>
 
-              <Field label="Location">
-                <input
+              <Field label="City">
+                <select
                   className="rsm-input"
-                  placeholder="City / area"
                   value={header.location}
                   onChange={(e) => setField("location", e.target.value)}
-                />
+                  disabled={!header.stateId || loadingCities}
+                >
+                  <option value="">
+                    {!header.stateId
+                      ? "Select a state first"
+                      : loadingCities
+                      ? "Loading cities…"
+                      : "Select city"}
+                  </option>
+                  {cities.map((c) => (
+                    <option key={c.id} value={c.name}>{c.name}</option>
+                  ))}
+                </select>
+                {locationError && <span className="rsm-field-error">{locationError}</span>}
               </Field>
 
               <Field label="Type">
@@ -327,6 +347,7 @@ export default function RSMProposalForm() {
                     <th>End Date</th>
                     <th>Budget (₹)</th>
                     <th>Incentive (₹)</th>
+                    <th>Remarks</th>
                     <th aria-label="Remove" />
                   </tr>
                 </thead>
@@ -402,6 +423,17 @@ export default function RSMProposalForm() {
                         />
                       </td>
                       <td>
+                        <input
+                          type="text"
+                          className="rsm-input rsm-input-sm"
+                          placeholder="Note for this activity"
+                          value={a.remarks}
+                          onChange={(e) =>
+                            setActivity(a.id, "remarks", e.target.value)
+                          }
+                        />
+                      </td>
+                      <td>
                         <button
                           className="rsm-remove-btn"
                           onClick={() => removeActivity(a.id)}
@@ -436,7 +468,7 @@ export default function RSMProposalForm() {
           </section>
 
           <section className="rsm-section">
-            <Field label="Remarks">
+            <Field label="Remarks (overall proposal)">
               <textarea
                 className="rsm-input rsm-textarea"
                 rows={3}
