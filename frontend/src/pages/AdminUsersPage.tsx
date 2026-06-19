@@ -54,7 +54,24 @@ export default function AdminUsersPage() {
     setError(null);
     try {
       const updated = await updateUser(id, draft, instance);
-      setUsers((list) => list.map((u) => (u.id === id ? updated : u)));
+      setUsers((list) =>
+        list.map((u) =>
+          u.id === id
+            ? {
+                ...u,           // keep all existing fields (azureObjectId, etc.)
+                ...updated,     // overlay whatever the backend returned
+                // explicitly carry over fields that may be missing from UserResponseDto
+                phoneNumber: updated.phoneNumber ?? draft.phoneNumber ?? u.phoneNumber,
+                firstName:   updated.firstName   ?? draft.firstName   ?? u.firstName,
+                lastName:    updated.lastName    ?? draft.lastName    ?? u.lastName,
+                department:  updated.department  ?? draft.department  ?? u.department,
+                jobTitle:    updated.jobTitle    ?? draft.jobTitle    ?? u.jobTitle,
+                role:        updated.role        ?? draft.role        ?? u.role,
+                isActive:    updated.isActive    ?? draft.isActive    ?? u.isActive,
+              }
+            : u
+        )
+      );
       cancelEdit();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update user.");
@@ -150,7 +167,13 @@ export default function AdminUsersPage() {
                       <input
                         className="admin-input"
                         value={draft.phoneNumber ?? ""}
-                        onChange={(e) => setDraft((d) => ({ ...d, phoneNumber: e.target.value }))}
+                        maxLength={10}
+                        onChange={(e) => {
+                          const value = e.target.value.replace(/\D/g, ""); // allow only numbers
+                          if (value.length <= 10) {
+                            setDraft((d) => ({ ...d, phoneNumber: value }));
+                          }
+                        }}
                       />
                     ) : (
                       u.phoneNumber ?? "—"

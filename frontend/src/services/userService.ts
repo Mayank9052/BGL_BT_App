@@ -26,7 +26,7 @@ export async function updateUser(
 ): Promise<UserProfile> {
   const token = await getAccessToken(instance);
   const res = await fetch(`${API_BASE_URL}/api/users/${id}`, {
-    method: "PUT",
+    method: "PATCH",          // ← was PUT, must match [HttpPatch] on the controller
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
