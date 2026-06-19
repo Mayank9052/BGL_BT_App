@@ -37,11 +37,6 @@ export default function DashboardPage() {
       .finally(() => setProposalsLoading(false));
   }, [loading, instance]);
 
-  const initials = user
-    ? (user.firstName?.[0] ?? "") + (user.lastName?.[0] ?? user.displayName[0] ?? "")
-    : "?";
-
-  // Recent first (already sorted by backend), capped for dashboard display
   const recent = proposals.slice(0, 6);
 
   return (
@@ -53,21 +48,6 @@ export default function DashboardPage() {
         </div>
       ) : (
         <>
-          <div className="profile-card">
-            <div className="profile-avatar">{initials.toUpperCase()}</div>
-            <div className="profile-info">
-              <h1 className="profile-name">{user?.displayName ?? "—"}</h1>
-              <p className="profile-email">{user?.email}</p>
-              <div className="profile-meta">
-                {user?.jobTitle && <span className="meta-chip">{user.jobTitle}</span>}
-                {user?.department && <span className="meta-chip">{user.department}</span>}
-                <span className={`role-chip role-${user?.role?.toLowerCase()}`}>
-                  {user?.role ?? "User"}
-                </span>
-              </div>
-            </div>
-          </div>
-
           <div className="quick-actions">
             <button className="action-card" onClick={() => navigate("/rsm-form")}>
               <span className="action-icon">📋</span>
@@ -88,7 +68,7 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* ── My Proposals ──────────────────────────────────── */}
+          {/* ── My Proposals ── */}
           <div className="dash-section-head">
             <h2 className="dash-section-title">My Proposals</h2>
             {proposals.length > 0 && (
@@ -133,7 +113,6 @@ export default function DashboardPage() {
                     <span className="dash-proposal-date">Submitted {fmtDate(p.createdAt)}</span>
                   </div>
 
-                  {/* Show decision details once approver has acted */}
                   {p.status !== "Pending" && (
                     <div className={`dash-proposal-decision ${p.status === "Approved" ? "dash-decision-approved" : "dash-decision-rejected"}`}>
                       <div className="dash-decision-row">
@@ -153,36 +132,8 @@ export default function DashboardPage() {
               ))}
             </div>
           )}
-
-          <div className="info-grid">
-            <InfoCard label="Full name" value={user?.displayName} />
-            <InfoCard label="Email" value={user?.email} />
-            <InfoCard label="Department" value={user?.department ?? "—"} />
-            <InfoCard label="Job title" value={user?.jobTitle ?? "—"} />
-            <InfoCard label="Role" value={user?.role} />
-            <InfoCard
-              label="Last login"
-              value={
-                user?.lastLoginAt
-                  ? new Date(user.lastLoginAt).toLocaleString("en-IN", {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })
-                  : "—"
-              }
-            />
-          </div>
         </>
       )}
-    </div>
-  );
-}
-
-function InfoCard({ label, value }: { label: string; value?: string | null }) {
-  return (
-    <div className="info-card">
-      <span className="info-label">{label}</span>
-      <span className="info-value">{value ?? "—"}</span>
     </div>
   );
 }

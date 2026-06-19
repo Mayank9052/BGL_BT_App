@@ -214,6 +214,21 @@
   line-height: 1.5;
 }
 
+.login-scooty-wrap {
+  margin-top: 2.5rem;
+  display: flex;
+  justify-content: center;
+}
+
+.login-scooty-img {
+  width: 100%;
+  max-width: 360px;
+  height: auto;
+  object-fit: contain;
+  /* subtle drop shadow to lift it off the dark background */
+  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.35));
+}
+
 /* ── Responsive ───────────────────────────────────────────── */
 @media (max-width: 768px) {
   .login-root       { flex-direction: column; }
@@ -223,6 +238,7 @@
   .login-stats      { gap: 1rem; }
   .login-card-panel { padding: 1.5rem; }
   .login-card       { padding: 2rem 1.5rem; }
+  .login-scooty-img { max-width: 240px; }
 }
 
 @media (max-width: 400px) {

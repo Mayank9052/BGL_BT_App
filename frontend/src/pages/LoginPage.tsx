@@ -17,35 +17,23 @@ export default function LoginPage() {
       <div className="login-brand">
         <div className="login-brand-inner">
           <div className="login-logo">
-            <img
-              src="/BGauss_Logo.png"
-              alt="BGauss"
-              className="login-logo-img"
-            />
+            <img src="/BGauss_Logo.png" alt="BGauss" className="login-logo-img" />
             <span className="login-logo-text">BGauss</span>
           </div>
           <h1 className="login-brand-headline">
-            Built for<br />electric mobility.
+            BTL
           </h1>
           <p className="login-brand-sub">
             The internal operations portal for BGauss Auto — connect with your
             Microsoft 365 account to continue.
           </p>
-          <div className="login-stats">
-            <div className="stat">
-              <span className="stat-num">1,360</span>
-              <span className="stat-label">Team members</span>
-            </div>
-            <div className="stat-divider" />
-            <div className="stat">
-              <span className="stat-num">686</span>
-              <span className="stat-label">Devices managed</span>
-            </div>
-            <div className="stat-divider" />
-            <div className="stat">
-              <span className="stat-num">8</span>
-              <span className="stat-label">Applications</span>
-            </div>
+          {/* Scooty image */}
+          <div className="login-scooty-wrap">
+            <img
+              src="/login/Bg0-scooty.png"
+              alt="BGauss scooter"
+              className="login-scooty-img"
+            />
           </div>
         </div>
       </div>
@@ -71,12 +59,6 @@ export default function LoginPage() {
 
           <div className="login-divider">
             <span>Secured by Microsoft Entra ID</span>
-          </div>
-
-          <div className="login-badges">
-            <span className="badge">🔒 SSO enabled</span>
-            <span className="badge">🛡 MFA supported</span>
-            <span className="badge">📋 Audit logged</span>
           </div>
 
           <p className="login-footer-note">
