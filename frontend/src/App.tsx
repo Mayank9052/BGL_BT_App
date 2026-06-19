@@ -1,3 +1,4 @@
+// src/App.tsx
 import { useEffect } from "react";
 import { Navigate, Route, BrowserRouter, Routes } from "react-router-dom";
 import {
@@ -8,10 +9,14 @@ import {
 } from "@azure/msal-react";
 import { InteractionStatus } from "@azure/msal-browser";
 import LoginPage from "./pages/LoginPage";
+import AppLayout from "./components/layout/AppLayout";
+import AdminRoute from "./components/AdminRoute";
 import DashboardPage from "./pages/DashboardPage";
 import RSMProposalForm from "./pages/RSMForm";
+import AdminUsersPage from "./pages/AdminUsersPage";
 import { useAuthStore } from "./store/authStore";
 import { syncUserWithBackend } from "./services/authService";
+import ApproverDashboard from "./pages/Approverdashboard";
 
 export default function App() {
   const { instance, inProgress } = useMsal();
@@ -34,10 +39,18 @@ export default function App() {
     <BrowserRouter>
       <AuthenticatedTemplate>
         <Routes>
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/rsm-form" element={<RSMProposalForm />} />
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route element={<AppLayout />}>
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/rsm-form" element={<RSMProposalForm />} />
+
+            <Route element={<AdminRoute />}>
+              <Route path="/admin/users" element={<AdminUsersPage />} />
+            </Route>
+            <Route path="/approver"          element={<ApproverDashboard />} />
+
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Route>
         </Routes>
       </AuthenticatedTemplate>
 

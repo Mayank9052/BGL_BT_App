@@ -1,0 +1,57 @@
+.app-navbar {
+  height: 60px;
+  flex-shrink: 0;
+  background: #fff;
+  border-bottom: 1px solid #e6e9ee;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+}
+
+.app-navbar-brand {
+  background: none;
+  border: none;
+  font-weight: 600;
+  font-size: 15px;
+  color: #1a2233;
+  cursor: pointer;
+}
+
+.app-navbar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.app-navbar-email {
+  font-size: 13px;
+  color: #5b6472;
+}
+
+.role-chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.role-admin { background: #fee2e2; color: #b91c1c; }
+.role-manager { background: #fef3c7; color: #92400e; }
+.role-user { background: #e0f2fe; color: #0369a1; }
+
+.app-navbar-logout {
+  background: #f4f6f8;
+  border: 1px solid #dde2e8;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #2a3343;
+}
+
+.app-navbar-logout:hover {
+  background: #ebeef1;
+}

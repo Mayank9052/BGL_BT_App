@@ -12,6 +12,9 @@ public class AppDbContext : DbContext
 
     public DbSet<Proposal> Proposals => Set<Proposal>();
     public DbSet<ProposalActivity> ProposalActivities => Set<ProposalActivity>();
+    public DbSet<State> States => Set<State>();
+    public DbSet<City> Cities => Set<City>();
+    public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -57,6 +60,22 @@ public class AppDbContext : DbContext
             .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<ApprovalDecision>(e =>
+        {
+            e.ToTable("ApprovalDecisions");
+            e.HasKey(d => d.Id);
+            e.Property(d => d.Status).HasMaxLength(50).IsRequired();
+            e.Property(d => d.ApprovedBy).HasMaxLength(200).IsRequired();
+            e.Property(d => d.DecidedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+ 
+            e.HasOne(d => d.Proposal)
+             .WithMany()
+             .HasForeignKey(d => d.ProposalId)
+             .OnDelete(DeleteBehavior.Cascade);
+ 
+            e.HasIndex(d => d.ProposalId);
+        });
+
         // ProposalActivities
         modelBuilder.Entity<ProposalActivity>(e =>
         {
@@ -66,5 +85,17 @@ public class AppDbContext : DbContext
             e.Property(a => a.Budget).HasPrecision(18, 2);
             e.Property(a => a.Incentive).HasPrecision(18, 2);
         });
-    }
+
+        modelBuilder.Entity<City>()
+            .HasOne(c => c.State)
+            .WithMany(s => s.Cities)
+            .HasForeignKey(c => c.StateId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<City>()
+            .HasIndex(c => new { c.StateId, c.Name })
+            .IsUnique();
+            }
+
+        
 }
