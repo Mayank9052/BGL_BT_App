@@ -1,0 +1,127 @@
+/* frontend/src/components/SearchableSelect.css */
+
+.ss-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.ss-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13.5px;
+  color: #1a2233;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  box-sizing: border-box;
+}
+
+.ss-trigger:hover:not(.ss-trigger--disabled) {
+  border-color: #6366f1;
+}
+
+.ss-trigger--open {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
+}
+
+.ss-trigger--disabled {
+  background: #f9fafb;
+  cursor: not-allowed;
+  color: #9ca3af;
+}
+
+.ss-placeholder { color: #9ca3af; }
+
+.ss-selected { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ss-selected-label { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-selected-sub   { font-size: 11px; color: #6b7280; }
+
+.ss-icons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ss-clear {
+  background: none;
+  border: none;
+  font-size: 16px;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+.ss-clear:hover { color: #374151; }
+
+.ss-arrow { font-size: 10px; color: #6b7280; }
+
+/* Dropdown panel */
+.ss-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.12);
+  z-index: 999;
+  overflow: hidden;
+}
+
+.ss-search-wrap {
+  padding: 8px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.ss-search {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+.ss-search:focus { border-color: #6366f1; }
+
+.ss-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.ss-option {
+  padding: 9px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 0.1s;
+}
+.ss-option:hover           { background: #f5f3ff; }
+.ss-option--selected       { background: #ede9fe; }
+.ss-option-label           { font-size: 13.5px; font-weight: 500; color: #111827; }
+.ss-option-sub             { font-size: 11.5px; color: #6b7280; }
+
+.ss-empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.ss-option--create {
+  background: #f5f3ff;
+  border-bottom: 1px solid #ede9fe;
+}
+.ss-option--create:hover { background: #ede9fe; }
+.ss-option--create .ss-option-label { color: #6366f1; }

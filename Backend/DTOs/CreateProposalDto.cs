@@ -13,5 +13,6 @@ public record CreateProposalDto(
     decimal         TotalBudget,
     int             TotalTarget,
     decimal         Cac,
+    string?  DocNumber, 
     List<ActivityDto> Activities
 );

@@ -9,12 +9,12 @@ public class AppDbContext : DbContext
 
     public DbSet<User> Users => Set<User>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
-
     public DbSet<Proposal> Proposals => Set<Proposal>();
     public DbSet<ProposalActivity> ProposalActivities => Set<ProposalActivity>();
     public DbSet<State> States => Set<State>();
     public DbSet<City> Cities => Set<City>();
     public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
+    public DbSet<ActivityMaster> ActivityMasters => Set<ActivityMaster>();  // ← new
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -53,11 +53,10 @@ public class AppDbContext : DbContext
             e.Property(p => p.TotalBudget).HasPrecision(18, 2);
             e.Property(p => p.Cac).HasPrecision(18, 2);
             e.Property(p => p.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
-
             e.HasMany(p => p.Activities)
-            .WithOne(a => a.Proposal!)
-            .HasForeignKey(a => a.ProposalId)
-            .OnDelete(DeleteBehavior.Cascade);
+             .WithOne(a => a.Proposal!)
+             .HasForeignKey(a => a.ProposalId)
+             .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<ApprovalDecision>(e =>
@@ -67,12 +66,10 @@ public class AppDbContext : DbContext
             e.Property(d => d.Status).HasMaxLength(50).IsRequired();
             e.Property(d => d.ApprovedBy).HasMaxLength(200).IsRequired();
             e.Property(d => d.DecidedAt).HasDefaultValueSql("SYSUTCDATETIME()");
- 
             e.HasOne(d => d.Proposal)
              .WithMany()
              .HasForeignKey(d => d.ProposalId)
              .OnDelete(DeleteBehavior.Cascade);
- 
             e.HasIndex(d => d.ProposalId);
         });
 
@@ -86,6 +83,16 @@ public class AppDbContext : DbContext
             e.Property(a => a.Incentive).HasPrecision(18, 2);
         });
 
+        // ActivityMaster
+        modelBuilder.Entity<ActivityMaster>(e =>
+        {
+            e.ToTable("ActivityMaster");
+            e.HasKey(a => a.Id);
+            e.Property(a => a.ActivityName).HasMaxLength(100).IsRequired();
+            e.HasIndex(a => a.ActivityName).IsUnique();
+            e.Property(a => a.CreatedAt).HasDefaultValueSql("GETDATE()");
+        });
+
         modelBuilder.Entity<City>()
             .HasOne(c => c.State)
             .WithMany(s => s.Cities)
@@ -95,7 +102,5 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<City>()
             .HasIndex(c => new { c.StateId, c.Name })
             .IsUnique();
-            }
-
-        
+    }
 }
