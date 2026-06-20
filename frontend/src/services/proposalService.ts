@@ -30,7 +30,7 @@ export interface ProposalResponse {
   cac: number;
   submittedBy: string;
   createdAt: string;
-  status: "Pending" | "Approved" | "Rejected";
+  status: "Pending" | "Approved" | "Rejected" | "NeedsRevision";
   approverNote: string | null;
   approvedBy: string | null;
   decidedAt: string | null;
@@ -89,6 +89,32 @@ export interface DecidePayload {
   approvedBy: string | null;
 }
 
+export interface SendBackPayload {
+  note: string | null;
+  sentBackBy: string | null;
+}
+
+export async function sendBackProposal(
+  id: string,
+  payload: SendBackPayload,
+  instance: IPublicClientApplication,
+): Promise<ProposalResponse> {
+  const token = await getAccessToken(instance);
+  const res = await fetch(`${API_BASE_URL}/api/proposals/${id}/sendback`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Send-back failed (${res.status})`);
+  }
+  return res.json();
+}
+
 /* ── Token helper ─────────────────────────────────────────────────────────── */
 async function getAccessToken(instance: IPublicClientApplication): Promise<string> {
   const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
@@ -139,6 +165,18 @@ export async function updateProposal(
     const text = await res.text().catch(() => "");
     throw new Error(text || `Failed to update proposal (${res.status})`);
   }
+  return res.json();
+}
+
+export async function fetchProposalById(
+  id: string,
+  instance: IPublicClientApplication,
+): Promise<ProposalResponse> {
+  const token = await getAccessToken(instance);
+  const res = await fetch(`${API_BASE_URL}/api/proposals/${id}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Failed to load proposal (${res.status})`);
   return res.json();
 }
 

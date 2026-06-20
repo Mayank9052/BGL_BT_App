@@ -317,10 +317,12 @@
 .ap-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.45);
+  background: rgba(0, 0, 0, 0.55);
   z-index: 200;
   display: flex;
   justify-content: flex-end;
+  /* prevent any click-through to content below */
+  isolation: isolate;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -328,30 +330,53 @@
    ══════════════════════════════════════════════════════════════ */
 
 .ap-drawer {
-  width: min(660px, 100vw);
-  background: var(--color-background-primary);
+  width: min(680px, 100vw);
+  background: #ffffff;           /* ← was var(--color-background-primary), force solid white */
   height: 100vh;
   display: flex;
   flex-direction: column;
-  border-left: 0.5px solid var(--color-border-tertiary);
-  animation: ap-slide-in 0.2s ease;
+  border-left: 1px solid #e2e8f0;
+  animation: ap-slide-in 0.22s ease;
   overflow: hidden;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.18);
+  position: relative;
+  z-index: 201;
 }
 
 @keyframes ap-slide-in {
-  from { transform: translateX(100%); }
-  to   { transform: translateX(0); }
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);   opacity: 1; }
+}
+
+/* ── Dark mode override — keep drawer solid ── */
+@media (prefers-color-scheme: dark) {
+  .ap-drawer,
+  .ap-drawer-body,
+  .ap-save-footer {
+    background: #1e293b;
+  }
+  .ap-meta-cell  { background: #273449; border-color: #334155; }
+  .ap-itbl,
+  .ap-erow-even  { background: #1e293b; }
+  .ap-erow-odd   { background: #273449; }
+  .ap-summary,
+  .ap-sum-cell   { background: #1e293b; border-color: #334155; }
+  .ap-action-box { background: #273449; border-color: #334155; }
+  .ap-itbl-wrap  { background: #1e293b; border-color: #334155; }
+  .ap-itbl thead tr { background: #273449; }
 }
 
 /* ── Drawer top bar (navy) ── */
 .ap-drawer-topbar {
   background: #1E3A5F;
-  padding: 16px 20px;
+  padding: 18px 22px;
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .ap-drawer-topbar-left {
@@ -486,11 +511,11 @@
 /* ── Edit mode banner ── */
 .ap-edit-banner {
   background: #EFF6FF;
-  border-bottom: 0.5px solid #BFDBFE;
+  border-bottom: 1px solid #BFDBFE;
   color: #1E40AF;
   font-size: 12px;
   font-weight: 500;
-  padding: 9px 20px;
+  padding: 10px 22px;
   flex-shrink: 0;
 }
 
@@ -498,7 +523,9 @@
 .ap-drawer-body {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 20px;
+  overflow-x: hidden;
+  padding: 20px 22px;
+  background: #ffffff;           /* ← force solid */
 }
 
 /* ── Meta grids ── */
@@ -525,7 +552,8 @@
 }
 
 .ap-meta-cell {
-  background: var(--color-background-secondary);
+  background: #f8fafc;
+  border: 0.5px solid #e2e8f0;
   border-radius: var(--border-radius-md);
   padding: 10px 12px;
   display: flex;
@@ -566,8 +594,8 @@
 
 /* ── Remarks ── */
 .ap-remarks {
-  background: #FFFBEB;
-  border: 0.5px solid #FDE68A;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
   border-radius: var(--border-radius-md);
   padding: 10px 12px;
   margin-bottom: 14px;
@@ -639,24 +667,33 @@
 
 /* ── Activity table ── */
 .ap-itbl-wrap {
-  border: 0.5px solid var(--color-border-tertiary);
+  border: 1px solid #e2e8f0;
   border-radius: var(--border-radius-md);
   overflow: hidden;
   overflow-x: auto;
   margin-bottom: 14px;
+  background: #ffffff;
 }
 
-.ap-itbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ap-itbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: #ffffff;
+}
 
-.ap-itbl thead tr { background: var(--color-background-secondary); }
+.ap-itbl thead tr {
+  background: #f1f5f9;
+}
 
 .ap-itbl thead th {
-  padding: 8px 10px;
+  padding: 9px 10px;
   text-align: left;
   font-weight: 500;
   font-size: 11px;
-  color: var(--color-text-secondary);
+  color: #475569;
   white-space: nowrap;
+  border-bottom: 1px solid #e2e8f0;
 }
 
 .ap-itbl thead th.ap-num { text-align: right; }
@@ -668,8 +705,8 @@
 /* legacy — keep existing .ap-itbl tbody td rule working */
 .ap-itbl tbody td { padding: 8px 10px; vertical-align: middle; }
 
-.ap-erow-even { background: var(--color-background-primary); }
-.ap-erow-odd  { background: var(--color-background-secondary); }
+.ap-erow-even { background: #ffffff; }
+.ap-erow-odd  { background: #f8fafc; }
 
 /* ── Cell-level edit inputs ── */
 .ap-cell-select,
@@ -739,10 +776,11 @@
 /* ── Summary strip ── */
 .ap-summary {
   display: flex;
-  border: 0.5px solid var(--color-border-tertiary);
+  border: 1px solid #e2e8f0;
   border-radius: var(--border-radius-md);
   overflow: hidden;
   margin-bottom: 16px;
+  background: #ffffff;
 }
 
 .ap-sum-cell {
@@ -751,7 +789,8 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  border-right: 0.5px solid var(--color-border-tertiary);
+  border-right: 1px solid #e2e8f0;
+  background: #ffffff;
 }
 .ap-sum-last { border-right: none; }
 .ap-sum-lbl  { font-size: 10px; color: var(--color-text-secondary); font-weight: 500; }
@@ -759,8 +798,8 @@
 
 /* ── Action / decision box ── */
 .ap-action-box {
-  background: var(--color-background-secondary);
-  border: 0.5px solid var(--color-border-tertiary);
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
   border-radius: var(--border-radius-lg);
   padding: 16px;
 }
@@ -837,9 +876,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 20px;
-  background: var(--color-background-primary);
-  border-top: 0.5px solid var(--color-border-tertiary);
+  padding: 14px 22px;
+  background: #ffffff;
+  border-top: 1px solid #e2e8f0;
   flex-shrink: 0;
 }
 
@@ -941,3 +980,151 @@
 
   .ap-save-footer { flex-wrap: wrap; }
 }
+
+/* Page header */
+.ap-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.ap-page-title {
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin: 0 0 4px;
+}
+
+.ap-page-sub {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.ap-new-btn {
+  background: #1e3a5f;
+  color: #fff;
+  border: none;
+  padding: 9px 18px;
+  border-radius: var(--border-radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.ap-new-btn:hover { background: #16304f; }
+
+/* Stats responsive */
+.ap-stats--admin { grid-template-columns: repeat(5, 1fr); }
+.ap-stats--user  { grid-template-columns: repeat(5, 1fr); }
+
+/* NeedsRevision badge */
+.ap-badge-revision {
+  background: #FEF9C3;
+  color: #92400E;
+}
+
+/* Status pill variants in drawer */
+.ap-pill-pending       { background: rgba(255,255,255,0.15); }
+.ap-pill-approved      { background: rgba(134,239,172,0.25); color: #bbf7d0; }
+.ap-pill-rejected      { background: rgba(252,165,165,0.25); color: #fca5a5; }
+.ap-pill-needsrevision { background: rgba(253,224,71,0.25);  color: #fde047; }
+
+/* Revision banner in drawer (for RSM) */
+.ap-revision-banner {
+  background: #fef9c3;
+  border-bottom: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 10px 22px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.ap-goto-edit-btn {
+  background: #92400e;
+  color: #fff;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+  margin-left: auto;
+}
+.ap-goto-edit-btn:hover { background: #78350f; }
+
+/* Send back section */
+.ap-sendback-row {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--color-border-tertiary);
+}
+
+.ap-sendback-trigger {
+  background: none;
+  border: 0.5px solid var(--color-border-secondary);
+  color: var(--color-text-secondary);
+  padding: 6px 14px;
+  border-radius: var(--border-radius-md);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ap-sendback-trigger:hover {
+  background: var(--color-background-secondary);
+  color: var(--color-text-primary);
+}
+
+.ap-sendback-box {
+  margin-top: 10px;
+  padding: 14px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: var(--border-radius-md);
+}
+
+.ap-sendback-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #92400e;
+  margin: 0 0 8px;
+}
+
+.ap-sendback-btn {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: var(--border-radius-md);
+  font-weight: 500;
+  font-size: 13px;
+  cursor: pointer;
+  background: #92400e;
+  color: #fff;
+  transition: background 0.15s;
+}
+.ap-sendback-btn:hover:not(:disabled) { background: #78350f; }
+.ap-sendback-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Decision revision banner */
+.ap-decision-revision {
+  background: #fef9c3;
+  border: 0.5px solid #fde68a;
+  color: #92400e;
+  border-radius: var(--border-radius-md);
+  padding: 14px 16px;
+}
+
+/* Orange stat color */
+.ap-orange { color: #c2410c; }
+
+/* Remove topbar from this page since it's in AppLayout now */
+.ap-topbar { display: none; }
