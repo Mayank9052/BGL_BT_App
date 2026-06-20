@@ -3,28 +3,50 @@ import { useMsal } from "@azure/msal-react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/authStore";
 import {
-  fetchProposals, fetchMyProposals, decideProposal, updateProposal,
-  sendBackProposal, type ActivityResponse, type ProposalResponse,
+  fetchProposals,
+  fetchMyProposals,
+  decideProposal,
+  updateProposal,
+  sendBackProposal,
+  updateProposalActuals,
+  uploadActivityMedia,
+  type ActivityResponse,
+  type ProposalResponse,
+  type ActivityActualsPayload,
 } from "../services/proposalService";
 import "./ApproverDashboard.css";
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 const inr = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
-const num = (v: string | number) => { const n = parseFloat(String(v)); return Number.isFinite(n) ? n : 0; };
+const num = (v: string | number) => {
+  const n = parseFloat(String(v));
+  return Number.isFinite(n) ? n : 0;
+};
 const fmtDate = (iso: string | null | undefined) => {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  return new Date(iso).toLocaleDateString("en-IN", {
+    day: "2-digit", month: "short", year: "numeric",
+  });
 };
 
 const eligClass = (e: string) =>
-  e === "Eligible" ? "ap-elig-yes" : e === "Not Eligible" ? "ap-elig-no" : "ap-elig-pend";
+  e === "Eligible" ? "ap-elig-yes"
+  : e === "Not Eligible" ? "ap-elig-no"
+  : "ap-elig-pend";
 
 const statusClass = (s: string) =>
-  s === "Approved"      ? "ap-badge ap-badge-approved"
-  : s === "Rejected"    ? "ap-badge ap-badge-rejected"
+  s === "Approved"        ? "ap-badge ap-badge-approved"
+  : s === "Rejected"      ? "ap-badge ap-badge-rejected"
   : s === "NeedsRevision" ? "ap-badge ap-badge-revision"
   : "ap-badge ap-badge-pending";
 
-const MONTHS     = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5086";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const MONTHS = [
+  "January","February","March","April","May","June",
+  "July","August","September","October","November","December",
+];
 const ELIGIBILITY = ["Eligible","Not Eligible","Pending Approval"];
 const LOC_TYPES   = ["Old","New"];
 const ACT_TYPES   = [
@@ -33,38 +55,79 @@ const ACT_TYPES   = [
   "Society Activation","Referral Program","Other",
 ];
 
+// ─── Editable types ───────────────────────────────────────────────────────────
 interface EditActivity {
-  id?: string; activityType: string; target: string;
-  startDate: string; endDate: string; budget: string;
-  incentive: string; remarks: string;
+  id?: string;
+  activityType: string;
+  target: string;
+  startDate: string;
+  endDate: string;
+  budget: string;
+  incentive: string;
+  remarks: string;
 }
+
 interface EditableProposal {
-  dealerName: string; location: string; state: string; type: string;
-  rsmName: string; commandoName: string; month: string;
-  eligibility: string; remarks: string; activities: EditActivity[];
+  dealerName: string;
+  location: string;
+  state: string;
+  type: string;
+  rsmName: string;
+  commandoName: string;
+  month: string;
+  eligibility: string;
+  remarks: string;
+  activities: EditActivity[];
 }
 
 function toEditable(p: ProposalResponse): EditableProposal {
   return {
-    dealerName: p.dealerName, location: p.location, state: p.state,
-    type: p.type, rsmName: p.rsmName, commandoName: p.commandoName,
-    month: p.month, eligibility: p.eligibility, remarks: p.remarks ?? "",
-    activities: p.activities.map((a: ActivityResponse) => ({
-      id: a.id, activityType: a.activityType,
-      target: String(a.target), startDate: a.startDate?.split("T")[0] ?? "",
-      endDate: a.endDate?.split("T")[0] ?? "",
-      budget: String(a.budget), incentive: String(a.incentive), remarks: a.remarks ?? "",
+    dealerName:   p.dealerName,
+    location:     p.location,
+    state:        p.state,
+    type:         p.type,
+    rsmName:      p.rsmName,
+    commandoName: p.commandoName,
+    month:        p.month,
+    eligibility:  p.eligibility,
+    remarks:      p.remarks ?? "",
+    activities:   p.activities.map((a: ActivityResponse) => ({
+      id:           a.id,
+      activityType: a.activityType,
+      target:       String(a.target),
+      startDate:    a.startDate?.split("T")[0] ?? "",
+      endDate:      a.endDate?.split("T")[0]   ?? "",
+      budget:       String(a.budget),
+      incentive:    String(a.incentive),
+      remarks:      a.remarks ?? "",
     })),
   };
 }
 
+function initActuals(p: ProposalResponse): Record<string, ActivityActualsPayload> {
+  const map: Record<string, ActivityActualsPayload> = {};
+  p.activities.forEach((a) => {
+    map[a.id] = {
+      activityId:      a.id,
+      actualStartDate: (a as any).actualStartDate ?? null,
+      actualEndDate:   (a as any).actualEndDate   ?? null,
+      mediaFileUrl:    (a as any).mediaFileUrl    ?? null,
+      mediaFileName:   (a as any).mediaFileName   ?? null,
+      mediaFileType:   (a as any).mediaFileType   ?? null,
+    };
+  });
+  return map;
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
-  const navigate  = useNavigate();
-  const account   = accounts[0];
-  const { user }  = useAuthStore();
-  const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
+  const navigate = useNavigate();
+  const account  = accounts[0];
+  const { user } = useAuthStore();
+  const isAdmin  = user?.role === "Admin" || user?.role === "Manager";
 
+  // ── State ──────────────────────────────────────────────────────────────────
   const [proposals,     setProposals]     = useState<ProposalResponse[]>([]);
   const [selected,      setSelected]      = useState<ProposalResponse | null>(null);
   const [editData,      setEditData]      = useState<EditableProposal | null>(null);
@@ -72,7 +135,7 @@ export default function ApproverDashboard() {
   const [note,          setNote]          = useState("");
   const [sendBackNote,  setSendBackNote]  = useState("");
   const [showSendBack,  setShowSendBack]  = useState(false);
-  const [filterStatus,  setFilterStatus]  = useState<string>("All");
+  const [filterStatus,  setFilterStatus]  = useState("All");
   const [filterMonth,   setFilterMonth]   = useState("All");
   const [search,        setSearch]        = useState("");
   const [loading,       setLoading]       = useState(true);
@@ -81,10 +144,15 @@ export default function ApproverDashboard() {
   const [saveLoading,   setSaveLoading]   = useState(false);
   const [toast,         setToast]         = useState<{ msg: string; ok: boolean } | null>(null);
 
+  // ── Actuals state (post-approval) ──────────────────────────────────────────
+  const [actualsData,   setActualsData]   = useState<Record<string, ActivityActualsPayload>>({});
+  const [savingActuals, setSavingActuals] = useState(false);
+  const [uploadingId,   setUploadingId]   = useState<string | null>(null);
+
+  // ── Load proposals ─────────────────────────────────────────────────────────
   const loadProposals = useCallback(async () => {
     setLoading(true); setFetchError(null);
     try {
-      // Admin sees all; user sees only their own
       const data = isAdmin
         ? await fetchProposals(instance)
         : await fetchMyProposals(instance);
@@ -95,7 +163,20 @@ export default function ApproverDashboard() {
   }, [instance, isAdmin]);
 
   useEffect(() => { loadProposals(); }, [loadProposals]);
+  useEffect(() => {
+    if (!proposals.length) return;
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("id");
+    if (!id) return;
+    const target = proposals.find((p) => p.id === id);
+    if (target) {
+      openDrawer(target);
+      // Clean the URL without reload
+      window.history.replaceState({}, "", "/approver");
+    }
+  }, [proposals]);
 
+  // ── Derived ────────────────────────────────────────────────────────────────
   const months = useMemo(
     () => ["All", ...Array.from(new Set(proposals.map((p) => p.month)))],
     [proposals]
@@ -107,10 +188,12 @@ export default function ApproverDashboard() {
       if (filterMonth  !== "All" && p.month  !== filterMonth)  return false;
       if (search) {
         const q = search.toLowerCase();
-        return p.dealerName.toLowerCase().includes(q) ||
-               p.rsmName.toLowerCase().includes(q)    ||
-               p.location.toLowerCase().includes(q)   ||
-               p.id.toLowerCase().includes(q);
+        return (
+          p.dealerName.toLowerCase().includes(q) ||
+          p.rsmName.toLowerCase().includes(q)    ||
+          p.location.toLowerCase().includes(q)   ||
+          p.id.toLowerCase().includes(q)
+        );
       }
       return true;
     }), [proposals, filterStatus, filterMonth, search]);
@@ -118,12 +201,12 @@ export default function ApproverDashboard() {
   const stats = useMemo(() => {
     const approved = proposals.filter((p) => p.status === "Approved");
     return {
-      total:       proposals.length,
-      pending:     proposals.filter((p) => p.status === "Pending").length,
-      approved:    approved.length,
-      rejected:    proposals.filter((p) => p.status === "Rejected").length,
+      total:         proposals.length,
+      pending:       proposals.filter((p) => p.status === "Pending").length,
+      approved:      approved.length,
+      rejected:      proposals.filter((p) => p.status === "Rejected").length,
       needsRevision: proposals.filter((p) => p.status === "NeedsRevision").length,
-      totalBudget: approved.reduce((s, p) => s + p.totalBudget, 0),
+      totalBudget:   approved.reduce((s, p) => s + p.totalBudget, 0),
     };
   }, [proposals]);
 
@@ -134,22 +217,34 @@ export default function ApproverDashboard() {
     return { totalBudget: tb, totalTarget: tt, cac: tt > 0 ? tb / tt : 0 };
   }, [editData]);
 
+  // ── Toast ──────────────────────────────────────────────────────────────────
   const showToast = (msg: string, ok: boolean) => {
-    setToast({ msg, ok }); setTimeout(() => setToast(null), 3500);
+    setToast({ msg, ok });
+    setTimeout(() => setToast(null), 3500);
   };
 
+  // ── Drawer ─────────────────────────────────────────────────────────────────
   const openDrawer = (p: ProposalResponse) => {
-    setSelected(p); setEditData(toEditable(p));
-    setIsEditing(false); setShowSendBack(false);
-    setNote(p.approverNote ?? ""); setSendBackNote("");
-  };
-  const closeDrawer = () => {
-    setSelected(null); setEditData(null);
-    setIsEditing(false); setShowSendBack(false);
+    setSelected(p);
+    setEditData(toEditable(p));
+    setIsEditing(false);
+    setShowSendBack(false);
+    setNote(p.approverNote ?? "");
+    setSendBackNote("");
+    setActualsData(initActuals(p));
   };
 
-  const setF  = (key: keyof Omit<EditableProposal,"activities">, v: string) =>
+  const closeDrawer = () => {
+    setSelected(null);
+    setEditData(null);
+    setIsEditing(false);
+    setShowSendBack(false);
+  };
+
+  // ── Edit helpers ───────────────────────────────────────────────────────────
+  const setF = (key: keyof Omit<EditableProposal, "activities">, v: string) =>
     setEditData((d) => d ? { ...d, [key]: v } : d);
+
   const setAF = (idx: number, key: keyof EditActivity, v: string) =>
     setEditData((d) => {
       if (!d) return d;
@@ -157,12 +252,19 @@ export default function ApproverDashboard() {
     });
 
   const addRow = () =>
-    setEditData((d) => d ? { ...d, activities: [...d.activities,
-      { activityType:"",target:"",startDate:"",endDate:"",budget:"",incentive:"",remarks:"" }] } : d);
+    setEditData((d) => d ? {
+      ...d,
+      activities: [...d.activities, {
+        activityType: "", target: "", startDate: "",
+        endDate: "", budget: "", incentive: "", remarks: "",
+      }],
+    } : d);
+
   const removeRow = (idx: number) =>
     setEditData((d) => (!d || d.activities.length <= 1) ? d :
       { ...d, activities: d.activities.filter((_, i) => i !== idx) });
 
+  // ── Save edits (admin) ─────────────────────────────────────────────────────
   const saveEdits = async () => {
     if (!selected || !editData) return;
     setSaveLoading(true);
@@ -170,60 +272,115 @@ export default function ApproverDashboard() {
       const payload = {
         ...editData,
         activities: editData.activities.map((a) => ({
-          ...a, target: num(a.target), budget: num(a.budget), incentive: num(a.incentive),
+          ...a,
+          target:    num(a.target),
+          budget:    num(a.budget),
+          incentive: num(a.incentive),
         })),
         ...editTotals,
       };
       const updated = await updateProposal(selected.id, payload, instance);
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
-      setSelected(updated); setEditData(toEditable(updated)); setIsEditing(false);
+      setSelected(updated);
+      setEditData(toEditable(updated));
+      setIsEditing(false);
       showToast("Proposal updated.", true);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Save failed.", false);
     } finally { setSaveLoading(false); }
   };
 
+  // ── Decide (admin) ─────────────────────────────────────────────────────────
   const decide = async (action: "Approved" | "Rejected") => {
     if (!selected) return;
     setActionLoading(true);
     try {
-      const updated = await decideProposal(selected.id,
+      const updated = await decideProposal(
+        selected.id,
         { status: action, approverNote: note.trim() || null, approvedBy: account?.username ?? null },
-        instance);
+        instance,
+      );
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
       setSelected(updated);
-      showToast(action === "Approved" ? "Proposal approved." : "Proposal rejected.", action === "Approved");
+      showToast(
+        action === "Approved" ? "Proposal approved." : "Proposal rejected.",
+        action === "Approved",
+      );
       setNote("");
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Action failed.", false);
     } finally { setActionLoading(false); }
   };
 
+  // ── Send back (admin) ──────────────────────────────────────────────────────
   const handleSendBack = async () => {
     if (!selected) return;
     setActionLoading(true);
     try {
-      const updated = await sendBackProposal(selected.id,
+      const updated = await sendBackProposal(
+        selected.id,
         { note: sendBackNote.trim() || null, sentBackBy: account?.username ?? null },
-        instance);
+        instance,
+      );
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
-      setSelected(updated); setShowSendBack(false); setSendBackNote("");
+      setSelected(updated);
+      setShowSendBack(false);
+      setSendBackNote("");
       showToast("Sent back for revision. RSM has been notified.", true);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Failed to send back.", false);
     } finally { setActionLoading(false); }
   };
 
-  const pageTitle = isAdmin ? "Approver Portal" : "My Proposals";
+  // ── Actuals: file upload ───────────────────────────────────────────────────
+  const handleFileUpload = async (activityId: string, file: File) => {
+    setUploadingId(activityId);
+    try {
+      const result = await uploadActivityMedia(file, instance);
+      setActualsData((prev) => ({
+        ...prev,
+        [activityId]: {
+          ...prev[activityId],
+          mediaFileUrl:  result.url,
+          mediaFileName: result.fileName,
+          mediaFileType: result.fileType,
+        },
+      }));
+      showToast("File uploaded.", true);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Upload failed.", false);
+    } finally { setUploadingId(null); }
+  };
 
+  // ── Actuals: save ──────────────────────────────────────────────────────────
+  const saveActuals = async () => {
+    if (!selected) return;
+    setSavingActuals(true);
+    try {
+      const payload = Object.values(actualsData);
+      const updated = await updateProposalActuals(selected.id, payload, instance);
+      setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
+      setSelected(updated);
+      setActualsData(initActuals(updated));
+      showToast("Actuals saved.", true);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Failed to save actuals.", false);
+    } finally { setSavingActuals(false); }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="ap-page">
       <main className="ap-main">
 
-        {/* ── Page header ── */}
+        {/* Page header */}
         <div className="ap-page-header">
           <div>
-            <h1 className="ap-page-title">{pageTitle}</h1>
+            <h1 className="ap-page-title">
+              {isAdmin ? "Approver Portal" : "My Proposals"}
+            </h1>
             <p className="ap-page-sub">
               {isAdmin
                 ? "Review, edit, approve or reject RSM activity proposals."
@@ -254,21 +411,25 @@ export default function ApproverDashboard() {
         {!loading && !fetchError && (
           <>
             {/* Stats */}
-            <div className={`ap-stats ap-stats--${isAdmin ? "admin" : "user"}`}>
-              <StatCard label="Total" value={stats.total} color="navy" />
-              <StatCard label="Pending review" value={stats.pending} color="amber" />
-              <StatCard label="Approved" value={stats.approved} color="green" />
-              <StatCard label="Rejected" value={stats.rejected} color="red" />
+            <div className="ap-stats">
+              <StatCard label="Total"          value={stats.total}         color="navy"   />
+              <StatCard label="Pending review" value={stats.pending}       color="amber"  />
+              <StatCard label="Approved"       value={stats.approved}      color="green"  />
+              <StatCard label="Rejected"       value={stats.rejected}      color="red"    />
               {isAdmin
-                ? <StatCard label="Approved budget" value={inr(stats.totalBudget)} color="navy" />
-                : <StatCard label="Needs revision" value={stats.needsRevision} color="orange" />
+                ? <StatCard label="Approved budget"  value={inr(stats.totalBudget)}    color="navy"   />
+                : <StatCard label="Needs revision"   value={stats.needsRevision}       color="orange" />
               }
             </div>
 
             {/* Filters */}
             <div className="ap-filters">
-              <input className="ap-search" placeholder="Search dealer, RSM, location…"
-                value={search} onChange={(e) => setSearch(e.target.value)} />
+              <input
+                className="ap-search"
+                placeholder="Search dealer, RSM, location…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
               <select className="ap-select" value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value)}>
                 {["All","Pending","Approved","Rejected","NeedsRevision"].map((s) => (
@@ -307,9 +468,11 @@ export default function ApproverDashboard() {
                 </thead>
                 <tbody>
                   {filtered.length === 0 && (
-                    <tr><td colSpan={isAdmin ? 11 : 10} className="ap-empty">
-                      {proposals.length === 0 ? "No proposals yet." : "No results match."}
-                    </td></tr>
+                    <tr>
+                      <td colSpan={isAdmin ? 11 : 10} className="ap-empty">
+                        {proposals.length === 0 ? "No proposals yet." : "No results match."}
+                      </td>
+                    </tr>
                   )}
                   {filtered.map((p) => (
                     <tr key={p.id} className="ap-row" onClick={() => openDrawer(p)}>
@@ -339,13 +502,16 @@ export default function ApproverDashboard() {
                       <td className="ap-num ap-bold">{inr(p.totalBudget)}</td>
                       <td className="ap-num">{p.totalTarget}</td>
                       <td className="ap-num">{inr(p.cac)}</td>
-                      <td><span className={statusClass(p.status)}>
-                        {p.status === "NeedsRevision" ? "Needs revision" : p.status}
-                      </span></td>
+                      <td>
+                        <span className={statusClass(p.status)}>
+                          {p.status === "NeedsRevision" ? "Needs revision" : p.status}
+                        </span>
+                      </td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <button className="ap-review-btn" onClick={() => openDrawer(p)}>
                           {isAdmin
-                            ? (p.status === "Pending" || p.status === "NeedsRevision" ? "Review" : "View")
+                            ? (p.status === "Pending" || p.status === "NeedsRevision"
+                                ? "Review" : "View")
                             : "View"}
                         </button>
                       </td>
@@ -358,36 +524,43 @@ export default function ApproverDashboard() {
         )}
       </main>
 
-      {/* ════════════════ DRAWER ════════════════ */}
+      {/* ══════════════════════════════ DRAWER ══════════════════════════════ */}
       {selected && editData && (
         <div className="ap-overlay" onClick={closeDrawer}>
           <div className="ap-drawer" onClick={(e) => e.stopPropagation()}>
 
-            {/* Drawer header */}
+            {/* Drawer topbar */}
             <div className="ap-drawer-topbar">
               <div className="ap-drawer-topbar-left">
                 <span className={`ap-drawer-status-pill ap-pill-${selected.status.toLowerCase()}`}>
                   {selected.status === "NeedsRevision" ? "Needs revision"
-                   : selected.status === "Pending" ? "Pending review"
+                   : selected.status === "Pending"     ? "Pending review"
                    : selected.status}
                 </span>
                 {isEditing
-                  ? <input className="ap-dtitle-input" value={editData.dealerName}
-                      onChange={(e) => setF("dealerName", e.target.value)} placeholder="Dealer name" />
+                  ? <input className="ap-dtitle-input"
+                      value={editData.dealerName}
+                      onChange={(e) => setF("dealerName", e.target.value)}
+                      placeholder="Dealer name" />
                   : <h2 className="ap-drawer-title">{selected.dealerName}</h2>
                 }
                 <p className="ap-drawer-sub">
                   {isEditing
                     ? <span className="ap-loc-row">
-                        <input className="ap-sm-input" value={editData.location}
+                        <input className="ap-sm-input"
+                          value={editData.location}
                           onChange={(e) => setF("location", e.target.value)}
                           placeholder="City" style={{ width: 110 }} />
                         <span className="ap-loc-sep">,</span>
-                        <input className="ap-sm-input" value={editData.state}
+                        <input className="ap-sm-input"
+                          value={editData.state}
                           onChange={(e) => setF("state", e.target.value)}
                           placeholder="State" style={{ width: 120 }} />
                       </span>
-                    : <>{selected.location}, {selected.state} · {selected.month} · <strong>{selected.submittedBy}</strong> · {fmtDate(selected.createdAt)}</>
+                    : <>
+                        {selected.location}, {selected.state} · {selected.month} ·{" "}
+                        <strong>{selected.submittedBy}</strong> · {fmtDate(selected.createdAt)}
+                      </>
                   }
                 </p>
               </div>
@@ -407,13 +580,13 @@ export default function ApproverDashboard() {
               </div>
             </div>
 
+            {/* Banners */}
             {isEditing && (
               <div className="ap-edit-banner">
                 ✏ Edit mode — modify fields below, then save before deciding.
               </div>
             )}
 
-            {/* Revision note banner for RSM */}
             {!isAdmin && selected.status === "NeedsRevision" && selected.approverNote && (
               <div className="ap-revision-banner">
                 <strong>Revision requested:</strong> {selected.approverNote}
@@ -424,15 +597,16 @@ export default function ApproverDashboard() {
               </div>
             )}
 
+            {/* Scrollable body */}
             <div className="ap-drawer-body">
 
-              {/* Meta grid */}
+              {/* Meta grid 4-col */}
               <div className="ap-meta-grid-4">
                 {([
-                  { key: "rsmName",      label: "RSM / TSM",   input: "text"   as const, opts: [] as string[] },
-                  { key: "commandoName", label: "Commando",     input: "text"   as const, opts: [] as string[] },
-                  { key: "type",         label: "Type",         input: "select" as const, opts: LOC_TYPES },
-                  { key: "eligibility",  label: "Eligibility",  input: "select" as const, opts: ELIGIBILITY },
+                  { key: "rsmName",      label: "RSM / TSM",  input: "text"   as const, opts: [] as string[] },
+                  { key: "commandoName", label: "Commando",   input: "text"   as const, opts: [] as string[] },
+                  { key: "type",         label: "Type",       input: "select" as const, opts: LOC_TYPES },
+                  { key: "eligibility",  label: "Eligibility",input: "select" as const, opts: ELIGIBILITY },
                 ]).map(({ key, label, input, opts }) => (
                   <div key={key} className="ap-meta-cell">
                     <span className="ap-meta-lbl">{label}</span>
@@ -448,13 +622,16 @@ export default function ApproverDashboard() {
                             onChange={(e) => setF(key as any, e.target.value)} />
                     ) : (
                       key === "eligibility"
-                        ? <span className={`ap-elig ${eligClass((selected as any)[key])}`}>{(selected as any)[key]}</span>
+                        ? <span className={`ap-elig ${eligClass((selected as any)[key])}`}>
+                            {(selected as any)[key]}
+                          </span>
                         : <span className="ap-meta-val">{(selected as any)[key] || "—"}</span>
                     )}
                   </div>
                 ))}
               </div>
 
+              {/* Meta grid 3-col */}
               <div className="ap-meta-grid-3">
                 {([
                   { key: "dealerName", label: "Dealer name", input: "text"   as const, opts: [] as string[] },
@@ -495,7 +672,7 @@ export default function ApproverDashboard() {
                 </div>
               ) : null}
 
-              {/* Activities */}
+              {/* Activities header */}
               <div className="ap-section-header">
                 <span className="ap-sec-head">Activities</span>
                 {isAdmin && isEditing && (
@@ -503,6 +680,7 @@ export default function ApproverDashboard() {
                 )}
               </div>
 
+              {/* Activities table */}
               <div className="ap-itbl-wrap">
                 <div style={{ overflowX: "auto" }}>
                   <table className="ap-itbl" style={{ minWidth: isEditing ? 700 : "auto" }}>
@@ -590,7 +768,7 @@ export default function ApproverDashboard() {
                 </div>
               </div>
 
-              {/* Totals */}
+              {/* Totals strip */}
               <div className="ap-summary">
                 <div className="ap-sum-cell">
                   <span className="ap-sum-lbl">Total target</span>
@@ -612,14 +790,15 @@ export default function ApproverDashboard() {
                 </div>
               </div>
 
-              {/* ── Admin decision panel ── */}
+              {/* ── Admin: decision panel ── */}
               {isAdmin && selected.status === "Pending" && !isEditing && (
                 <div className="ap-action-box">
                   <p className="ap-sec-head" style={{ marginBottom: 10 }}>Decision</p>
 
                   <textarea className="ap-note-input" rows={3}
                     placeholder="Add a note for the RSM (optional)…"
-                    value={note} onChange={(e) => setNote(e.target.value)} />
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)} />
 
                   <div className="ap-btn-row">
                     <button className="ap-approve-btn"
@@ -664,12 +843,33 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* ── User view — show decision result ── */}
+              {/* ── Admin: finalised banner ── */}
+              {isAdmin && (selected.status === "Approved" || selected.status === "Rejected") && (
+                <div className={`ap-decision-banner ${
+                  selected.status === "Approved" ? "ap-decision-approved" : "ap-decision-rejected"
+                }`}>
+                  <div className="ap-decision-head">
+                    <strong>{selected.status}</strong>
+                    {selected.decidedAt && (
+                      <span className="ap-decision-date">
+                        {fmtDate(selected.decidedAt)}
+                        {selected.approvedBy && ` · ${selected.approvedBy}`}
+                      </span>
+                    )}
+                  </div>
+                  {selected.approverNote && (
+                    <p className="ap-decision-note">{selected.approverNote}</p>
+                  )}
+                </div>
+              )}
+
+              {/* ── User: decision result ── */}
               {!isAdmin && selected.status !== "Pending" && (
                 <div className={`ap-decision-banner ${
-                  selected.status === "Approved" ? "ap-decision-approved"
-                  : selected.status === "Rejected" ? "ap-decision-rejected"
-                  : "ap-decision-revision"}`}>
+                  selected.status === "Approved"      ? "ap-decision-approved"
+                  : selected.status === "Rejected"    ? "ap-decision-rejected"
+                  : "ap-decision-revision"
+                }`}>
                   <div className="ap-decision-head">
                     <strong>
                       {selected.status === "NeedsRevision" ? "Revision requested" : selected.status}
@@ -693,25 +893,127 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* ── Admin finalised banner ── */}
-              {isAdmin && (selected.status === "Approved" || selected.status === "Rejected") && (
-                <div className={`ap-decision-banner ${selected.status === "Approved" ? "ap-decision-approved" : "ap-decision-rejected"}`}>
-                  <div className="ap-decision-head">
-                    <strong>{selected.status}</strong>
-                    {selected.decidedAt && (
-                      <span className="ap-decision-date">
-                        {fmtDate(selected.decidedAt)}
-                        {selected.approvedBy && ` · ${selected.approvedBy}`}
-                      </span>
-                    )}
+              {/* ══════════════════════════════════════════════════════════
+                  POST-APPROVAL ACTUALS — RSM fills after approval
+              ══════════════════════════════════════════════════════════ */}
+              {!isAdmin && selected.status === "Approved" && (
+                <div className="ap-actuals-box">
+                  <div className="ap-actuals-header">
+                    <span className="ap-sec-head" style={{ margin: 0 }}>
+                      Post-Campaign Actuals
+                    </span>
+                    <span className="ap-actuals-hint">
+                      Fill actual dates and upload media evidence for each activity
+                    </span>
                   </div>
-                  {selected.approverNote && <p className="ap-decision-note">{selected.approverNote}</p>}
+
+                  {selected.activities.map((a) => {
+                    const act      = actualsData[a.id] ?? {};
+                    const isImage  = act.mediaFileType?.startsWith("image/");
+                    const isVideo  = act.mediaFileType?.startsWith("video/");
+                    const mediaUrl = act.mediaFileUrl
+                      ? `${API_BASE}${act.mediaFileUrl}` : null;
+
+                    return (
+                      <div key={a.id} className="ap-actual-row">
+                        <div className="ap-actual-activity-name">
+                          {a.activityType}
+                          <span className="ap-actual-planned">
+                            Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}
+                          </span>
+                        </div>
+
+                        <div className="ap-actual-fields">
+
+                          {/* Actual start date */}
+                          <div className="ap-actual-field">
+                            <label className="ap-meta-lbl">Actual start date</label>
+                            <input type="date" className="ap-field-input"
+                              value={act.actualStartDate ?? ""}
+                              onChange={(e) => setActualsData((prev) => ({
+                                ...prev,
+                                [a.id]: { ...prev[a.id], actualStartDate: e.target.value || null },
+                              }))} />
+                          </div>
+
+                          {/* Actual end date */}
+                          <div className="ap-actual-field">
+                            <label className="ap-meta-lbl">Actual end date</label>
+                            <input type="date" className="ap-field-input"
+                              value={act.actualEndDate ?? ""}
+                              min={act.actualStartDate ?? undefined}
+                              onChange={(e) => setActualsData((prev) => ({
+                                ...prev,
+                                [a.id]: { ...prev[a.id], actualEndDate: e.target.value || null },
+                              }))} />
+                          </div>
+
+                          {/* Media file */}
+                          <div className="ap-actual-field">
+                            <label className="ap-meta-lbl">Media (photo / video / doc)</label>
+
+                            {mediaUrl ? (
+                              <div className="ap-media-preview">
+                                {isImage && (
+                                  <img src={mediaUrl} alt={act.mediaFileName ?? "media"}
+                                    className="ap-media-img" />
+                                )}
+                                {isVideo && (
+                                  <video controls className="ap-media-video">
+                                    <source src={mediaUrl}
+                                      type={act.mediaFileType ?? "video/mp4"} />
+                                  </video>
+                                )}
+                                {!isImage && !isVideo && (
+                                  <a href={mediaUrl} target="_blank" rel="noopener noreferrer"
+                                    className="ap-media-link">
+                                    📎 {act.mediaFileName}
+                                  </a>
+                                )}
+                                <button className="ap-media-remove"
+                                  onClick={() => setActualsData((prev) => ({
+                                    ...prev,
+                                    [a.id]: {
+                                      ...prev[a.id],
+                                      mediaFileUrl: null, mediaFileName: null, mediaFileType: null,
+                                    },
+                                  }))}>
+                                  ✕ Remove
+                                </button>
+                              </div>
+                            ) : (
+                              <label className={`ap-media-upload-btn${uploadingId === a.id ? " ap-media-upload-btn--loading" : ""}`}>
+                                {uploadingId === a.id ? "Uploading…" : "📎 Upload file"}
+                                <input type="file"
+                                  accept="image/*,video/*,.pdf,.xlsx,.xls"
+                                  style={{ display: "none" }}
+                                  disabled={uploadingId === a.id}
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) handleFileUpload(a.id, file);
+                                    e.target.value = "";
+                                  }} />
+                              </label>
+                            )}
+                          </div>
+
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  <div className="ap-actuals-footer">
+                    <button className="ap-save-btn" onClick={saveActuals}
+                      disabled={savingActuals}>
+                      {savingActuals ? "Saving…" : "💾 Save actuals"}
+                    </button>
+                  </div>
                 </div>
               )}
 
-            </div>
+            </div>{/* /drawer-body */}
 
-            {/* Sticky save footer */}
+            {/* Sticky save footer (edit mode) */}
             {isAdmin && isEditing && (
               <div className="ap-save-footer">
                 <span className="ap-save-footer-hint">Unsaved changes</span>
@@ -728,6 +1030,7 @@ export default function ApproverDashboard() {
         </div>
       )}
 
+      {/* Toast */}
       {toast && (
         <div className={`ap-toast ${toast.ok ? "ap-toast-ok" : "ap-toast-err"}`}>
           {toast.ok ? "✓" : "✕"}&nbsp;{toast.msg}
@@ -737,7 +1040,9 @@ export default function ApproverDashboard() {
   );
 }
 
-function StatCard({ label, value, color }: { label: string; value: string | number; color: string }) {
+function StatCard({ label, value, color }: {
+  label: string; value: string | number; color: string;
+}) {
   return (
     <div className="ap-stat">
       <span className={`ap-stat-val ap-${color}`}>{value}</span>

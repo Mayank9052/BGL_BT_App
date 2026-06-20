@@ -197,6 +197,112 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(proposal));
     }
 
+    // PUT /api/proposals/{id} — RSM resubmits revised proposal
+    [HttpPut("{id:guid}")]
+    public async Task<ActionResult<ProposalResponseDto>> Update(Guid id, UpdateProposalDto dto)
+    {
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+
+        if (proposal.Status is "Approved" or "Rejected")
+            return Conflict(new { message = $"This proposal was already {proposal.Status} and cannot be modified." });
+
+        var wasNeedsRevision = proposal.Status == "NeedsRevision";
+
+        proposal.DealerName   = dto.DealerName;
+        proposal.Location     = dto.Location;
+        proposal.State        = dto.State;
+        proposal.Type         = dto.Type;
+        proposal.RsmName      = dto.RsmName;
+        proposal.CommandoName = dto.CommandoName;
+        proposal.Month        = dto.Month;
+        proposal.Eligibility  = dto.Eligibility;
+        proposal.Remarks      = dto.Remarks;
+
+        // Delete existing activities directly to avoid concurrency issues
+        await _db.ProposalActivities
+            .Where(a => a.ProposalId == id)
+            .ExecuteDeleteAsync();
+
+        var newActivities = dto.Activities.Select(a => new ProposalActivity
+        {
+            Id           = Guid.NewGuid(),
+            ProposalId   = id,
+            ActivityType = a.ActivityType,
+            Target       = a.Target,
+            StartDate    = ParseDate(a.StartDate),
+            EndDate      = ParseDate(a.EndDate),
+            Budget       = a.Budget,
+            Incentive    = a.Incentive,
+            Remarks      = a.Remarks,
+        }).ToList();
+
+        await _db.ProposalActivities.AddRangeAsync(newActivities);
+
+        proposal.TotalBudget = newActivities.Sum(a => a.Budget + a.Incentive);
+        proposal.TotalTarget = newActivities.Sum(a => a.Target);
+        proposal.Cac         = proposal.TotalTarget > 0
+            ? Math.Round(proposal.TotalBudget / proposal.TotalTarget, 2) : 0m;
+
+        // Reset NeedsRevision → Pending when RSM resubmits
+        if (wasNeedsRevision)
+        {
+            proposal.Status       = "Pending";
+            proposal.ApproverNote = null;
+        }
+
+        await _db.SaveChangesAsync();
+
+        // Reload with fresh activities for mail + response
+        var updated = await _db.Proposals
+            .Include(p => p.Activities)
+            .AsNoTracking()
+            .FirstAsync(p => p.Id == id);
+
+        // Send mail — resubmission (was NeedsRevision) or fresh submission notify
+        if (wasNeedsRevision)
+        {
+            var (sent, error) = await _emailService.SendResubmissionMailAsync(updated);
+            if (!sent)
+                _logger.LogWarning("Resubmission mail failed for {Id}: {Error}", updated.Id, error);
+        }
+
+        return Ok(ToResponse(updated));
+    }
+
+    // PATCH /api/proposals/{id}/actuals — RSM fills in actual dates + media after approval
+    [HttpPatch("{id:guid}/actuals")]
+    public async Task<ActionResult<ProposalResponseDto>> UpdateActuals(
+        Guid id, [FromBody] List<UpdateActivityActualsDto> actuals)
+    {
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+
+        if (proposal.Status != "Approved")
+            return BadRequest(new { message = "Actuals can only be added after approval." });
+
+        foreach (var dto in actuals)
+        {
+            var activity = proposal.Activities.FirstOrDefault(a => a.Id == dto.ActivityId);
+            if (activity is null) continue;
+
+            activity.ActualStartDate = ParseDate(dto.ActualStartDate);
+            activity.ActualEndDate   = ParseDate(dto.ActualEndDate);
+            if (dto.MediaFileUrl  != null) activity.MediaFileUrl  = dto.MediaFileUrl;
+            if (dto.MediaFileName != null) activity.MediaFileName = dto.MediaFileName;
+            if (dto.MediaFileType != null) activity.MediaFileType = dto.MediaFileType;
+        }
+
+        await _db.SaveChangesAsync();
+        return Ok(ToResponse(proposal));
+    }
+
     private string CurrentUserEmail() =>
         User.FindFirstValue("preferred_username")
         ?? User.FindFirstValue(ClaimTypes.Upn)
@@ -213,10 +319,13 @@ public class ProposalsController : ControllerBase
     private static ProposalResponseDto ToResponse(Proposal p) => new(
         p.Id, p.State, p.Location, p.Type, p.DealerName, p.RsmName, p.CommandoName,
         p.Month, p.Eligibility, p.Remarks, p.TotalBudget, p.TotalTarget, p.Cac,
-        p.SubmittedBy, p.CreatedAt, p.SubmittedByDisplayName, p.Status, p.ApproverNote, p.ApprovedBy, p.DecidedAt,
-        p.TokenNumber,
+        p.SubmittedBy, p.CreatedAt, p.SubmittedByDisplayName, p.Status,
+        p.ApproverNote, p.ApprovedBy, p.DecidedAt, p.TokenNumber,
         p.Activities.Select(a => new ActivityResponseDto(
-            a.Id, a.ActivityType, a.Target, a.StartDate, a.EndDate, a.Budget, a.Incentive, a.Remarks
+            a.Id, a.ActivityType, a.Target, a.StartDate, a.EndDate,
+            a.Budget, a.Incentive, a.Remarks,
+            a.ActualStartDate, a.ActualEndDate,         // ← new
+            a.MediaFileUrl, a.MediaFileName, a.MediaFileType  // ← new
         )).ToList()
     );
 }

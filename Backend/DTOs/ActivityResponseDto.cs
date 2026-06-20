@@ -6,6 +6,13 @@ public record ActivityResponseDto(
     int      Target,
     DateOnly? StartDate,
     DateOnly? EndDate,
-    decimal  Budget,
-    decimal  Incentive,
-    string?  Remarks);
+    decimal Budget,
+    decimal Incentive,
+    string? Remarks,
+    // ── actuals ──
+    DateOnly? ActualStartDate,
+    DateOnly? ActualEndDate,
+    string?   MediaFileUrl,
+    string?   MediaFileName,
+    string?   MediaFileType
+);

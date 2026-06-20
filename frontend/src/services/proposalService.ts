@@ -12,6 +12,12 @@ export interface ActivityResponse {
   budget: number;
   incentive: number;
   remarks: string | null;
+  // ── actuals (filled after approval) ──
+  actualStartDate: string | null;
+  actualEndDate:   string | null;
+  mediaFileUrl:    string | null;
+  mediaFileName:   string | null;
+  mediaFileType:   string | null;
 }
 
 export interface ProposalResponse {
@@ -31,7 +37,7 @@ export interface ProposalResponse {
   submittedBy: string;
   submittedByDisplayName: string | null;  // ← add this line
   createdAt: string;
-  status: "Pending" | "Approved" | "Rejected";
+  status: "Pending" | "Approved" | "Rejected" | "NeedsRevision";
   approverNote: string | null;
   approvedBy: string | null;
   decidedAt: string | null;
@@ -112,6 +118,57 @@ export async function sendBackProposal(
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(text || `Send-back failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export interface ActivityActualsPayload {
+  activityId: string;
+  actualStartDate: string | null;
+  actualEndDate:   string | null;
+  mediaFileUrl:    string | null;
+  mediaFileName:   string | null;
+  mediaFileType:   string | null;
+}
+
+/** Update actual dates + media for approved proposal activities */
+export async function updateProposalActuals(
+  id: string,
+  actuals: ActivityActualsPayload[],
+  instance: IPublicClientApplication,
+): Promise<ProposalResponse> {
+  const token = await getAccessToken(instance);
+  const res = await fetch(`${API_BASE_URL}/api/proposals/${id}/actuals`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(actuals),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Failed to save actuals (${res.status})`);
+  }
+  return res.json();
+}
+
+/** Upload a media file, returns { url, fileName, fileType } */
+export async function uploadActivityMedia(
+  file: File,
+  instance: IPublicClientApplication,
+): Promise<{ url: string; fileName: string; fileType: string }> {
+  const token = await getAccessToken(instance);
+  const form  = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE_URL}/api/media/upload`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Upload failed (${res.status})`);
   }
   return res.json();
 }

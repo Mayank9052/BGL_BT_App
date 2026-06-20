@@ -16,4 +16,11 @@ public class ProposalActivity
     public decimal Budget { get; set; }
     public decimal Incentive { get; set; }
     [MaxLength(1000)] public string? Remarks { get; set; }
+
+    // ── Post-approval actuals (filled by RSM after approval) ──
+    public DateOnly? ActualStartDate { get; set; }
+    public DateOnly? ActualEndDate   { get; set; }
+    [MaxLength(500)] public string? MediaFileUrl  { get; set; }
+    [MaxLength(255)] public string? MediaFileName { get; set; }
+    [MaxLength(100)] public string? MediaFileType { get; set; }
 }
