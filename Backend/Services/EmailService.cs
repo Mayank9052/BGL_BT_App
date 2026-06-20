@@ -14,6 +14,7 @@ public class SmtpSettings
     public string From        { get; set; } = string.Empty;
     public bool   EnableSsl   { get; set; } = true;
     public string ApproverEmail { get; set; } = string.Empty;
+    public string PortalBaseUrl { get; set; } = "http://localhost:5173";
 }
 
 public class EmailService : IEmailService
@@ -393,6 +394,59 @@ public class EmailService : IEmailService
                 </p>
 
               </div>
+            </div>
+            """;
+    }
+
+    public async Task<(bool Sent, string? Error)> SendRevisionRequestMailAsync(Proposal p, string? note)
+    {
+        var subject = $"Revision Requested — {p.TokenNumber} — {p.DealerName.ToUpper()} — {p.Month}";
+        var body    = BuildRevisionBody(p, note);
+        return await SendAsync(to: p.SubmittedBy, replyTo: null, subject: subject, htmlBody: body);
+    }
+
+    private string BuildRevisionBody(Proposal p, string? note)
+    {
+        var senderName  = p.SubmittedByDisplayName ?? p.RsmName ?? p.SubmittedBy;
+        var portalLink  = $"{_settings.PortalBaseUrl}/rsm-form?edit={p.Id}";
+
+        return $"""
+            <div style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#1a2233;max-width:600px;">
+
+            <div style="background:#92400e;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0;">
+                <p style="margin:0;font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:.7;">BGauss BTL — Revision Requested</p>
+                <p style="margin:4px 0 0;font-size:18px;font-weight:700;">{p.TokenNumber}</p>
+            </div>
+
+            <div style="padding:20px 24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;">
+                <p>Dear <strong>{senderName}</strong>,</p>
+                <p>Your proposal for <strong>{p.DealerName}</strong> ({p.Location}, {p.State}) for <strong>{p.Month}</strong>
+                has been sent back for revision.</p>
+
+                {(string.IsNullOrWhiteSpace(note) ? "" : $"""
+                <div style="background:#fef9c3;border:1px solid #fde68a;border-radius:6px;padding:12px 16px;margin:16px 0;">
+                <p style="margin:0 0 4px;font-weight:600;color:#92400e;">Reviewer note</p>
+                <p style="margin:0;">{note}</p>
+                </div>
+                """)}
+
+                <div style="margin:20px 0;text-align:center;">
+                <a href="{portalLink}"
+                    style="display:inline-block;background:#1e3a5f;color:#fff;text-decoration:none;
+                            padding:12px 28px;border-radius:8px;font-weight:600;font-size:14px;">
+                    ✏ Open &amp; Edit Proposal
+                </a>
+                </div>
+
+                <p style="font-size:12px;color:#6b7280;">
+                Or copy this link: <a href="{portalLink}" style="color:#1e3a5f;">{portalLink}</a>
+                </p>
+
+                <hr style="margin:20px 0;border:none;border-top:1px solid #e5e7eb;"/>
+                <p style="margin:0;font-size:13px;color:#6b7280;">
+                Regards,<br/><strong style="color:#0a2540;">BGauss BTL Team</strong>
+                </p>
+            </div>
             </div>
             """;
     }
