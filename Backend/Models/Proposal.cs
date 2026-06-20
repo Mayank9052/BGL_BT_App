@@ -34,4 +34,6 @@ public class Proposal
     [MaxLength(50)] public string? TokenNumber { get; set; }
 
     public List<ProposalActivity> Activities { get; set; } = new();
+
+    public string? SubmittedByDisplayName { get; set; }  // ← add this
 }

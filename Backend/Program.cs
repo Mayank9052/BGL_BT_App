@@ -41,7 +41,24 @@ builder.Services.AddSingleton<IEmailService, EmailService>();
 builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 
 var app = builder.Build();
-
+app.Use(async (context, next) =>
+{
+    try { await next(); }
+    catch (Exception ex)
+    {
+        var logger = context.RequestServices
+            .GetRequiredService<ILogger<Program>>();
+        logger.LogError(ex, "Unhandled exception on {Path}", context.Request.Path);
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync(
+            System.Text.Json.JsonSerializer.Serialize(new {
+                message = ex.Message,
+                inner   = ex.InnerException?.Message
+            })
+        );
+    }
+});
 // ── Middleware Pipeline ───────────────────────────────────────
 if (app.Environment.IsDevelopment())
 {

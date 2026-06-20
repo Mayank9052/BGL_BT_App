@@ -33,15 +33,20 @@ public class ProposalsController : ControllerBase
 
         var submittedBy = CurrentUserEmail();
 
+        // Look up the user's display name from our Users table
+        var submitter = await _db.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Email == submittedBy);
+
         var activities = dto.Activities.Select(a => new ProposalActivity
         {
             ActivityType = a.ActivityType,
-            Target = a.Target,
-            StartDate = ParseDate(a.StartDate),
-            EndDate = ParseDate(a.EndDate),
-            Budget = a.Budget,
-            Incentive = a.Incentive,
-            Remarks = a.Remarks,
+            Target       = a.Target,
+            StartDate    = ParseDate(a.StartDate),
+            EndDate      = ParseDate(a.EndDate),
+            Budget       = a.Budget,
+            Incentive    = a.Incentive,
+            Remarks      = a.Remarks,
         }).ToList();
 
         var totalBudget = activities.Sum(a => a.Budget + a.Incentive);
@@ -50,29 +55,28 @@ public class ProposalsController : ControllerBase
 
         var proposal = new Proposal
         {
-            State = dto.State,
-            Location = dto.Location,
-            Type = dto.Type,
-            DealerName = dto.DealerName,
-            RsmName = dto.RsmName,
+            State        = dto.State,
+            Location     = dto.Location,
+            Type         = dto.Type,
+            DealerName   = dto.DealerName,
+            RsmName      = dto.RsmName,
             CommandoName = dto.CommandoName,
-            Month = dto.Month,
-            Eligibility = dto.Eligibility,
-            Remarks = dto.Remarks,
-            TotalBudget = totalBudget,
-            TotalTarget = totalTarget,
-            Cac = cac,
-            SubmittedBy = submittedBy,
-            Activities = activities,
-            TokenNumber = GenerateTokenNumber(),
-            Status = "Pending",
+            Month        = dto.Month,
+            Eligibility  = dto.Eligibility,
+            Remarks      = dto.Remarks,
+            TotalBudget  = totalBudget,
+            TotalTarget  = totalTarget,
+            Cac          = cac,
+            SubmittedBy  = submittedBy,
+            SubmittedByDisplayName = submitter?.DisplayName ?? dto.RsmName, // ← use DB display name
+            Activities   = activities,
+            TokenNumber  = GenerateTokenNumber(),
+            Status       = "Pending",
         };
 
         _db.Proposals.Add(proposal);
         await _db.SaveChangesAsync();
 
-        // Notify the fixed approver mailbox. A mail failure must never
-        // block the proposal from being saved — log and move on.
         var (sent, error) = await _emailService.SendSubmissionMailAsync(proposal);
         if (!sent)
             _logger.LogWarning("Submission mail failed for proposal {Id}: {Error}", proposal.Id, error);
@@ -182,7 +186,7 @@ public class ProposalsController : ControllerBase
     private static ProposalResponseDto ToResponse(Proposal p) => new(
         p.Id, p.State, p.Location, p.Type, p.DealerName, p.RsmName, p.CommandoName,
         p.Month, p.Eligibility, p.Remarks, p.TotalBudget, p.TotalTarget, p.Cac,
-        p.SubmittedBy, p.CreatedAt, p.Status, p.ApproverNote, p.ApprovedBy, p.DecidedAt,
+        p.SubmittedBy, p.CreatedAt, p.SubmittedByDisplayName, p.Status, p.ApproverNote, p.ApprovedBy, p.DecidedAt,
         p.TokenNumber,
         p.Activities.Select(a => new ActivityResponseDto(
             a.Id, a.ActivityType, a.Target, a.StartDate, a.EndDate, a.Budget, a.Incentive, a.Remarks
