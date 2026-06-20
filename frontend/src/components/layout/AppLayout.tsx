@@ -33,6 +33,8 @@ export default function AppLayout() {
         collapsed={collapsed}
         onToggle={() => setCollapsed((c) => !c)}
         onLogout={handleLogout}
+        userName={user?.displayName}
+        userRole={user?.role}
       />
       <div className="app-layout-body">
         <Navbar

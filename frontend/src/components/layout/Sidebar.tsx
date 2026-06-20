@@ -7,86 +7,100 @@ interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
   onLogout: () => void;
+  userName?: string;
+  userRole?: string;
+  pendingCount?: number;
 }
 
 const NAV_ITEMS = [
-  { to: "/dashboard", label: "Dashboard", icon: "🏠" },
-  { to: "/rsm-form", label: "RSM Proposal Form", icon: "📋" },
+  { to: "/dashboard",   label: "Dashboard",         icon: "ti-layout-dashboard" },
+  { to: "/rsm-form",    label: "RSM Proposal Form",  icon: "ti-file-text"        },
+  { to: "/approver",    label: "Approver Portal",    icon: "ti-clipboard-list", badge: true },
 ];
 
-export default function Sidebar({ isAdmin, collapsed, onToggle, onLogout }: SidebarProps) {
+const ADMIN_ITEMS = [
+  { to: "/admin/users",      label: "Manage Users",    icon: "ti-users"      },
+  { to: "/admin/activities", label: "Activity Types",  icon: "ti-list-check" },
+];
+
+export default function Sidebar({
+  isAdmin, collapsed, onToggle, onLogout,
+  userName, userRole, pendingCount,
+}: SidebarProps) {
+  const initials = userName
+    ? userName.split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase()
+    : "?";
+
   const linkClass = ({ isActive }: { isActive: boolean }) =>
-    "app-sidebar-link" + (isActive ? " app-sidebar-link-active" : "");
+    "sb-link" + (isActive ? " sb-link--active" : "");
 
   return (
-    <aside className={"app-sidebar" + (collapsed ? " app-sidebar-collapsed" : "")}>
-      {/* Brand */}
-      <div className="app-sidebar-brand">
-        <img src="/BGauss_Logo.png" alt="BGauss" className="app-sidebar-logo" />
-        {!collapsed && <span>BGauss</span>}
-      </div>
+    <aside className={"sb" + (collapsed ? " sb--col" : "")}>
 
-      {/* Collapse toggle */}
-      <button
-        className="app-sidebar-toggle"
-        onClick={onToggle}
-        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-      >
-        <ChevronIcon direction={collapsed ? "right" : "left"} />
+      {/* Toggle */}
+      <button className="sb-toggle" onClick={onToggle}
+        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+        <i className={collapsed ? "ti ti-chevron-right" : "ti ti-chevron-left"} aria-hidden="true" />
       </button>
 
-      {/* Nav links */}
-      <nav className="app-sidebar-nav">
+      {/* Brand */}
+      <div className="sb-brand">
+        <img src="/BGauss_Logo.png" alt="BGauss" className="sb-logo" />
+        {!collapsed && <span className="sb-brand-name">BGauss</span>}
+      </div>
+
+      {/* Nav */}
+      <nav className="sb-nav">
+        {!collapsed && <span className="sb-section-lbl">Main</span>}
+
         {NAV_ITEMS.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            className={linkClass}
-            title={collapsed ? item.label : undefined}
-          >
-            <span className="app-sidebar-icon">{item.icon}</span>
-            {!collapsed && <span>{item.label}</span>}
+          <NavLink key={item.to} to={item.to} className={linkClass}
+            title={collapsed ? item.label : undefined}>
+            <i className={`ti ${item.icon}`} aria-hidden="true" />
+            {!collapsed && <span className="sb-link-label">{item.label}</span>}
+            {!collapsed && item.badge && pendingCount && pendingCount > 0 ? (
+              <span className="sb-badge">{pendingCount}</span>
+            ) : null}
+            {collapsed && item.badge && pendingCount && pendingCount > 0 ? (
+              <span className="sb-dot" aria-label={`${pendingCount} pending`} />
+            ) : null}
           </NavLink>
         ))}
 
         {isAdmin && (
           <>
-            <div className="app-sidebar-divider" />
-            {!collapsed && <span className="app-sidebar-section-label">Admin</span>}
-            <NavLink
-              to="/admin/users"
-              className={linkClass}
-              title={collapsed ? "Manage Users" : undefined}
-            >
-              <span className="app-sidebar-icon">👥</span>
-              {!collapsed && <span>Manage Users</span>}
-            </NavLink>
+            <div className="sb-divider" />
+            {!collapsed && <span className="sb-section-lbl">Admin</span>}
+            {ADMIN_ITEMS.map((item) => (
+              <NavLink key={item.to} to={item.to} className={linkClass}
+                title={collapsed ? item.label : undefined}>
+                <i className={`ti ${item.icon}`} aria-hidden="true" />
+                {!collapsed && <span className="sb-link-label">{item.label}</span>}
+              </NavLink>
+            ))}
           </>
         )}
       </nav>
 
-      {/* Logout pinned to bottom */}
-      <div className="app-sidebar-footer">
-        <div className="app-sidebar-divider" />
-        <button
-          className="app-sidebar-logout"
-          onClick={onLogout}
-          title="Sign out"
-        >
-          <span className="app-sidebar-icon">🚪</span>
+      {/* User + logout */}
+      <div className="sb-footer">
+        <div className="sb-divider" />
+
+        <div className="sb-user-card" title={collapsed ? (userName ?? "") : undefined}>
+          <div className="sb-avatar">{initials}</div>
+          {!collapsed && (
+            <div className="sb-user-info">
+              <span className="sb-user-name">{userName ?? "—"}</span>
+              <span className="sb-user-role">{userRole ?? "User"}</span>
+            </div>
+          )}
+        </div>
+
+        <button className="sb-logout" onClick={onLogout} title={collapsed ? "Sign out" : undefined}>
+          <i className="ti ti-logout" aria-hidden="true" />
           {!collapsed && <span>Sign out</span>}
         </button>
       </div>
     </aside>
-  );
-}
-
-function ChevronIcon({ direction }: { direction: "left" | "right" }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-         stroke="currentColor" strokeWidth="2.5">
-      <polyline points={direction === "left" ? "15 18 9 12 15 6" : "9 18 15 12 9 6"} />
-    </svg>
   );
 }
