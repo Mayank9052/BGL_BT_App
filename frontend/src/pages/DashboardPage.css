@@ -130,29 +130,58 @@
 /* ── KPI Grid ────────────────────────────────────────────────────────────── */
 .dash-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 14px;
-  margin-bottom: 28px;
+  margin-bottom: 20px;
 }
 
+/* Base card — now a <button> for accessibility */
 .dash-kpi-card {
   background: #fff;
   border-radius: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1.5px solid #e2e8f0;
   padding: 18px 20px;
   display: flex;
   align-items: flex-start;
   gap: 14px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  text-align: left;
+  font-family: inherit;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+  width: 100%;
 }
 
+/* Clickable hover */
+.dash-kpi-card--clickable {
+  cursor: pointer;
+}
+
+.dash-kpi-card--clickable:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+  transform: translateY(-2px);
+}
+
+/* Active (selected) state */
+.dash-kpi-card--active {
+  box-shadow: 0 0 0 3px rgba(37,99,235,0.15), 0 4px 16px rgba(0,0,0,0.1);
+}
+
+/* Accent left border */
 .dash-kpi-card--blue   { border-left: 4px solid #2563eb; }
 .dash-kpi-card--amber  { border-left: 4px solid #f59e0b; }
 .dash-kpi-card--green  { border-left: 4px solid #16a34a; }
+.dash-kpi-card--red    { border-left: 4px solid #dc2626; }
 .dash-kpi-card--purple { border-left: 4px solid #7c3aed; }
 
-.dash-kpi-icon  { font-size: 1.8rem; flex-shrink: 0; margin-top: 2px; }
+/* Active glow by accent */
+.dash-kpi-card--blue.dash-kpi-card--active   { border-color: #2563eb; box-shadow: 0 0 0 3px #dbeafe, 0 4px 12px rgba(37,99,235,0.15); }
+.dash-kpi-card--amber.dash-kpi-card--active  { border-color: #f59e0b; box-shadow: 0 0 0 3px #fef3c7, 0 4px 12px rgba(245,158,11,0.15); }
+.dash-kpi-card--green.dash-kpi-card--active  { border-color: #16a34a; box-shadow: 0 0 0 3px #dcfce7, 0 4px 12px rgba(22,163,74,0.15); }
+.dash-kpi-card--red.dash-kpi-card--active    { border-color: #dc2626; box-shadow: 0 0 0 3px #fee2e2, 0 4px 12px rgba(220,38,38,0.15); }
 
+.dash-kpi-icon  { font-size: 1.8rem; flex-shrink: 0; margin-top: 2px; }
 .dash-kpi-body  { flex: 1; min-width: 0; }
 
 .dash-kpi-label {
@@ -176,6 +205,87 @@
   font-size: 11px;
   color: #94a3b8;
 }
+
+/* "action needed" badge */
+.dash-kpi-badge {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: #f59e0b;
+  color: #fff;
+  border-radius: 20px;
+  padding: 2px 8px;
+}
+
+/* Active indicator dot (bottom-right corner) */
+.dash-kpi-active-dot {
+  position: absolute;
+  bottom: 10px;
+  right: 12px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2563eb;
+  animation: pulse-dot 1.5s infinite;
+}
+
+.dash-kpi-card--amber .dash-kpi-active-dot  { background: #f59e0b; }
+.dash-kpi-card--green .dash-kpi-active-dot  { background: #16a34a; }
+.dash-kpi-card--red   .dash-kpi-active-dot  { background: #dc2626; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(1.4); }
+}
+
+/* Active filter banner */
+.dash-filter-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 9px;
+  padding: 10px 16px;
+  font-size: 13px;
+  color: #1e40af;
+  margin-bottom: 14px;
+}
+
+.dash-filter-clear {
+  margin-left: auto;
+  background: none;
+  border: 1px solid #93c5fd;
+  color: #1e40af;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.dash-filter-clear:hover { background: #dbeafe; }
+
+/* Filter pills in section titles */
+.dash-filter-pill {
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 20px;
+  padding: 2px 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.dash-filter-pill--pending  { background: #fef3c7; color: #92400e; }
+.dash-filter-pill--approved { background: #dcfce7; color: #166534; }
+.dash-filter-pill--rejected { background: #fee2e2; color: #991b1b; }
+.dash-filter-pill--all      { background: #eff6ff; color: #1e40af; }
 
 /* ── Sections ────────────────────────────────────────────────────────────── */
 .dash-section {
