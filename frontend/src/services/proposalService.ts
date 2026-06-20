@@ -29,8 +29,9 @@ export interface ProposalResponse {
   totalTarget: number;
   cac: number;
   submittedBy: string;
+  submittedByDisplayName: string | null;  // ← add this line
   createdAt: string;
-  status: "Pending" | "Approved" | "Rejected" | "NeedsRevision";
+  status: "Pending" | "Approved" | "Rejected";
   approverNote: string | null;
   approvedBy: string | null;
   decidedAt: string | null;
