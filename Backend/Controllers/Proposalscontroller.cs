@@ -170,6 +170,33 @@ public class ProposalsController : ControllerBase
         return Ok(proposals.Select(ToResponse));
     }
 
+    // PATCH /api/proposals/{id}/sendback
+    [HttpPatch("{id:guid}/sendback")]
+    public async Task<ActionResult<ProposalResponseDto>> SendBack(Guid id, [FromBody] SendBackDto dto)
+    {
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+
+        if (proposal.Status is "Approved" or "Rejected")
+            return Conflict(new { message = "Cannot send back a finalised proposal." });
+
+        proposal.Status      = "NeedsRevision";
+        proposal.ApproverNote = dto.Note?.Trim();
+        proposal.ApprovedBy  = dto.SentBackBy ?? CurrentUserEmail();
+
+        await _db.SaveChangesAsync();
+
+        // Email RSM — tell them to revise
+        var (sent, error) = await _emailService.SendRevisionRequestMailAsync(proposal, dto.Note);
+        if (!sent)
+            _logger.LogWarning("Send-back mail failed for {Id}: {Error}", proposal.Id, error);
+
+        return Ok(ToResponse(proposal));
+    }
+
     private string CurrentUserEmail() =>
         User.FindFirstValue("preferred_username")
         ?? User.FindFirstValue(ClaimTypes.Upn)
