@@ -16,6 +16,7 @@ public record ProposalResponseDto(
     decimal Cac,
     string SubmittedBy,
     DateTimeOffset CreatedAt,
+    string?  SubmittedByDisplayName,
     string Status,
     string? ApproverNote,
     string? ApprovedBy,
