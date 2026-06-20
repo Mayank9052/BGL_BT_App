@@ -3,6 +3,7 @@ using System.Net.Mail;
 using BGL_BT_App.Backend.Models;
 using Microsoft.Extensions.Options;
 
+
 namespace BGL_BT_App.Backend.Services;
 
 public class SmtpSettings
