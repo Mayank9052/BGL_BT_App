@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Uploaded media files — never commit these
+**/wwwroot/uploads/
+wwwroot/uploads/
+Backend/wwwroot/uploads/
+
+# uploaded files
+Backend/wwwroot/uploads/

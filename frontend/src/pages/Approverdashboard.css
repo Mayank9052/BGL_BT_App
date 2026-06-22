@@ -947,6 +947,122 @@
   animation: ap-toast-in 0.2s ease;
 }
 
+/* ── Post-approval actuals panel ── */
+.ap-actuals-box {
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  border-radius: var(--border-radius-lg);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.ap-actuals-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ap-actuals-hint {
+  font-size: 11px;
+  color: #166534;
+}
+
+.ap-actual-row {
+  background: #ffffff;
+  border: 1px solid #bbf7d0;
+  border-radius: var(--border-radius-md);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+
+.ap-actual-activity-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: #166534;
+  margin-bottom: 10px;
+}
+
+.ap-actual-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+}
+
+.ap-actual-field { display: flex; flex-direction: column; gap: 5px; }
+
+.ap-actual-field--media { grid-column: span 1; }
+
+.ap-media-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ap-media-img {
+  width: 100%;
+  max-height: 120px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #bbf7d0;
+}
+
+.ap-media-video {
+  width: 100%;
+  max-height: 120px;
+  border-radius: 6px;
+  border: 1px solid #bbf7d0;
+}
+
+.ap-media-link {
+  font-size: 12px;
+  color: #166534;
+  text-decoration: none;
+  padding: 6px 10px;
+  background: #dcfce7;
+  border-radius: 6px;
+  display: inline-block;
+}
+
+.ap-media-remove {
+  background: none;
+  border: none;
+  color: #dc2626;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.ap-media-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: #dcfce7;
+  border: 1px dashed #86efac;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #166534;
+  cursor: pointer;
+  transition: background 0.15s;
+  font-weight: 500;
+}
+.ap-media-upload-btn:hover { background: #bbf7d0; }
+
+.ap-actuals-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+@media (max-width: 600px) {
+  .ap-actual-fields { grid-template-columns: 1fr; }
+  .ap-actual-field--media { grid-column: span 1; }
+}
+
 @keyframes ap-toast-in {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }

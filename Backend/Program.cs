@@ -5,10 +5,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
 using BGL_BT_App.Backend.Auth;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── Database ─────────────────────────────────────────────────
+// ── Database ──────────────────────────────────────────────────
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
@@ -18,7 +20,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 builder.Services.AddAuthorization();
 
-// ── CORS ─────────────────────────────────────────────────────
+// ── CORS ──────────────────────────────────────────────────────
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
                      ?? new[] { "http://localhost:5173" };
 
@@ -31,6 +33,27 @@ builder.Services.AddCors(options =>
               .AllowCredentials());
 });
 
+// ── 1 GB upload limits ────────────────────────────────────────
+const long OneGb = 1_073_741_824L;
+
+builder.Services.Configure<FormOptions>(o =>
+{
+    o.MultipartBodyLengthLimit  = OneGb;
+    o.ValueLengthLimit          = int.MaxValue;
+    o.MultipartHeadersLengthLimit = int.MaxValue;
+});
+
+builder.Services.Configure<KestrelServerOptions>(o =>
+{
+    o.Limits.MaxRequestBodySize = OneGb;
+});
+
+// Also covers IIS / reverse-proxy scenarios
+builder.Services.Configure<IISServerOptions>(o =>
+{
+    o.MaxRequestBodySize = OneGb;
+});
+
 // ── Services ──────────────────────────────────────────────────
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -41,6 +64,7 @@ builder.Services.AddSingleton<IEmailService, EmailService>();
 builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 
 var app = builder.Build();
+
 app.Use(async (context, next) =>
 {
     try { await next(); }
@@ -59,20 +83,19 @@ app.Use(async (context, next) =>
         );
     }
 });
+
 // ── Middleware Pipeline ───────────────────────────────────────
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-
     app.UseSwaggerUI(c =>
     {
         c.SwaggerEndpoint("/swagger/v1/swagger.json", "BGL BT API v1");
-        c.RoutePrefix = string.Empty; // 👈 THIS makes Swagger open at root
+        c.RoutePrefix = string.Empty;
     });
 }
 
-app.UseStaticFiles(); // serves wwwroot, e.g. /login/BGauss_Logo.png
-
+app.UseStaticFiles();
 app.UseCors("FrontendPolicy");
 app.UseAuthentication();
 app.UseAuthorization();
