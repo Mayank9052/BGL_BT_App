@@ -27,3 +27,6 @@ dist-ssr
 **/wwwroot/uploads/
 wwwroot/uploads/
 Backend/wwwroot/uploads/
+
+# uploaded files
+Backend/wwwroot/uploads/
