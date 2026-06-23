@@ -1,38 +1,23 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/authStore";
 import {
-  fetchProposals,
-  fetchMyProposals,
-  decideProposal,
-  updateProposal,
-  sendBackProposal,
-  updateProposalActuals,
-  uploadActivityMedia,
-  type ActivityResponse,
-  type ProposalResponse,
-  type ActivityActualsPayload,
+  fetchProposals, fetchMyProposals, decideProposal, updateProposal,
+  sendBackProposal, updateProposalActuals, uploadActivityMedia,
+  type ActivityResponse, type ProposalResponse,
 } from "../services/proposalService";
 import "./ApproverDashboard.css";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 const inr = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
-const num = (v: string | number) => {
-  const n = parseFloat(String(v));
-  return Number.isFinite(n) ? n : 0;
-};
+const num = (v: string | number) => { const n = parseFloat(String(v)); return Number.isFinite(n) ? n : 0; };
 const fmtDate = (iso: string | null | undefined) => {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-IN", {
-    day: "2-digit", month: "short", year: "numeric",
-  });
+  return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 };
 
 const eligClass = (e: string) =>
-  e === "Eligible" ? "ap-elig-yes"
-  : e === "Not Eligible" ? "ap-elig-no"
-  : "ap-elig-pend";
+  e === "Eligible" ? "ap-elig-yes" : e === "Not Eligible" ? "ap-elig-no" : "ap-elig-pend";
 
 const statusClass = (s: string) =>
   s === "Approved"        ? "ap-badge ap-badge-approved"
@@ -40,13 +25,7 @@ const statusClass = (s: string) =>
   : s === "NeedsRevision" ? "ap-badge ap-badge-revision"
   : "ap-badge ap-badge-pending";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5086";
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-const MONTHS = [
-  "January","February","March","April","May","June",
-  "July","August","September","October","November","December",
-];
+const MONTHS      = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const ELIGIBILITY = ["Eligible","Not Eligible","Pending Approval"];
 const LOC_TYPES   = ["Old","New"];
 const ACT_TYPES   = [
@@ -55,79 +34,50 @@ const ACT_TYPES   = [
   "Society Activation","Referral Program","Other",
 ];
 
-// ─── Editable types ───────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 interface EditActivity {
-  id?: string;
-  activityType: string;
-  target: string;
-  startDate: string;
-  endDate: string;
-  budget: string;
-  incentive: string;
-  remarks: string;
+  id?: string; activityType: string; target: string;
+  startDate: string; endDate: string; budget: string;
+  incentive: string; remarks: string;
 }
-
 interface EditableProposal {
-  dealerName: string;
-  location: string;
-  state: string;
-  type: string;
-  rsmName: string;
-  commandoName: string;
-  month: string;
-  eligibility: string;
-  remarks: string;
-  activities: EditActivity[];
+  dealerName: string; location: string; state: string; type: string;
+  rsmName: string; commandoName: string; month: string;
+  eligibility: string; remarks: string; activities: EditActivity[];
+}
+interface ActualEntry {
+  actualStartDate: string;
+  actualEndDate:   string;
+  mediaFile:       File | null;
+  mediaFileUrl:    string | null;
+  mediaFileName:   string | null;
+  mediaFileType:   string | null;
+  uploading:       boolean;
 }
 
 function toEditable(p: ProposalResponse): EditableProposal {
   return {
-    dealerName:   p.dealerName,
-    location:     p.location,
-    state:        p.state,
-    type:         p.type,
-    rsmName:      p.rsmName,
-    commandoName: p.commandoName,
-    month:        p.month,
-    eligibility:  p.eligibility,
-    remarks:      p.remarks ?? "",
-    activities:   p.activities.map((a: ActivityResponse) => ({
-      id:           a.id,
-      activityType: a.activityType,
-      target:       String(a.target),
-      startDate:    a.startDate?.split("T")[0] ?? "",
-      endDate:      a.endDate?.split("T")[0]   ?? "",
-      budget:       String(a.budget),
-      incentive:    String(a.incentive),
-      remarks:      a.remarks ?? "",
+    dealerName: p.dealerName, location: p.location, state: p.state,
+    type: p.type, rsmName: p.rsmName, commandoName: p.commandoName,
+    month: p.month, eligibility: p.eligibility, remarks: p.remarks ?? "",
+    activities: p.activities.map((a: ActivityResponse) => ({
+      id: a.id, activityType: a.activityType,
+      target: String(a.target), startDate: a.startDate?.split("T")[0] ?? "",
+      endDate: a.endDate?.split("T")[0] ?? "",
+      budget: String(a.budget), incentive: String(a.incentive), remarks: a.remarks ?? "",
     })),
   };
 }
 
-function initActuals(p: ProposalResponse): Record<string, ActivityActualsPayload> {
-  const map: Record<string, ActivityActualsPayload> = {};
-  p.activities.forEach((a) => {
-    map[a.id] = {
-      activityId:      a.id,
-      actualStartDate: (a as any).actualStartDate ?? null,
-      actualEndDate:   (a as any).actualEndDate   ?? null,
-      mediaFileUrl:    (a as any).mediaFileUrl    ?? null,
-      mediaFileName:   (a as any).mediaFileName   ?? null,
-      mediaFileType:   (a as any).mediaFileType   ?? null,
-    };
-  });
-  return map;
-}
-
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Component ────────────────────────────────────────────────────────────────
 export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
-  const navigate = useNavigate();
-  const account  = accounts[0];
-  const { user } = useAuthStore();
-  const isAdmin  = user?.role === "Admin" || user?.role === "Manager";
+  const navigate  = useNavigate();
+  const account   = accounts[0];
+  const { user }  = useAuthStore();
+  const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
 
-  // ── State ──────────────────────────────────────────────────────────────────
+  // ── Core state ──────────────────────────────────────────────────────────────
   const [proposals,     setProposals]     = useState<ProposalResponse[]>([]);
   const [selected,      setSelected]      = useState<ProposalResponse | null>(null);
   const [editData,      setEditData]      = useState<EditableProposal | null>(null);
@@ -135,7 +85,7 @@ export default function ApproverDashboard() {
   const [note,          setNote]          = useState("");
   const [sendBackNote,  setSendBackNote]  = useState("");
   const [showSendBack,  setShowSendBack]  = useState(false);
-  const [filterStatus,  setFilterStatus]  = useState("All");
+  const [filterStatus,  setFilterStatus]  = useState<string>("All");
   const [filterMonth,   setFilterMonth]   = useState("All");
   const [search,        setSearch]        = useState("");
   const [loading,       setLoading]       = useState(true);
@@ -144,12 +94,12 @@ export default function ApproverDashboard() {
   const [saveLoading,   setSaveLoading]   = useState(false);
   const [toast,         setToast]         = useState<{ msg: string; ok: boolean } | null>(null);
 
-  // ── Actuals state (post-approval) ──────────────────────────────────────────
-  const [actualsData,   setActualsData]   = useState<Record<string, ActivityActualsPayload>>({});
-  const [savingActuals, setSavingActuals] = useState(false);
-  const [uploadingId,   setUploadingId]   = useState<string | null>(null);
+  // ── Actuals state ────────────────────────────────────────────────────────────
+  const [actualsData,    setActualsData]    = useState<Record<string, ActualEntry>>({});
+  const [actualsLoading, setActualsLoading] = useState(false);
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // ── Load proposals ─────────────────────────────────────────────────────────
+  // ── Load proposals ───────────────────────────────────────────────────────────
   const loadProposals = useCallback(async () => {
     setLoading(true); setFetchError(null);
     try {
@@ -163,20 +113,8 @@ export default function ApproverDashboard() {
   }, [instance, isAdmin]);
 
   useEffect(() => { loadProposals(); }, [loadProposals]);
-  useEffect(() => {
-    if (!proposals.length) return;
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get("id");
-    if (!id) return;
-    const target = proposals.find((p) => p.id === id);
-    if (target) {
-      openDrawer(target);
-      // Clean the URL without reload
-      window.history.replaceState({}, "", "/approver");
-    }
-  }, [proposals]);
 
-  // ── Derived ────────────────────────────────────────────────────────────────
+  // ── Derived data ─────────────────────────────────────────────────────────────
   const months = useMemo(
     () => ["All", ...Array.from(new Set(proposals.map((p) => p.month)))],
     [proposals]
@@ -188,12 +126,10 @@ export default function ApproverDashboard() {
       if (filterMonth  !== "All" && p.month  !== filterMonth)  return false;
       if (search) {
         const q = search.toLowerCase();
-        return (
-          p.dealerName.toLowerCase().includes(q) ||
-          p.rsmName.toLowerCase().includes(q)    ||
-          p.location.toLowerCase().includes(q)   ||
-          p.id.toLowerCase().includes(q)
-        );
+        return p.dealerName.toLowerCase().includes(q) ||
+               p.rsmName.toLowerCase().includes(q)    ||
+               p.location.toLowerCase().includes(q)   ||
+               p.id.toLowerCase().includes(q);
       }
       return true;
     }), [proposals, filterStatus, filterMonth, search]);
@@ -217,34 +153,111 @@ export default function ApproverDashboard() {
     return { totalBudget: tb, totalTarget: tt, cac: tt > 0 ? tb / tt : 0 };
   }, [editData]);
 
-  // ── Toast ──────────────────────────────────────────────────────────────────
+  // ── Toast ────────────────────────────────────────────────────────────────────
   const showToast = (msg: string, ok: boolean) => {
-    setToast({ msg, ok });
-    setTimeout(() => setToast(null), 3500);
+    setToast({ msg, ok }); setTimeout(() => setToast(null), 3500);
   };
 
-  // ── Drawer ─────────────────────────────────────────────────────────────────
+  // ── Actuals helpers ──────────────────────────────────────────────────────────
+  const initActuals = useCallback((p: ProposalResponse) => {
+    const init: Record<string, ActualEntry> = {};
+    p.activities.forEach((a) => {
+      init[a.id] = {
+        actualStartDate: a.actualStartDate?.split("T")[0] ?? "",
+        actualEndDate:   a.actualEndDate?.split("T")[0]   ?? "",
+        mediaFile:       null,
+        mediaFileUrl:    a.mediaFileUrl    ?? null,
+        mediaFileName:   a.mediaFileName   ?? null,
+        mediaFileType:   a.mediaFileType   ?? null,
+        uploading:       false,
+      };
+    });
+    setActualsData(init);
+  }, []);
+
+  const setActualField = (
+    activityId: string,
+    key: "actualStartDate" | "actualEndDate",
+    value: string
+  ) => {
+    setActualsData((prev) => ({
+      ...prev,
+      [activityId]: { ...prev[activityId], [key]: value },
+    }));
+  };
+
+  const handleMediaSelect = async (activityId: string, file: File) => {
+    setActualsData((prev) => ({
+      ...prev,
+      [activityId]: { ...prev[activityId], uploading: true, mediaFile: file },
+    }));
+    try {
+      const result = await uploadActivityMedia(file, instance);
+      setActualsData((prev) => ({
+        ...prev,
+        [activityId]: {
+          ...prev[activityId],
+          uploading:     false,
+          mediaFileUrl:  result.url,
+          mediaFileName: result.fileName,
+          mediaFileType: result.fileType,
+          mediaFile:     file,
+        },
+      }));
+      showToast("File uploaded successfully.", true);
+    } catch (err) {
+      setActualsData((prev) => ({
+        ...prev,
+        [activityId]: { ...prev[activityId], uploading: false },
+      }));
+      showToast(err instanceof Error ? err.message : "Upload failed.", false);
+    }
+  };
+
+  const saveActuals = async () => {
+    if (!selected) return;
+    setActualsLoading(true);
+    try {
+      const payload = selected.activities.map((a) => {
+        const d = actualsData[a.id];
+        return {
+          activityId:      a.id,
+          actualStartDate: d?.actualStartDate || null,
+          actualEndDate:   d?.actualEndDate   || null,
+          mediaFileUrl:    d?.mediaFileUrl    ?? null,
+          mediaFileName:   d?.mediaFileName   ?? null,
+          mediaFileType:   d?.mediaFileType   ?? null,
+        };
+      });
+      const updated = await updateProposalActuals(selected.id, payload, instance);
+      setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
+      setSelected(updated);
+      initActuals(updated);
+      showToast("Actuals saved successfully.", true);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Failed to save actuals.", false);
+    } finally {
+      setActualsLoading(false);
+    }
+  };
+
+  // ── Drawer helpers ───────────────────────────────────────────────────────────
   const openDrawer = (p: ProposalResponse) => {
-    setSelected(p);
-    setEditData(toEditable(p));
-    setIsEditing(false);
-    setShowSendBack(false);
-    setNote(p.approverNote ?? "");
-    setSendBackNote("");
-    setActualsData(initActuals(p));
+    setSelected(p); setEditData(toEditable(p));
+    setIsEditing(false); setShowSendBack(false);
+    setNote(p.approverNote ?? ""); setSendBackNote("");
+    initActuals(p);
   };
 
   const closeDrawer = () => {
-    setSelected(null);
-    setEditData(null);
-    setIsEditing(false);
-    setShowSendBack(false);
+    setSelected(null); setEditData(null);
+    setIsEditing(false); setShowSendBack(false);
+    setActualsData({});
   };
 
-  // ── Edit helpers ───────────────────────────────────────────────────────────
-  const setF = (key: keyof Omit<EditableProposal, "activities">, v: string) =>
+  // ── Edit helpers ─────────────────────────────────────────────────────────────
+  const setF  = (key: keyof Omit<EditableProposal,"activities">, v: string) =>
     setEditData((d) => d ? { ...d, [key]: v } : d);
-
   const setAF = (idx: number, key: keyof EditActivity, v: string) =>
     setEditData((d) => {
       if (!d) return d;
@@ -252,19 +265,13 @@ export default function ApproverDashboard() {
     });
 
   const addRow = () =>
-    setEditData((d) => d ? {
-      ...d,
-      activities: [...d.activities, {
-        activityType: "", target: "", startDate: "",
-        endDate: "", budget: "", incentive: "", remarks: "",
-      }],
-    } : d);
+    setEditData((d) => d ? { ...d, activities: [...d.activities,
+      { activityType:"",target:"",startDate:"",endDate:"",budget:"",incentive:"",remarks:"" }] } : d);
 
   const removeRow = (idx: number) =>
     setEditData((d) => (!d || d.activities.length <= 1) ? d :
       { ...d, activities: d.activities.filter((_, i) => i !== idx) });
 
-  // ── Save edits (admin) ─────────────────────────────────────────────────────
   const saveEdits = async () => {
     if (!selected || !editData) return;
     setSaveLoading(true);
@@ -272,105 +279,55 @@ export default function ApproverDashboard() {
       const payload = {
         ...editData,
         activities: editData.activities.map((a) => ({
-          ...a,
-          target:    num(a.target),
-          budget:    num(a.budget),
-          incentive: num(a.incentive),
+          ...a, target: num(a.target), budget: num(a.budget), incentive: num(a.incentive),
         })),
         ...editTotals,
       };
       const updated = await updateProposal(selected.id, payload, instance);
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
-      setSelected(updated);
-      setEditData(toEditable(updated));
-      setIsEditing(false);
+      setSelected(updated); setEditData(toEditable(updated)); setIsEditing(false);
       showToast("Proposal updated.", true);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Save failed.", false);
     } finally { setSaveLoading(false); }
   };
 
-  // ── Decide (admin) ─────────────────────────────────────────────────────────
+  // ── Decision helpers ─────────────────────────────────────────────────────────
   const decide = async (action: "Approved" | "Rejected") => {
     if (!selected) return;
     setActionLoading(true);
     try {
-      const updated = await decideProposal(
-        selected.id,
+      const updated = await decideProposal(selected.id,
         { status: action, approverNote: note.trim() || null, approvedBy: account?.username ?? null },
-        instance,
-      );
+        instance);
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
       setSelected(updated);
-      showToast(
-        action === "Approved" ? "Proposal approved." : "Proposal rejected.",
-        action === "Approved",
-      );
+      initActuals(updated);
+      showToast(action === "Approved" ? "Proposal approved." : "Proposal rejected.", action === "Approved");
       setNote("");
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Action failed.", false);
     } finally { setActionLoading(false); }
   };
 
-  // ── Send back (admin) ──────────────────────────────────────────────────────
   const handleSendBack = async () => {
     if (!selected) return;
     setActionLoading(true);
     try {
-      const updated = await sendBackProposal(
-        selected.id,
+      const updated = await sendBackProposal(selected.id,
         { note: sendBackNote.trim() || null, sentBackBy: account?.username ?? null },
-        instance,
-      );
+        instance);
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
-      setSelected(updated);
-      setShowSendBack(false);
-      setSendBackNote("");
+      setSelected(updated); setShowSendBack(false); setSendBackNote("");
       showToast("Sent back for revision. RSM has been notified.", true);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Failed to send back.", false);
     } finally { setActionLoading(false); }
   };
 
-  // ── Actuals: file upload ───────────────────────────────────────────────────
-  const handleFileUpload = async (activityId: string, file: File) => {
-    setUploadingId(activityId);
-    try {
-      const result = await uploadActivityMedia(file, instance);
-      setActualsData((prev) => ({
-        ...prev,
-        [activityId]: {
-          ...prev[activityId],
-          mediaFileUrl:  result.url,
-          mediaFileName: result.fileName,
-          mediaFileType: result.fileType,
-        },
-      }));
-      showToast("File uploaded.", true);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Upload failed.", false);
-    } finally { setUploadingId(null); }
-  };
+  const pageTitle = isAdmin ? "Approver Portal" : "My Proposals";
 
-  // ── Actuals: save ──────────────────────────────────────────────────────────
-  const saveActuals = async () => {
-    if (!selected) return;
-    setSavingActuals(true);
-    try {
-      const payload = Object.values(actualsData);
-      const updated = await updateProposalActuals(selected.id, payload, instance);
-      setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
-      setSelected(updated);
-      setActualsData(initActuals(updated));
-      showToast("Actuals saved.", true);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Failed to save actuals.", false);
-    } finally { setSavingActuals(false); }
-  };
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Render
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="ap-page">
       <main className="ap-main">
@@ -378,9 +335,7 @@ export default function ApproverDashboard() {
         {/* Page header */}
         <div className="ap-page-header">
           <div>
-            <h1 className="ap-page-title">
-              {isAdmin ? "Approver Portal" : "My Proposals"}
-            </h1>
+            <h1 className="ap-page-title">{pageTitle}</h1>
             <p className="ap-page-sub">
               {isAdmin
                 ? "Review, edit, approve or reject RSM activity proposals."
@@ -411,31 +366,26 @@ export default function ApproverDashboard() {
         {!loading && !fetchError && (
           <>
             {/* Stats */}
-            <div className="ap-stats">
-              <StatCard label="Total"          value={stats.total}         color="navy"   />
-              <StatCard label="Pending review" value={stats.pending}       color="amber"  />
-              <StatCard label="Approved"       value={stats.approved}      color="green"  />
-              <StatCard label="Rejected"       value={stats.rejected}      color="red"    />
+            <div className={`ap-stats ap-stats--${isAdmin ? "admin" : "user"}`}>
+              <StatCard label="Total"          value={stats.total}     color="navy" />
+              <StatCard label="Pending review" value={stats.pending}   color="amber" />
+              <StatCard label="Approved"       value={stats.approved}  color="green" />
+              <StatCard label="Rejected"       value={stats.rejected}  color="red" />
               {isAdmin
-                ? <StatCard label="Approved budget"  value={inr(stats.totalBudget)}    color="navy"   />
-                : <StatCard label="Needs revision"   value={stats.needsRevision}       color="orange" />
+                ? <StatCard label="Approved budget" value={inr(stats.totalBudget)} color="navy" />
+                : <StatCard label="Needs revision"  value={stats.needsRevision}    color="orange" />
               }
             </div>
 
             {/* Filters */}
             <div className="ap-filters">
-              <input
-                className="ap-search"
-                placeholder="Search dealer, RSM, location…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+              <input className="ap-search" placeholder="Search dealer, RSM, location…"
+                value={search} onChange={(e) => setSearch(e.target.value)} />
               <select className="ap-select" value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value)}>
                 {["All","Pending","Approved","Rejected","NeedsRevision"].map((s) => (
                   <option key={s} value={s}>
-                    {s === "All" ? "All statuses"
-                     : s === "NeedsRevision" ? "Needs revision" : s}
+                    {s === "All" ? "All statuses" : s === "NeedsRevision" ? "Needs revision" : s}
                   </option>
                 ))}
               </select>
@@ -453,7 +403,8 @@ export default function ApproverDashboard() {
               <table className="ap-table">
                 <thead>
                   <tr>
-                    <th>ID</th>
+                    <th>Action</th>
+                    <th>Token</th>
                     <th>Submitted</th>
                     {isAdmin && <th>RSM / TSM</th>}
                     <th>Dealer &amp; location</th>
@@ -463,25 +414,29 @@ export default function ApproverDashboard() {
                     <th className="ap-num">Target</th>
                     <th className="ap-num">CAC</th>
                     <th>Status</th>
-                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length === 0 && (
-                    <tr>
-                      <td colSpan={isAdmin ? 11 : 10} className="ap-empty">
-                        {proposals.length === 0 ? "No proposals yet." : "No results match."}
-                      </td>
-                    </tr>
+                    <tr><td colSpan={isAdmin ? 11 : 10} className="ap-empty">
+                      {proposals.length === 0 ? "No proposals yet." : "No results match."}
+                    </td></tr>
                   )}
                   {filtered.map((p) => (
                     <tr key={p.id} className="ap-row" onClick={() => openDrawer(p)}>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <button className="ap-review-btn" onClick={() => openDrawer(p)}>
+                          {isAdmin
+                            ? (p.status === "Pending" || p.status === "NeedsRevision" ? "Review" : "View")
+                            : "View"}
+                        </button>
+                      </td>
                       <td>
-                        <span className="ap-id-chip">{p.id.split("-").slice(-1)[0]}</span>
+                        <span className="ap-id-chip">{p.tokenNumber ?? p.id.split("-").slice(-1)[0]}</span>
                       </td>
                       <td>
                         <span className="ap-cell-p">{fmtDate(p.createdAt)}</span>
-                        {isAdmin && <span className="ap-cell-m">{p.submittedBy}</span>}
+                        {isAdmin && <span className="ap-cell-m">{p.submittedByDisplayName ?? p.submittedBy}</span>}
                       </td>
                       {isAdmin && (
                         <td>
@@ -495,9 +450,14 @@ export default function ApproverDashboard() {
                       </td>
                       <td>{p.month}</td>
                       <td>
-                        {p.activities.map((a: ActivityResponse, i: number) => (
+                        {p.activities.slice(0, 2).map((a: ActivityResponse, i: number) => (
                           <span key={i} className="ap-act-chip">{a.activityType}</span>
                         ))}
+                        {p.activities.length > 2 && (
+                          <span className="ap-act-chip ap-act-chip--more">
+                            +{p.activities.length - 2}
+                          </span>
+                        )}
                       </td>
                       <td className="ap-num ap-bold">{inr(p.totalBudget)}</td>
                       <td className="ap-num">{p.totalTarget}</td>
@@ -506,14 +466,6 @@ export default function ApproverDashboard() {
                         <span className={statusClass(p.status)}>
                           {p.status === "NeedsRevision" ? "Needs revision" : p.status}
                         </span>
-                      </td>
-                      <td onClick={(e) => e.stopPropagation()}>
-                        <button className="ap-review-btn" onClick={() => openDrawer(p)}>
-                          {isAdmin
-                            ? (p.status === "Pending" || p.status === "NeedsRevision"
-                                ? "Review" : "View")
-                            : "View"}
-                        </button>
                       </td>
                     </tr>
                   ))}
@@ -524,12 +476,12 @@ export default function ApproverDashboard() {
         )}
       </main>
 
-      {/* ══════════════════════════════ DRAWER ══════════════════════════════ */}
+      {/* ══════════════════════ DRAWER ══════════════════════ */}
       {selected && editData && (
         <div className="ap-overlay" onClick={closeDrawer}>
           <div className="ap-drawer" onClick={(e) => e.stopPropagation()}>
 
-            {/* Drawer topbar */}
+            {/* Drawer header */}
             <div className="ap-drawer-topbar">
               <div className="ap-drawer-topbar-left">
                 <span className={`ap-drawer-status-pill ap-pill-${selected.status.toLowerCase()}`}>
@@ -538,29 +490,22 @@ export default function ApproverDashboard() {
                    : selected.status}
                 </span>
                 {isEditing
-                  ? <input className="ap-dtitle-input"
-                      value={editData.dealerName}
-                      onChange={(e) => setF("dealerName", e.target.value)}
-                      placeholder="Dealer name" />
+                  ? <input className="ap-dtitle-input" value={editData.dealerName}
+                      onChange={(e) => setF("dealerName", e.target.value)} placeholder="Dealer name" />
                   : <h2 className="ap-drawer-title">{selected.dealerName}</h2>
                 }
                 <p className="ap-drawer-sub">
                   {isEditing
                     ? <span className="ap-loc-row">
-                        <input className="ap-sm-input"
-                          value={editData.location}
+                        <input className="ap-sm-input" value={editData.location}
                           onChange={(e) => setF("location", e.target.value)}
                           placeholder="City" style={{ width: 110 }} />
                         <span className="ap-loc-sep">,</span>
-                        <input className="ap-sm-input"
-                          value={editData.state}
+                        <input className="ap-sm-input" value={editData.state}
                           onChange={(e) => setF("state", e.target.value)}
                           placeholder="State" style={{ width: 120 }} />
                       </span>
-                    : <>
-                        {selected.location}, {selected.state} · {selected.month} ·{" "}
-                        <strong>{selected.submittedBy}</strong> · {fmtDate(selected.createdAt)}
-                      </>
+                    : <>{selected.location}, {selected.state} · {selected.month} · <strong>{selected.submittedByDisplayName ?? selected.submittedBy}</strong> · {fmtDate(selected.createdAt)}</>
                   }
                 </p>
               </div>
@@ -580,13 +525,13 @@ export default function ApproverDashboard() {
               </div>
             </div>
 
-            {/* Banners */}
             {isEditing && (
               <div className="ap-edit-banner">
                 ✏ Edit mode — modify fields below, then save before deciding.
               </div>
             )}
 
+            {/* Revision note banner for RSM */}
             {!isAdmin && selected.status === "NeedsRevision" && selected.approverNote && (
               <div className="ap-revision-banner">
                 <strong>Revision requested:</strong> {selected.approverNote}
@@ -597,16 +542,15 @@ export default function ApproverDashboard() {
               </div>
             )}
 
-            {/* Scrollable body */}
             <div className="ap-drawer-body">
 
-              {/* Meta grid 4-col */}
+              {/* Meta grid row 1 */}
               <div className="ap-meta-grid-4">
                 {([
                   { key: "rsmName",      label: "RSM / TSM",  input: "text"   as const, opts: [] as string[] },
-                  { key: "commandoName", label: "Commando",   input: "text"   as const, opts: [] as string[] },
-                  { key: "type",         label: "Type",       input: "select" as const, opts: LOC_TYPES },
-                  { key: "eligibility",  label: "Eligibility",input: "select" as const, opts: ELIGIBILITY },
+                  { key: "commandoName", label: "Commando",    input: "text"   as const, opts: [] as string[] },
+                  { key: "type",         label: "Type",        input: "select" as const, opts: LOC_TYPES },
+                  { key: "eligibility",  label: "Eligibility", input: "select" as const, opts: ELIGIBILITY },
                 ]).map(({ key, label, input, opts }) => (
                   <div key={key} className="ap-meta-cell">
                     <span className="ap-meta-lbl">{label}</span>
@@ -622,16 +566,14 @@ export default function ApproverDashboard() {
                             onChange={(e) => setF(key as any, e.target.value)} />
                     ) : (
                       key === "eligibility"
-                        ? <span className={`ap-elig ${eligClass((selected as any)[key])}`}>
-                            {(selected as any)[key]}
-                          </span>
+                        ? <span className={`ap-elig ${eligClass((selected as any)[key])}`}>{(selected as any)[key]}</span>
                         : <span className="ap-meta-val">{(selected as any)[key] || "—"}</span>
                     )}
                   </div>
                 ))}
               </div>
 
-              {/* Meta grid 3-col */}
+              {/* Meta grid row 2 */}
               <div className="ap-meta-grid-3">
                 {([
                   { key: "dealerName", label: "Dealer name", input: "text"   as const, opts: [] as string[] },
@@ -672,7 +614,7 @@ export default function ApproverDashboard() {
                 </div>
               ) : null}
 
-              {/* Activities header */}
+              {/* Activities table */}
               <div className="ap-section-header">
                 <span className="ap-sec-head">Activities</span>
                 {isAdmin && isEditing && (
@@ -680,7 +622,6 @@ export default function ApproverDashboard() {
                 )}
               </div>
 
-              {/* Activities table */}
               <div className="ap-itbl-wrap">
                 <div style={{ overflowX: "auto" }}>
                   <table className="ap-itbl" style={{ minWidth: isEditing ? 700 : "auto" }}>
@@ -768,7 +709,7 @@ export default function ApproverDashboard() {
                 </div>
               </div>
 
-              {/* Totals strip */}
+              {/* Totals */}
               <div className="ap-summary">
                 <div className="ap-sum-cell">
                   <span className="ap-sum-lbl">Total target</span>
@@ -790,25 +731,155 @@ export default function ApproverDashboard() {
                 </div>
               </div>
 
-              {/* ── Admin: decision panel ── */}
+              {/* ══ POST-APPROVAL ACTUALS PANEL ══ */}
+              {selected.status === "Approved" && (
+                <div className="ap-actuals-box">
+                  <div className="ap-section-header" style={{ marginBottom: 14 }}>
+                    <span className="ap-sec-head">Post-Activity Actuals</span>
+                    <span className="ap-actuals-badge">Approved ✓</span>
+                  </div>
+                  <p className="ap-actuals-hint">
+                    Enter actual dates and upload proof/media for each activity.
+                  </p>
+
+                  <div className="ap-actuals-list">
+                    {selected.activities.map((a, i) => {
+                      const d = actualsData[a.id];
+                      if (!d) return null;
+                      return (
+                        <div key={a.id} className="ap-actual-row">
+
+                          {/* Activity label */}
+                          <div className="ap-actual-label">
+                            <span className="ap-actual-num">{i + 1}</span>
+                            <span className="ap-actual-type">{a.activityType}</span>
+                            <span className="ap-actual-planned">
+                              Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}
+                            </span>
+                          </div>
+
+                          <div className="ap-actual-fields">
+
+                            {/* Actual Start Date */}
+                            <div className="ap-actual-field">
+                              <label className="ap-actual-flbl">Actual Start Date</label>
+                              <input type="date" className="ap-actual-input"
+                                value={d.actualStartDate}
+                                onChange={(e) => setActualField(a.id, "actualStartDate", e.target.value)} />
+                            </div>
+
+                            {/* Actual End Date */}
+                            <div className="ap-actual-field">
+                              <label className="ap-actual-flbl">Actual End Date</label>
+                              <input type="date" className="ap-actual-input"
+                                value={d.actualEndDate}
+                                min={d.actualStartDate || undefined}
+                                onChange={(e) => setActualField(a.id, "actualEndDate", e.target.value)} />
+                            </div>
+
+                            {/* Media upload */}
+                            <div className="ap-actual-field ap-actual-field--media">
+                              <label className="ap-actual-flbl">Proof / Media</label>
+
+                              {d.mediaFileName ? (
+                                <div className="ap-media-uploaded">
+                                  <span className="ap-media-icon">
+                                    {d.mediaFileType?.startsWith("image") ? "🖼" :
+                                     d.mediaFileType?.includes("pdf")     ? "📄" :
+                                     d.mediaFileType?.includes("video")   ? "🎬" : "📎"}
+                                  </span>
+                                  <span className="ap-media-name" title={d.mediaFileName}>
+                                    {d.mediaFileName}
+                                  </span>
+                                  {d.mediaFileUrl && (
+                                    <a href={d.mediaFileUrl} target="_blank"
+                                      rel="noreferrer" className="ap-media-view">
+                                      View
+                                    </a>
+                                  )}
+                                  <label className="ap-media-replace"
+                                    htmlFor={`media-${a.id}`}>
+                                    Replace
+                                    <input
+                                      id={`media-${a.id}`}
+                                      ref={(el) => { fileInputRefs.current[a.id] = el; }}
+                                      type="file"
+                                      accept="image/*,.pdf,.mp4,.mov,.avi"
+                                      style={{ display: "none" }}
+                                      onChange={(e) => {
+                                        const f = e.target.files?.[0];
+                                        if (f) handleMediaSelect(a.id, f);
+                                        e.target.value = "";
+                                      }} />
+                                  </label>
+                                </div>
+                              ) : (
+                                <label
+                                  className={`ap-media-upload-btn ${d.uploading ? "ap-media-upload-btn--loading" : ""}`}
+                                  htmlFor={`media-${a.id}`}>
+                                  {d.uploading ? (
+                                    <span className="ap-media-uploading">
+                                      <span className="ap-spin-sm" /> Uploading…
+                                    </span>
+                                  ) : (
+                                    <span>📎 Upload file</span>
+                                  )}
+                                  <input
+                                    id={`media-${a.id}`}
+                                    ref={(el) => { fileInputRefs.current[a.id] = el; }}
+                                    type="file"
+                                    accept="image/*,.pdf,.mp4,.mov,.avi"
+                                    style={{ display: "none" }}
+                                    disabled={d.uploading}
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      if (f) handleMediaSelect(a.id, f);
+                                      e.target.value = "";
+                                    }} />
+                                </label>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Show existing actual dates if saved */}
+                          {(a.actualStartDate || a.actualEndDate) && (
+                            <div className="ap-actual-saved">
+                              <span className="ap-actual-saved-lbl">Last saved:</span>
+                              <span>{fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Save actuals button */}
+                  <div className="ap-actuals-footer">
+                    <button className="ap-save-actuals-btn"
+                      onClick={saveActuals}
+                      disabled={actualsLoading}>
+                      {actualsLoading ? "Saving…" : "💾 Save Actuals"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ══ ADMIN DECISION PANEL ══ */}
               {isAdmin && selected.status === "Pending" && !isEditing && (
                 <div className="ap-action-box">
                   <p className="ap-sec-head" style={{ marginBottom: 10 }}>Decision</p>
 
                   <textarea className="ap-note-input" rows={3}
                     placeholder="Add a note for the RSM (optional)…"
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)} />
+                    value={note} onChange={(e) => setNote(e.target.value)} />
 
                   <div className="ap-btn-row">
                     <button className="ap-approve-btn"
-                      disabled={actionLoading}
-                      onClick={() => decide("Approved")}>
+                      disabled={actionLoading} onClick={() => decide("Approved")}>
                       {actionLoading ? "Processing…" : "✓  Approve"}
                     </button>
                     <button className="ap-reject-btn"
-                      disabled={actionLoading}
-                      onClick={() => decide("Rejected")}>
+                      disabled={actionLoading} onClick={() => decide("Rejected")}>
                       {actionLoading ? "Processing…" : "✕  Reject"}
                     </button>
                   </div>
@@ -829,8 +900,7 @@ export default function ApproverDashboard() {
                         onChange={(e) => setSendBackNote(e.target.value)} />
                       <div className="ap-btn-row">
                         <button className="ap-sendback-btn"
-                          disabled={actionLoading}
-                          onClick={handleSendBack}>
+                          disabled={actionLoading} onClick={handleSendBack}>
                           {actionLoading ? "Sending…" : "↩ Send for revision"}
                         </button>
                         <button className="ap-discard-btn"
@@ -843,33 +913,12 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* ── Admin: finalised banner ── */}
-              {isAdmin && (selected.status === "Approved" || selected.status === "Rejected") && (
-                <div className={`ap-decision-banner ${
-                  selected.status === "Approved" ? "ap-decision-approved" : "ap-decision-rejected"
-                }`}>
-                  <div className="ap-decision-head">
-                    <strong>{selected.status}</strong>
-                    {selected.decidedAt && (
-                      <span className="ap-decision-date">
-                        {fmtDate(selected.decidedAt)}
-                        {selected.approvedBy && ` · ${selected.approvedBy}`}
-                      </span>
-                    )}
-                  </div>
-                  {selected.approverNote && (
-                    <p className="ap-decision-note">{selected.approverNote}</p>
-                  )}
-                </div>
-              )}
-
-              {/* ── User: decision result ── */}
+              {/* ══ RSM VIEW — decision result ══ */}
               {!isAdmin && selected.status !== "Pending" && (
                 <div className={`ap-decision-banner ${
                   selected.status === "Approved"      ? "ap-decision-approved"
                   : selected.status === "Rejected"    ? "ap-decision-rejected"
-                  : "ap-decision-revision"
-                }`}>
+                  : "ap-decision-revision"}`}>
                   <div className="ap-decision-head">
                     <strong>
                       {selected.status === "NeedsRevision" ? "Revision requested" : selected.status}
@@ -893,125 +942,26 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* ══════════════════════════════════════════════════════════
-                  POST-APPROVAL ACTUALS — RSM fills after approval
-              ══════════════════════════════════════════════════════════ */}
-              {!isAdmin && selected.status === "Approved" && (
-                <div className="ap-actuals-box">
-                  <div className="ap-actuals-header">
-                    <span className="ap-sec-head" style={{ margin: 0 }}>
-                      Post-Campaign Actuals
-                    </span>
-                    <span className="ap-actuals-hint">
-                      Fill actual dates and upload media evidence for each activity
-                    </span>
+              {/* ══ ADMIN — finalised banner ══ */}
+              {isAdmin && (selected.status === "Approved" || selected.status === "Rejected") && (
+                <div className={`ap-decision-banner ${
+                  selected.status === "Approved" ? "ap-decision-approved" : "ap-decision-rejected"}`}>
+                  <div className="ap-decision-head">
+                    <strong>{selected.status}</strong>
+                    {selected.decidedAt && (
+                      <span className="ap-decision-date">
+                        {fmtDate(selected.decidedAt)}
+                        {selected.approvedBy && ` · ${selected.approvedBy}`}
+                      </span>
+                    )}
                   </div>
-
-                  {selected.activities.map((a) => {
-                    const act      = actualsData[a.id] ?? {};
-                    const isImage  = act.mediaFileType?.startsWith("image/");
-                    const isVideo  = act.mediaFileType?.startsWith("video/");
-                    const mediaUrl = act.mediaFileUrl
-                      ? `${API_BASE}${act.mediaFileUrl}` : null;
-
-                    return (
-                      <div key={a.id} className="ap-actual-row">
-                        <div className="ap-actual-activity-name">
-                          {a.activityType}
-                          <span className="ap-actual-planned">
-                            Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}
-                          </span>
-                        </div>
-
-                        <div className="ap-actual-fields">
-
-                          {/* Actual start date */}
-                          <div className="ap-actual-field">
-                            <label className="ap-meta-lbl">Actual start date</label>
-                            <input type="date" className="ap-field-input"
-                              value={act.actualStartDate ?? ""}
-                              onChange={(e) => setActualsData((prev) => ({
-                                ...prev,
-                                [a.id]: { ...prev[a.id], actualStartDate: e.target.value || null },
-                              }))} />
-                          </div>
-
-                          {/* Actual end date */}
-                          <div className="ap-actual-field">
-                            <label className="ap-meta-lbl">Actual end date</label>
-                            <input type="date" className="ap-field-input"
-                              value={act.actualEndDate ?? ""}
-                              min={act.actualStartDate ?? undefined}
-                              onChange={(e) => setActualsData((prev) => ({
-                                ...prev,
-                                [a.id]: { ...prev[a.id], actualEndDate: e.target.value || null },
-                              }))} />
-                          </div>
-
-                          {/* Media file */}
-                          <div className="ap-actual-field">
-                            <label className="ap-meta-lbl">Media (photo / video / doc)</label>
-
-                            {mediaUrl ? (
-                              <div className="ap-media-preview">
-                                {isImage && (
-                                  <img src={mediaUrl} alt={act.mediaFileName ?? "media"}
-                                    className="ap-media-img" />
-                                )}
-                                {isVideo && (
-                                  <video controls className="ap-media-video">
-                                    <source src={mediaUrl}
-                                      type={act.mediaFileType ?? "video/mp4"} />
-                                  </video>
-                                )}
-                                {!isImage && !isVideo && (
-                                  <a href={mediaUrl} target="_blank" rel="noopener noreferrer"
-                                    className="ap-media-link">
-                                    📎 {act.mediaFileName}
-                                  </a>
-                                )}
-                                <button className="ap-media-remove"
-                                  onClick={() => setActualsData((prev) => ({
-                                    ...prev,
-                                    [a.id]: {
-                                      ...prev[a.id],
-                                      mediaFileUrl: null, mediaFileName: null, mediaFileType: null,
-                                    },
-                                  }))}>
-                                  ✕ Remove
-                                </button>
-                              </div>
-                            ) : (
-                              <label className={`ap-media-upload-btn${uploadingId === a.id ? " ap-media-upload-btn--loading" : ""}`}>
-                                {uploadingId === a.id ? "Uploading…" : "📎 Upload file"}
-                                <input type="file"
-                                  accept="image/*,video/*,.pdf,.xlsx,.xls"
-                                  style={{ display: "none" }}
-                                  disabled={uploadingId === a.id}
-                                  onChange={(e) => {
-                                    const file = e.target.files?.[0];
-                                    if (file) handleFileUpload(a.id, file);
-                                    e.target.value = "";
-                                  }} />
-                              </label>
-                            )}
-                          </div>
-
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  <div className="ap-actuals-footer">
-                    <button className="ap-save-btn" onClick={saveActuals}
-                      disabled={savingActuals}>
-                      {savingActuals ? "Saving…" : "💾 Save actuals"}
-                    </button>
-                  </div>
+                  {selected.approverNote && (
+                    <p className="ap-decision-note">{selected.approverNote}</p>
+                  )}
                 </div>
               )}
 
-            </div>{/* /drawer-body */}
+            </div>
 
             {/* Sticky save footer (edit mode) */}
             {isAdmin && isEditing && (
@@ -1040,9 +990,8 @@ export default function ApproverDashboard() {
   );
 }
 
-function StatCard({ label, value, color }: {
-  label: string; value: string | number; color: string;
-}) {
+// ─── Sub-components ───────────────────────────────────────────────────────────
+function StatCard({ label, value, color }: { label: string; value: string | number; color: string }) {
   return (
     <div className="ap-stat">
       <span className={`ap-stat-val ap-${color}`}>{value}</span>
