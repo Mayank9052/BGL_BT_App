@@ -17,30 +17,26 @@ public class MediaController : ControllerBase
         _logger = logger;
     }
 
+    // POST /api/media/upload
     [HttpPost("upload")]
-    [DisableRequestSizeLimit]                    // overrides Kestrel per-endpoint
-    [RequestFormLimits(MultipartBodyLengthLimit = 1_073_741_824L)]  // 1 GB
+    [RequestSizeLimit(1_073_741_824)]
     public async Task<IActionResult> Upload(IFormFile file)
     {
         if (file is null || file.Length == 0)
             return BadRequest(new { message = "No file provided." });
 
-        if (file.Length > 1_073_741_824L)
-            return BadRequest(new { message = "File exceeds the 1 GB limit." });
-
+        // Allowed types
         var allowed = new[]
         {
             "image/jpeg", "image/png", "image/gif", "image/webp",
-            "video/mp4", "video/quicktime", "video/x-msvideo", "video/webm",
-            "video/avi", "video/mpeg",
             "application/pdf",
-            "application/vnd.ms-excel",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "video/mp4", "video/quicktime", "video/x-msvideo"
         };
 
         if (!allowed.Contains(file.ContentType.ToLower()))
-            return BadRequest(new { message = $"File type '{file.ContentType}' is not allowed." });
+            return BadRequest(new { message = $"File type '{file.ContentType}' not allowed." });
 
+        // Save to wwwroot/uploads/activities/
         var uploadsDir = Path.Combine(_env.WebRootPath, "uploads", "activities");
         Directory.CreateDirectory(uploadsDir);
 
@@ -48,19 +44,18 @@ public class MediaController : ControllerBase
         var fileName = $"{Guid.NewGuid()}{ext}";
         var filePath = Path.Combine(uploadsDir, fileName);
 
-        await using var stream = System.IO.File.Create(filePath);
+        await using var stream = new FileStream(filePath, FileMode.Create);
         await file.CopyToAsync(stream);
 
-        _logger.LogInformation(
-            "Uploaded {FileName} ({Size:N0} bytes) → {Path}",
-            file.FileName, file.Length, filePath);
+        var url = $"/uploads/activities/{fileName}";
+
+        _logger.LogInformation("File uploaded: {FileName} ({Size} bytes)", fileName, file.Length);
 
         return Ok(new
         {
-            url      = $"/uploads/activities/{fileName}",
+            url,
             fileName = file.FileName,
             fileType = file.ContentType,
-            size     = file.Length,
         });
     }
 }
