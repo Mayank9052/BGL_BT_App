@@ -731,6 +731,10 @@ export default function ApproverDashboard() {
                 </div>
               </div>
 
+              <div className="ap-cac-warning">
+                ⚠ {selected.cacWarning}
+              </div>
+
               {/* ══ POST-APPROVAL ACTUALS PANEL ══ */}
               {selected.status === "Approved" && (
                 <div className="ap-actuals-box">

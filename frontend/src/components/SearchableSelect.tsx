@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import "./SearchableSelect.css";
 
 interface Option {
-  value: string;
-  label: string;
+  value:     string;
+  label:     string;
   sublabel?: string;
 }
 
@@ -21,12 +21,13 @@ export default function SearchableSelect({
   options, value, onChange, placeholder = "Select…",
   loading = false, allowCreate = false, className = "",
 }: Props) {
-  const [open,    setOpen]    = useState(false);
-  const [query,   setQuery]   = useState("");
-  const [dropUp,  setDropUp]  = useState(false);
+  const [open,      setOpen]      = useState(false);
+  const [query,     setQuery]     = useState("");
+  const [dropStyle, setDropStyle] = useState<React.CSSProperties>({});
+
+  const triggerRef   = useRef<HTMLButtonElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef     = useRef<HTMLInputElement>(null);
-  const dropdownRef  = useRef<HTMLDivElement>(null);
 
   const selected = options.find((o) => o.value === value);
   const display  = selected?.label ?? value;
@@ -44,10 +45,56 @@ export default function SearchableSelect({
     query.trim() &&
     !options.some((o) => o.label.toLowerCase() === query.trim().toLowerCase());
 
+  // ── Compute fixed position from trigger rect ───────────────────────────
+  const updateDropPosition = useCallback(() => {
+    if (!triggerRef.current) return;
+    const rect       = triggerRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const dropHeight = 260;
+    const openUp     = spaceBelow < dropHeight && spaceAbove > spaceBelow;
+
+    if (openUp) {
+      setDropStyle({
+        position: "fixed",
+        bottom:   window.innerHeight - rect.top + 2,
+        left:     rect.left,
+        width:    rect.width,
+        zIndex:   9999,
+      });
+    } else {
+      setDropStyle({
+        position: "fixed",
+        top:      rect.bottom + 2,
+        left:     rect.left,
+        width:    rect.width,
+        zIndex:   9999,
+      });
+    }
+  }, []);
+
+  // ── Reposition on scroll / resize while open ───────────────────────────
+  useEffect(() => {
+    if (!open) return;
+    updateDropPosition();
+    window.addEventListener("scroll",  updateDropPosition, true);
+    window.addEventListener("resize",  updateDropPosition);
+    return () => {
+      window.removeEventListener("scroll",  updateDropPosition, true);
+      window.removeEventListener("resize",  updateDropPosition);
+    };
+  }, [open, updateDropPosition]);
+
   // ── Close on outside click ─────────────────────────────────────────────
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) {
+      const target = e.target as Node;
+      // Check container and also the fixed dropdown (which is outside DOM tree)
+      const dropdown = document.getElementById("ss-fixed-dropdown");
+      if (
+        !containerRef.current?.contains(target) &&
+        !dropdown?.contains(target)
+      ) {
         setOpen(false);
         setQuery("");
       }
@@ -56,58 +103,51 @@ export default function SearchableSelect({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // ── Decide whether to open upward or downward ──────────────────────────
-  const decideDirection = () => {
-    if (!containerRef.current) return;
-    const rect       = containerRef.current.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const spaceAbove = rect.top;
-    const dropHeight = 240;
-    setDropUp(spaceBelow < dropHeight && spaceAbove > spaceBelow);
+  const handleOpen = () => {
+    updateDropPosition();
+    setOpen(true);
+    setTimeout(() => inputRef.current?.focus(), 30);
   };
 
-  const handleOpen = () => {
-    decideDirection();
-    setOpen(true);
-    setTimeout(() => inputRef.current?.focus(), 50);
+  const handleClose = () => {
+    setOpen(false);
+    setQuery("");
   };
 
   const handleSelect = (val: string) => {
     onChange(val);
-    setOpen(false);
-    setQuery("");
+    handleClose();
   };
 
   const handleCreate = () => {
     onChange(query.trim());
-    setOpen(false);
-    setQuery("");
+    handleClose();
   };
 
   return (
-    <div
-      ref={containerRef}
-      className={`ss-wrap ${className}`}
-      style={{ position: "relative" }}
-    >
-      {/* Trigger */}
-      <button
-        type="button"
-        className={`ss-trigger ${open ? "ss-trigger--open" : ""} ${!value ? "ss-trigger--empty" : ""}`}
-        onClick={open ? () => { setOpen(false); setQuery(""); } : handleOpen}
-        disabled={loading}
-      >
-        <span className="ss-trigger-text">
-          {loading ? "Loading…" : (display || placeholder)}
-        </span>
-        <span className="ss-arrow">{open ? "▲" : "▼"}</span>
-      </button>
+    <>
+      {/* Trigger wrapper */}
+      <div ref={containerRef} className={`ss-wrap ${className}`}>
+        <button
+          ref={triggerRef}
+          type="button"
+          className={`ss-trigger ${open ? "ss-trigger--open" : ""} ${!value ? "ss-trigger--empty" : ""}`}
+          onClick={open ? handleClose : handleOpen}
+          disabled={loading}
+        >
+          <span className="ss-trigger-text">
+            {loading ? "Loading…" : (display || placeholder)}
+          </span>
+          <span className="ss-arrow">{open ? "▲" : "▼"}</span>
+        </button>
+      </div>
 
-      {/* Dropdown — rendered via portal-like fixed positioning */}
+      {/* Dropdown — rendered at document body level via fixed positioning */}
       {open && (
         <div
-          ref={dropdownRef}
-          className={`ss-dropdown ${dropUp ? "ss-dropdown--up" : "ss-dropdown--down"}`}
+          id="ss-fixed-dropdown"
+          className="ss-dropdown"
+          style={dropStyle}
         >
           {/* Search input */}
           <div className="ss-search-wrap">
@@ -119,7 +159,7 @@ export default function SearchableSelect({
               placeholder="Search…"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && showCreate) handleCreate();
-                if (e.key === "Escape") { setOpen(false); setQuery(""); }
+                if (e.key === "Escape") handleClose();
               }}
             />
           </div>
@@ -137,7 +177,9 @@ export default function SearchableSelect({
                 onClick={() => handleSelect(o.value)}
               >
                 <span className="ss-option-label">{o.label}</span>
-                {o.sublabel && <span className="ss-option-sub">{o.sublabel}</span>}
+                {o.sublabel && (
+                  <span className="ss-option-sub">{o.sublabel}</span>
+                )}
               </button>
             ))}
             {showCreate && (
@@ -153,6 +195,6 @@ export default function SearchableSelect({
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

@@ -6,27 +6,32 @@ public class Proposal
 {
     public Guid Id { get; set; } = Guid.NewGuid();
 
-    [MaxLength(100)] public string State { get; set; } = string.Empty;
-    [MaxLength(150)] public string Location { get; set; } = string.Empty;
-    [MaxLength(20)]  public string Type { get; set; } = string.Empty;          // Old | New
-    [MaxLength(200)] public string DealerName { get; set; } = string.Empty;
-    [MaxLength(150)] public string RsmName { get; set; } = string.Empty;
+    [MaxLength(100)] public string State        { get; set; } = string.Empty;
+    [MaxLength(150)] public string Location     { get; set; } = string.Empty;
+    [MaxLength(20)]  public string Type         { get; set; } = string.Empty;
+    [MaxLength(200)] public string DealerName   { get; set; } = string.Empty;
+    [MaxLength(150)] public string RsmName      { get; set; } = string.Empty;
     [MaxLength(150)] public string CommandoName { get; set; } = string.Empty;
-    [MaxLength(20)]  public string Month { get; set; } = string.Empty;
-    [MaxLength(50)]  public string Eligibility { get; set; } = string.Empty;   // Eligible | Not Eligible | Pending Approval
-    [MaxLength(2000)] public string? Remarks { get; set; }
+    [MaxLength(20)]  public string Month        { get; set; } = string.Empty;
+    [MaxLength(50)]  public string Eligibility  { get; set; } = string.Empty;
+    [MaxLength(2000)] public string? Remarks    { get; set; }
 
     public decimal TotalBudget { get; set; }
-    public int TotalTarget { get; set; }
-    public decimal Cac { get; set; }
+    public int     TotalTarget { get; set; }
+    public decimal Cac         { get; set; }
 
-    [MaxLength(200)] public string SubmittedBy { get; set; } = string.Empty;
+    // ── NEW: CAC validation from ERP ──────────────────────────────────────
+    public int     AllowedCac  { get; set; } = 4000;           // 4000 old / 6000 new
+    [MaxLength(500)] public string? CacWarning { get; set; }   // null = within limit
+    // ─────────────────────────────────────────────────────────────────────
+
+    [MaxLength(200)] public string  SubmittedBy            { get; set; } = string.Empty;
+    [MaxLength(255)] public string? SubmittedByDisplayName { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
-    // ── Approval workflow ──────────────────────────────────────────
-    [MaxLength(50)] public string Status { get; set; } = "Pending"; // Pending | Approved | Rejected
+    [MaxLength(50)]   public string  Status       { get; set; } = "Pending";
     [MaxLength(2000)] public string? ApproverNote { get; set; }
-    [MaxLength(200)] public string? ApprovedBy { get; set; }
+    [MaxLength(200)]  public string? ApprovedBy   { get; set; }
     public DateTimeOffset? DecidedAt { get; set; }
 
     // Per-activity token shown to the RSM in the decision email; generated
@@ -34,6 +39,4 @@ public class Proposal
     [MaxLength(50)] public string? TokenNumber { get; set; }
 
     public List<ProposalActivity> Activities { get; set; } = new();
-
-    public string? SubmittedByDisplayName { get; set; }  // ← add this
 }

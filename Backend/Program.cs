@@ -14,6 +14,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
+// ── ERP read-only (baplfinal on Azure SQL) ────────────────────────────────────
+builder.Services.AddDbContext<BaplDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("BaplConnection")));
+
 // ── Azure AD Authentication ───────────────────────────────────────────────────
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"));

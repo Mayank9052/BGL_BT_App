@@ -7,14 +7,15 @@ namespace BGL_BT_App.Backend.Services;
 
 public class SmtpSettings
 {
-    public string Host          { get; set; } = string.Empty;
-    public int    Port          { get; set; } = 587;
-    public string User          { get; set; } = string.Empty;
-    public string Password      { get; set; } = string.Empty;
-    public string From          { get; set; } = string.Empty;
-    public bool   EnableSsl     { get; set; } = true;
-    public string ApproverEmail { get; set; } = string.Empty;
-    public string PortalBaseUrl { get; set; } = "https://44.210.115.237";
+    public string Host           { get; set; } = string.Empty;
+    public int    Port           { get; set; } = 587;
+    public string User           { get; set; } = string.Empty;
+    public string Password       { get; set; } = string.Empty;
+    public string From           { get; set; } = string.Empty;
+    public bool   EnableSsl      { get; set; } = true;
+    public string ApproverEmail  { get; set; } = string.Empty;
+    public string ApproverEmail2 { get; set; } = string.Empty;
+    public string PortalBaseUrl  { get; set; } = "https://44.210.115.237";
 }
 
 public class GraphEmailService : IEmailService
@@ -33,14 +34,29 @@ public class GraphEmailService : IEmailService
         _logger   = logger;
     }
 
-    public Task<(bool Sent, string? Error)> SendSubmissionMailAsync(Proposal p, string graphToken)
+    // ── Submission — send to BOTH approvers ──────────────────────────────────
+    public async Task<(bool Sent, string? Error)> SendSubmissionMailAsync(
+    Proposal p, string graphToken)
     {
         var subject = p.TokenNumber + "-" +
-                      (p.Activities.FirstOrDefault()?.ActivityType ?? "Activity") + "-" +
-                      p.DealerName.ToUpper() + "-" + p.Month + "-" + p.State;
-        return SendViaGraphAsync(graphToken, _settings.ApproverEmail, subject, BuildSubmissionBody(p));
+                    (p.Activities.FirstOrDefault()?.ActivityType ?? "Activity") + "-" +
+                    p.DealerName.ToUpper() + "-" + p.Month + "-" + p.State;
+        var body    = BuildSubmissionBody(p);
+
+        var t1 = SendViaGraphAsync(graphToken, _settings.ApproverEmail,  subject, body);
+        var t2 = !string.IsNullOrWhiteSpace(_settings.ApproverEmail2)
+                ? SendViaGraphAsync(graphToken, _settings.ApproverEmail2, subject, body)
+                : Task.FromResult<(bool, string?)>((true, null));
+
+        var results = await Task.WhenAll(t1, t2);
+        var sent    = results.Any(r => r.Item1);
+        var errors  = string.Join("; ", results
+                        .Where(r => !r.Item1 && r.Item2 != null)
+                        .Select(r => r.Item2));
+        return (sent, string.IsNullOrEmpty(errors) ? null : errors);
     }
 
+    // ── Decision — send only to RSM (submitter) ───────────────────────────────
     public Task<(bool Sent, string? Error)> SendDecisionMailAsync(
         Proposal p, ApprovalDecision decision, string graphToken)
     {
@@ -50,6 +66,7 @@ public class GraphEmailService : IEmailService
         return SendViaGraphAsync(graphToken, p.SubmittedBy, subject, BuildDecisionBody(p, decision));
     }
 
+    // ── Revision request — send only to RSM ──────────────────────────────────
     public Task<(bool Sent, string? Error)> SendRevisionRequestMailAsync(
         Proposal p, string? note, string graphToken)
     {
@@ -58,13 +75,28 @@ public class GraphEmailService : IEmailService
         return SendViaGraphAsync(graphToken, p.SubmittedBy, subject, BuildRevisionBody(p, note));
     }
 
-    public Task<(bool Sent, string? Error)> SendResubmissionMailAsync(Proposal p, string graphToken)
+    // ── Resubmission — send to BOTH approvers ────────────────────────────────
+    public async Task<(bool Sent, string? Error)> SendResubmissionMailAsync(
+    Proposal p, string graphToken)
     {
         var subject = "Resubmitted - " + p.TokenNumber + " - " +
-                      p.DealerName.ToUpper() + " - " + p.Month;
-        return SendViaGraphAsync(graphToken, _settings.ApproverEmail, subject, BuildResubmissionBody(p));
+                    p.DealerName.ToUpper() + " - " + p.Month;
+        var body    = BuildResubmissionBody(p);
+
+        var t1 = SendViaGraphAsync(graphToken, _settings.ApproverEmail,  subject, body);
+        var t2 = !string.IsNullOrWhiteSpace(_settings.ApproverEmail2)
+                ? SendViaGraphAsync(graphToken, _settings.ApproverEmail2, subject, body)
+                : Task.FromResult<(bool, string?)>((true, null));
+
+        var results = await Task.WhenAll(t1, t2);
+        var sent    = results.Any(r => r.Item1);
+        var errors  = string.Join("; ", results
+                        .Where(r => !r.Item1 && r.Item2 != null)
+                        .Select(r => r.Item2));
+        return (sent, string.IsNullOrEmpty(errors) ? null : errors);
     }
 
+    // ── Core send ─────────────────────────────────────────────────────────────
     private async Task<(bool Sent, string? Error)> SendViaGraphAsync(
         string graphToken, string to, string subject, string htmlBody)
     {
@@ -113,7 +145,7 @@ public class GraphEmailService : IEmailService
         }
     }
 
-    // ── HTML builders — using string concatenation (no raw string literals) ──
+    // ── HTML builders ─────────────────────────────────────────────────────────
 
     private static string H(string tag, string style, string content) =>
         "<" + tag + " style=\"" + style + "\">" + content + "</" + tag + ">";
@@ -176,12 +208,12 @@ public class GraphEmailService : IEmailService
     {
         var sb = new System.Text.StringBuilder();
         sb.Append("<table cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;margin-bottom:20px;font-size:13px;\">");
-        sb.Append("<tr>" + TdPad("Token")      + TdVal(p.TokenNumber ?? "") + "</tr>");
-        sb.Append("<tr>" + TdPad("Dealer")     + TdVal(p.DealerName) + "</tr>");
-        sb.Append("<tr>" + TdPad("Location")   + TdVal(p.Location + ", " + p.State) + "</tr>");
-        sb.Append("<tr>" + TdPad("Month")      + TdVal(p.Month) + "</tr>");
-        sb.Append("<tr>" + TdPad("Eligibility")+ TdVal(p.Eligibility) + "</tr>");
-        sb.Append("<tr>" + TdPad("RSM / TSM")  + TdVal(p.RsmName) + "</tr>");
+        sb.Append("<tr>" + TdPad("Token")       + TdVal(p.TokenNumber ?? "") + "</tr>");
+        sb.Append("<tr>" + TdPad("Dealer")      + TdVal(p.DealerName) + "</tr>");
+        sb.Append("<tr>" + TdPad("Location")    + TdVal(p.Location + ", " + p.State) + "</tr>");
+        sb.Append("<tr>" + TdPad("Month")       + TdVal(p.Month) + "</tr>");
+        sb.Append("<tr>" + TdPad("Eligibility") + TdVal(p.Eligibility) + "</tr>");
+        sb.Append("<tr>" + TdPad("RSM / TSM")   + TdVal(p.RsmName) + "</tr>");
         if (!string.IsNullOrWhiteSpace(p.CommandoName))
             sb.Append("<tr>" + TdPad("Commando") + TdVal(p.CommandoName) + "</tr>");
         sb.Append("</table>");

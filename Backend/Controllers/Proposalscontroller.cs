@@ -14,15 +14,22 @@ namespace BGL_BT_App.Backend.Controllers;
 [Authorize]
 public class ProposalsController : ControllerBase
 {
-    private readonly AppDbContext _db;
+    private readonly AppDbContext  _db;
+    private readonly BaplDbContext _bapl;
     private readonly IEmailService _emailService;
     private readonly ILogger<ProposalsController> _logger;
-    private string GraphToken() =>
-    Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
 
-    public ProposalsController(AppDbContext db, IEmailService emailService, ILogger<ProposalsController> logger)
+    private string GraphToken() =>
+        Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
+
+    public ProposalsController(
+        AppDbContext  db,
+        BaplDbContext bapl,
+        IEmailService emailService,
+        ILogger<ProposalsController> logger)
     {
         _db           = db;
+        _bapl         = bapl;
         _emailService = emailService;
         _logger       = logger;
     }
@@ -55,6 +62,9 @@ public class ProposalsController : ControllerBase
         var totalTarget = activities.Sum(a => a.Target);
         var cac         = totalTarget > 0 ? Math.Round(totalBudget / totalTarget, 2) : 0m;
 
+        // ── ERP eligibility / CAC validation ──────────────────────────────
+        var (allowedCac, cacWarning) = await GetCacLimitAsync(dto.DealerName, cac);
+
         var proposal = new Proposal
         {
             State                  = dto.State,
@@ -69,6 +79,8 @@ public class ProposalsController : ControllerBase
             TotalBudget            = totalBudget,
             TotalTarget            = totalTarget,
             Cac                    = cac,
+            AllowedCac             = allowedCac,   // ← new
+            CacWarning             = cacWarning,   // ← new
             SubmittedBy            = submittedBy,
             SubmittedByDisplayName = submitter?.DisplayName ?? dto.RsmName,
             Activities             = activities,
@@ -86,7 +98,7 @@ public class ProposalsController : ControllerBase
         return CreatedAtAction(nameof(GetById), new { id = proposal.Id }, ToResponse(proposal));
     }
 
-    // ── GET /api/proposals — admin sees all ───────────────────────────────────
+    // ── GET /api/proposals ────────────────────────────────────────────────────
     [HttpGet]
     public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetAll()
     {
@@ -99,7 +111,7 @@ public class ProposalsController : ControllerBase
         return Ok(proposals.Select(ToResponse));
     }
 
-    // ── GET /api/proposals/mine — RSM sees only their own ─────────────────────
+    // ── GET /api/proposals/mine ───────────────────────────────────────────────
     [HttpGet("mine")]
     public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMine()
     {
@@ -145,7 +157,7 @@ public class ProposalsController : ControllerBase
         return proposal is null ? NotFound() : Ok(ToResponse(proposal));
     }
 
-    // ── PUT /api/proposals/{id} — RSM resubmits / admin edits ────────────────
+    // ── PUT /api/proposals/{id} ───────────────────────────────────────────────
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<ProposalResponseDto>> Update(Guid id, UpdateProposalDto dto)
     {
@@ -170,7 +182,6 @@ public class ProposalsController : ControllerBase
         proposal.Eligibility  = dto.Eligibility;
         proposal.Remarks      = dto.Remarks;
 
-        // Delete existing activities and replace
         await _db.ProposalActivities
             .Where(a => a.ProposalId == id)
             .ExecuteDeleteAsync();
@@ -194,6 +205,11 @@ public class ProposalsController : ControllerBase
         proposal.TotalTarget = newActivities.Sum(a => a.Target);
         proposal.Cac         = proposal.TotalTarget > 0
             ? Math.Round(proposal.TotalBudget / proposal.TotalTarget, 2) : 0m;
+
+        // Recompute CAC limit on resubmit
+        var (allowedCac, cacWarning) = await GetCacLimitAsync(proposal.DealerName, proposal.Cac);
+        proposal.AllowedCac = allowedCac;
+        proposal.CacWarning = cacWarning;
 
         if (wasNeedsRevision)
         {
@@ -253,7 +269,7 @@ public class ProposalsController : ControllerBase
         await _db.SaveChangesAsync();
 
         var (sent, error) = await _emailService.SendDecisionMailAsync(proposal, decision, GraphToken());
-        decision.MailSent  = sent;
+        decision.MailSent   = sent;
         decision.MailSentAt = sent ? DateTimeOffset.UtcNow : null;
         decision.MailError  = error;
         await _db.SaveChangesAsync();
@@ -334,11 +350,62 @@ public class ProposalsController : ControllerBase
     private static DateOnly? ParseDate(string? value) =>
         DateOnly.TryParse(value, out var date) ? date : null;
 
+    // ── ERP CAC validation helper ─────────────────────────────────────────────
+    private async Task<(int AllowedCac, string? Warning)>
+        GetCacLimitAsync(string dealerName, decimal actualCac)
+    {
+        try
+        {
+            var cutoff = DateTime.UtcNow.AddMonths(-3).Date;
+
+            // Match by name (ERP may not have exact match — safe fallback)
+            var dealer = await _bapl.DealerMasters
+                .AsNoTracking()
+                .FirstOrDefaultAsync(d => d.CustomerName == dealerName);
+
+            if (dealer == null)
+            {
+                _logger.LogInformation("Dealer '{Name}' not found in ERP — using default CAC 4000", dealerName);
+                return (4000, null);
+            }
+
+            bool isNew = dealer.OnboardedDate.HasValue &&
+                         dealer.OnboardedDate.Value.Date >= cutoff;
+
+            var counts = await _bapl.RetailBillings
+                .AsNoTracking()
+                .Where(r => r.DealerCode == dealer.CustomerCode &&
+                            r.BillingDate >= cutoff)
+                .GroupBy(r => new { r.BillingDate.Year, r.BillingDate.Month })
+                .Select(g => g.Count())
+                .ToListAsync();
+
+            double avg        = (double)counts.Sum() / 3.0;
+            int    allowedCac = isNew ? 6000 : 4000;
+
+            string? warning = actualCac > allowedCac
+                ? $"CAC ₹{actualCac:N0} exceeds allowed ₹{allowedCac}/vehicle " +
+                  $"({(isNew ? "new" : "old")} dealer, avg {avg:N1} retails/month). " +
+                  "Deviation approval required."
+                : null;
+
+            return (allowedCac, warning);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "CAC validation failed for dealer '{Name}' — skipping, using default 4000", dealerName);
+            return (4000, null);
+        }
+    }
+
     private static ProposalResponseDto ToResponse(Proposal p) => new(
         p.Id, p.State, p.Location, p.Type, p.DealerName, p.RsmName, p.CommandoName,
         p.Month, p.Eligibility, p.Remarks, p.TotalBudget, p.TotalTarget, p.Cac,
         p.SubmittedBy, p.CreatedAt, p.SubmittedByDisplayName, p.Status,
         p.ApproverNote, p.ApprovedBy, p.DecidedAt, p.TokenNumber,
+        p.AllowedCac,    // ← new
+        p.CacWarning,    // ← new
         p.Activities.Select(a => new ActivityResponseDto(
             a.Id, a.ActivityType, a.Target, a.StartDate, a.EndDate,
             a.Budget, a.Incentive, a.Remarks,
