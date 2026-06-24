@@ -1,3 +1,4 @@
+/*frontend\src\pages\RSMForm.css*/
 /* ─── Reset ──────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -30,15 +31,9 @@
 .rsm-brand-sub  { color: #94a3b8; font-size: 11px; letter-spacing: 0.4px; }
 .rsm-topbar-right { display: flex; align-items: center; gap: 10px; }
 .rsm-ghost-btn {
-  background: none;
-  border: 1px solid #334155;
-  color: #cbd5e1;
-  border-radius: 6px;
-  padding: 6px 14px;
-  cursor: pointer;
-  font-size: 13px;
-  transition: border-color 0.15s, color 0.15s;
-  white-space: nowrap;
+  background: none; border: 1px solid #334155; color: #cbd5e1;
+  border-radius: 6px; padding: 6px 14px; cursor: pointer;
+  font-size: 13px; transition: border-color 0.15s, color 0.15s; white-space: nowrap;
 }
 .rsm-ghost-btn:hover { border-color: #94a3b8; color: #fff; }
 .rsm-ghost-btn--danger { color: #f87171; }
@@ -62,29 +57,45 @@
   padding: 24px 20px 60px;
 }
 
+/* ─── Eligibility banner ─────────────────────────────────────────────────── */
+.rsm-elig-loading {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: #64748b; padding: 6px 2px; margin-bottom: 10px;
+}
+.rsm-elig-banner {
+  display: flex; align-items: flex-start; gap: 10px;
+  border-radius: 7px; padding: 10px 14px; margin-bottom: 12px;
+  font-size: 13px; animation: slideDown 0.15s ease;
+}
+.rsm-elig-banner--ok {
+  background: #f0fdf4; border: 1px solid #bbf7d0;
+  border-left: 3px solid #22c55e; color: #166534;
+}
+.rsm-elig-banner--no {
+  background: #fef2f2; border: 1px solid #fecaca;
+  border-left: 3px solid #ef4444; color: #991b1b;
+}
+.rsm-elig-icon { font-size: 15px; flex-shrink: 0; font-weight: 700; margin-top: 1px; }
+.rsm-elig-cac  { font-size: 12px; font-weight: 600; }
+
+/* ─── CAC Warning ────────────────────────────────────────────────────────── */
+.rsm-cac-warning {
+  width: 100%; background: #fefce8;
+  border: 1px solid #fde68a; border-left: 3px solid #f59e0b;
+  border-radius: 7px; padding: 10px 14px;
+  font-size: 12px; color: #92400e; margin-top: 12px;
+}
+
 /* ─── Document Banner ────────────────────────────────────────────────────── */
 .rsm-doc-banner {
-  background: #0a2540;
-  border-radius: 12px;
-  padding: 24px 28px;
-  margin-bottom: 16px;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 16px;
+  background: #0a2540; border-radius: 12px; padding: 24px 28px;
+  margin-bottom: 16px; display: flex; justify-content: space-between;
+  align-items: flex-start; flex-wrap: wrap; gap: 16px;
 }
 .rsm-doc-tag {
-  display: inline-block;
-  background: #1e3a5f;
-  color: #60a5fa;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 1.5px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  margin-bottom: 8px;
-  text-transform: uppercase;
+  display: inline-block; background: #1e3a5f; color: #60a5fa;
+  font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
+  padding: 2px 8px; border-radius: 4px; margin-bottom: 8px; text-transform: uppercase;
 }
 .rsm-doc-title  { color: #fff; font-size: 22px; font-weight: 700; margin-bottom: 4px; }
 .rsm-doc-sub    { color: #94a3b8; font-size: 13px; }
@@ -96,37 +107,28 @@
 .rsm-draft-badge {
   display: flex; align-items: center; gap: 6px;
   background: #1e3a5f; border: 1px solid #334155;
-  border-radius: 20px; padding: 3px 12px;
-  color: #fbbf24; font-size: 11px; font-weight: 600;
+  border-radius: 20px; padding: 3px 12px; color: #fbbf24; font-size: 11px; font-weight: 600;
 }
-.rsm-draft-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: #fbbf24; flex-shrink: 0;
-}
+.rsm-draft-dot { width: 6px; height: 6px; border-radius: 50%; background: #fbbf24; flex-shrink: 0; }
 .rsm-draft-badge--revision { background: #fef9c3; color: #92400e; border-color: #fde68a; }
 
 /* ─── Step Bar ───────────────────────────────────────────────────────────── */
 .rsm-step-bar {
   display: flex; align-items: center; justify-content: center; gap: 0;
-  background: #fff; border-radius: 10px;
-  padding: 0; margin-bottom: 16px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-  overflow: hidden;
+  background: #fff; border-radius: 10px; padding: 0; margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06); overflow: hidden;
 }
 .rsm-step-btn {
-  display: flex; align-items: center; gap: 10px;
-  flex: 1; background: none; border: none; cursor: pointer;
-  padding: 14px 20px; justify-content: center;
-  border-right: 1px solid #f1f5f9;
-  transition: background 0.15s;
+  display: flex; align-items: center; gap: 10px; flex: 1;
+  background: none; border: none; cursor: pointer; padding: 14px 20px;
+  justify-content: center; border-right: 1px solid #f1f5f9; transition: background 0.15s;
 }
 .rsm-step-btn:last-child { border-right: none; }
 .rsm-step-btn:hover { background: #f8fafc; }
 .rsm-step-circle {
   width: 26px; height: 26px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 700; flex-shrink: 0;
-  transition: background 0.2s;
+  font-size: 12px; font-weight: 700; flex-shrink: 0; transition: background 0.2s;
 }
 .rsm-step-circle--pending { background: #e2e8f0; color: #64748b; }
 .rsm-step-circle--active  { background: #0a2540; color: #fff; }
@@ -136,141 +138,90 @@
 
 /* ─── Card ───────────────────────────────────────────────────────────────── */
 .rsm-card {
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-  margin-bottom: 16px;
-  overflow: visible;  /* CRITICAL — allow dropdowns to escape */
+  background: #fff; border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 16px; overflow: visible;
 }
 .rsm-card-head {
   display: flex; justify-content: space-between; align-items: flex-start;
-  padding: 20px 24px 14px;
-  border-bottom: 1px solid #f1f5f9;
+  padding: 20px 24px 14px; border-bottom: 1px solid #f1f5f9;
 }
 .rsm-card-title { font-size: 16px; font-weight: 700; color: #0a2540; margin-bottom: 2px; }
 .rsm-card-sub   { font-size: 12px; color: #64748b; }
 .rsm-card-body  { padding: 20px 24px; overflow: visible; }
 .rsm-card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
-/* ─── Validation Banner — compact ────────────────────────────────────────── */
+/* ─── Validation Banner ──────────────────────────────────────────────────── */
 .rsm-validation-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  background: #fef2f2;
-  border: 1px solid #fca5a5;
-  border-left: 3px solid #ef4444;
-  border-radius: 6px;
-  padding: 10px 14px;
-  margin-bottom: 16px;
-  font-size: 13px;
-  color: #7f1d1d;
-  animation: slideDown 0.15s ease;
+  display: flex; align-items: flex-start; gap: 10px;
+  background: #fef2f2; border: 1px solid #fca5a5; border-left: 3px solid #ef4444;
+  border-radius: 6px; padding: 10px 14px; margin-bottom: 16px;
+  font-size: 13px; color: #7f1d1d; animation: slideDown 0.15s ease;
 }
 .rsm-validation-icon { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
-.rsm-validation-list {
-  margin: 4px 0 0 16px;
-  padding: 0;
-  font-size: 12px;
-  line-height: 1.8;
-  color: #991b1b;
-}
+.rsm-validation-list { margin: 4px 0 0 16px; padding: 0; font-size: 12px; line-height: 1.8; color: #991b1b; }
 
 /* ─── Form fields ────────────────────────────────────────────────────────── */
 .rsm-field { display: flex; flex-direction: column; gap: 4px; }
 .rsm-label {
-  display: block;
-  font-size: 11px; font-weight: 700;
-  color: #374151;
-  text-transform: uppercase; letter-spacing: 0.5px;
-  margin-bottom: 2px;
+  display: block; font-size: 11px; font-weight: 700; color: #374151;
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;
 }
 .rsm-label-req { color: #ef4444; }
 
 .rsm-input, .rsm-select, .rsm-textarea {
-  border: 1.5px solid #e2e8f0;
-  border-radius: 7px;
-  padding: 8px 11px;
-  font-size: 13px;
-  color: #0a2540;
-  outline: none;
-  background: #fff;
-  width: 100%;
-  box-sizing: border-box;
-  font-family: inherit;
-  transition: border-color 0.15s, box-shadow 0.15s;
-  height: 38px;
+  border: 1.5px solid #e2e8f0; border-radius: 7px; padding: 8px 11px;
+  font-size: 13px; color: #0a2540; outline: none; background: #fff;
+  width: 100%; box-sizing: border-box; font-family: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s; height: 38px;
 }
 .rsm-input:focus, .rsm-select:focus, .rsm-textarea:focus {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+  border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
 }
-.rsm-input:disabled, .rsm-select:disabled {
-  background: #f8fafc; color: #94a3b8; cursor: not-allowed;
-}
+.rsm-input:disabled, .rsm-select:disabled { background: #f8fafc; color: #94a3b8; cursor: not-allowed; }
 .rsm-textarea { resize: vertical; height: 80px; }
 
 .rsm-input-sm {
-  border: 1.5px solid #e2e8f0; border-radius: 6px;
-  padding: 5px 7px; font-size: 12px; color: #0a2540;
-  outline: none; background: #fff; width: 100%;
-  box-sizing: border-box; font-family: inherit;
-  transition: border-color 0.15s; height: 32px;
+  border: 1.5px solid #e2e8f0; border-radius: 6px; padding: 5px 7px;
+  font-size: 12px; color: #0a2540; outline: none; background: #fff;
+  width: 100%; box-sizing: border-box; font-family: inherit; transition: border-color 0.15s; height: 32px;
 }
 .rsm-input-sm:focus { border-color: #3b82f6; }
 
-/* Error states */
 .rsm-input--error    { border-color: #ef4444 !important; background: #fff8f8; }
 .rsm-input-sm--error { border-color: #ef4444 !important; background: #fff8f8; }
 .rsm-field-error     { font-size: 11px; color: #ef4444; margin-top: 1px; }
 
 /* ─── Form Row 1 & 2 ─────────────────────────────────────────────────────── */
-.rsm-form-row1 {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 12px;
-}
-.rsm-form-row2 {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 12px;
+.rsm-form-row1, .rsm-form-row2 {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px;
 }
 
 /* ─── Dealer input ───────────────────────────────────────────────────────── */
 .rsm-dealer-input-wrap { display: flex; gap: 8px; align-items: flex-start; }
 .rsm-info-btn {
   flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%;
-  background: #eff6ff; border: 1.5px solid #bfdbfe;
-  color: #1d4ed8; font-size: 16px; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 700; transition: background 0.15s, border-color 0.15s;
-  margin-top: 2px;
+  background: #eff6ff; border: 1.5px solid #bfdbfe; color: #1d4ed8;
+  font-size: 16px; cursor: pointer; display: flex; align-items: center;
+  justify-content: center; font-weight: 700; transition: background 0.15s, border-color 0.15s; margin-top: 2px;
 }
 .rsm-info-btn:hover { background: #dbeafe; border-color: #93c5fd; }
 
 /* ─── Dealer info panel ──────────────────────────────────────────────────── */
 .rsm-dealer-panel {
   background: #f8fafc; border: 1px solid #e2e8f0;
-  border-radius: 10px; padding: 16px 18px;
-  margin-bottom: 14px; animation: slideDown 0.18s ease;
+  border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; animation: slideDown 0.18s ease;
 }
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.rsm-dealer-panel-head {
-  display: flex; justify-content: space-between;
-  align-items: flex-start; margin-bottom: 10px;
-}
+.rsm-dealer-panel-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
 .rsm-dealer-panel-name { font-size: 14px; font-weight: 700; color: #0a2540; margin: 4px 0 2px; }
 .rsm-dealer-panel-sub  { font-size: 12px; color: #64748b; }
 .rsm-close-panel-btn {
-  background: #e2e8f0; border: none; border-radius: 50%;
-  width: 26px; height: 26px; cursor: pointer; font-size: 13px;
-  color: #475569; display: flex; align-items: center; justify-content: center;
-  transition: background 0.15s; flex-shrink: 0;
+  background: #e2e8f0; border: none; border-radius: 50%; width: 26px; height: 26px;
+  cursor: pointer; font-size: 13px; color: #475569;
+  display: flex; align-items: center; justify-content: center; transition: background 0.15s; flex-shrink: 0;
 }
 .rsm-close-panel-btn:hover { background: #cbd5e1; }
 .rsm-dealer-contacts { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -279,9 +230,8 @@
 /* ─── Dealer History ─────────────────────────────────────────────────────── */
 .rsm-dealer-history  { margin-top: 12px; border-top: 1px solid #e2e8f0; padding-top: 10px; }
 .rsm-panel-section-title {
-  font-size: 11px; font-weight: 700; color: #0a2540;
-  text-transform: uppercase; letter-spacing: 0.5px;
-  margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 700; color: #0a2540; text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
 }
 .rsm-history-count {
   display: inline-flex; align-items: center; justify-content: center;
@@ -291,23 +241,21 @@
 .rsm-history-loading { display: flex; align-items: center; gap: 8px; color: #64748b; font-size: 12px; }
 .rsm-history-empty   { font-size: 12px; color: #94a3b8; font-style: italic; }
 .rsm-panel-table-wrap { overflow-x: auto; }
-.rsm-panel-table     { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 560px; }
+.rsm-panel-table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 560px; }
 .rsm-panel-th {
-  padding: 7px 10px; color: #374151; font-weight: 700;
-  font-size: 10px; text-align: left;
+  padding: 7px 10px; color: #374151; font-weight: 700; font-size: 10px; text-align: left;
   border-bottom: 2px solid #e2e8f0; background: #f1f5f9;
   text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;
 }
 .rsm-panel-th--right { text-align: right; }
-.rsm-panel-td        { padding: 6px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+.rsm-panel-td { padding: 6px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .rsm-panel-td--right { text-align: right; }
 .rsm-panel-row--even { background: #fff; }
 .rsm-panel-row--odd  { background: #f8fafc; }
-.rsm-history-token   { font-family: monospace; font-size: 11px; font-weight: 600; color: #1e3a5f; white-space: nowrap; }
+.rsm-history-token { font-family: monospace; font-size: 11px; font-weight: 600; color: #1e3a5f; white-space: nowrap; }
 .rsm-history-chip {
   display: inline-block; background: #f1f5f9; border: 1px solid #e2e8f0;
-  border-radius: 4px; padding: 1px 5px; font-size: 10px; color: #374151;
-  margin-right: 2px; white-space: nowrap;
+  border-radius: 4px; padding: 1px 5px; font-size: 10px; color: #374151; margin-right: 2px; white-space: nowrap;
 }
 .rsm-history-chip--more { background: #e2e8f0; color: #64748b; }
 .rsm-history-status {
@@ -337,55 +285,66 @@
 .rsm-xlsx-btn:hover { background: #dcfce7; }
 .rsm-add-row-btn {
   background: #0a2540; color: #fff; border: none; border-radius: 7px;
-  padding: 7px 14px; font-size: 12px; font-weight: 600;
-  cursor: pointer; transition: background 0.15s;
+  padding: 7px 14px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s;
 }
 .rsm-add-row-btn:hover { background: #1e3a5f; }
 
 /* ─── XLSX hint & feedback ───────────────────────────────────────────────── */
 .rsm-xlsx-hint {
-  font-size: 12px; color: #64748b;
-  background: #f8fafc; border: 1px solid #e2e8f0;
+  font-size: 12px; color: #64748b; background: #f8fafc; border: 1px solid #e2e8f0;
   border-radius: 6px; padding: 7px 12px; margin-bottom: 12px;
 }
 .rsm-feedback { border-radius: 7px; padding: 8px 12px; margin-bottom: 12px; font-size: 12px; font-weight: 600; }
 .rsm-feedback--ok  { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
 .rsm-feedback--err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
 
-/* ─── Activity table ─────────────────────────────────────────────────────── */
-.rsm-table-wrap {
-  overflow: visible;     /* mixing overflow-x:auto with overflow-y:visible
-                             gets coerced by browsers into clipping BOTH axes,
-                             which is why the activity-type dropdown was
-                             getting trapped inside this box instead of
-                             floating above the table. */
+/* ═══════════════════════════════════════════════════════════════
+   ACTIVITY TABLE
+   Key insight: wrap the table in overflow-x:auto scroll container
+   but keep the OUTER card overflow:visible so dropdowns escape.
+   The scroll container clips dropdowns — fix by using position:fixed
+   on the SearchableSelect dropdown (handled in component).
+═══════════════════════════════════════════════════════════════ */
+
+/* Scroll container — wraps table, enables horizontal scroll */
+.rsm-table-scroll {
+  overflow-x: auto;
+  overflow-y: visible;
   border-radius: 8px;
   border: 1px solid #e2e8f0;
+  -webkit-overflow-scrolling: touch;
 }
 
-@media (max-width: 768px) {
-  .rsm-table-wrap {
-    overflow-x: auto;   /* restore horizontal scroll on small screens only */
-  }
+/* Keep the outer wrap transparent — just for legacy references */
+.rsm-table-wrap {
+  /* acts as passthrough — no overflow set here */
+  position: relative;
 }
+
 .rsm-table {
-  width: 100%; border-collapse: collapse; font-size: 13px;
-  overflow: visible;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  /* NO table-layout:fixed — let columns size naturally */
+  /* NO min-width — let scroll container handle overflow */
 }
+
 .rsm-thead-row { background: #0a2540; }
 .rsm-th {
   padding: 9px 10px; color: #e2e8f0; font-weight: 600;
   font-size: 11px; text-align: left; white-space: nowrap;
 }
 .rsm-th--right { text-align: right; }
+
 .rsm-td {
   padding: 7px 10px; border-bottom: 1px solid #f1f5f9;
-  vertical-align: middle; overflow: visible; position: relative;
+  vertical-align: top; white-space: nowrap;
 }
 .rsm-td--right { text-align: right; }
 .rsm-td--total { text-align: right; font-weight: 700; color: #0a2540; }
 .rsm-row--even { background: #fff; }
 .rsm-row--odd  { background: #f8fafc; }
+
 .rsm-row-num {
   display: inline-flex; align-items: center; justify-content: center;
   width: 20px; height: 20px; background: #e2e8f0; border-radius: 50%;
@@ -395,11 +354,22 @@
   background: #fee2e2; border: none; color: #991b1b;
   width: 24px; height: 24px; border-radius: 50%; cursor: pointer;
   font-weight: 700; font-size: 14px;
-  display: flex; align-items: center; justify-content: center;
-  transition: background 0.15s;
+  display: flex; align-items: center; justify-content: center; transition: background 0.15s;
 }
 .rsm-remove-btn:hover:not(:disabled) { background: #fecaca; }
 .rsm-remove-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ─── SearchableSelect sizing inside table and forms ─────────────────────── */
+.rsm-form-row1 .ss-trigger,
+.rsm-form-row2 .ss-trigger { height: 38px; font-size: 13px; }
+
+.rsm-td .ss-trigger {
+  height: 32px; font-size: 12px; padding: 5px 8px;
+  border-radius: 6px; white-space: nowrap;
+}
+
+/* Error wrapper */
+.rsm-select-error-wrap .ss-trigger { border-color: #ef4444 !important; background: #fff8f8; }
 
 /* ─── Totals strip ───────────────────────────────────────────────────────── */
 .rsm-totals-strip { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
@@ -417,14 +387,10 @@
 .rsm-review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 4px; }
 .rsm-review-group { border-radius: 8px; border: 1px solid #e2e8f0; overflow: hidden; }
 .rsm-review-group-title {
-  margin: 0; padding: 8px 14px; background: #0a2540;
-  color: #e2e8f0; font-size: 10px; font-weight: 700;
-  letter-spacing: 0.5px; text-transform: uppercase;
+  margin: 0; padding: 8px 14px; background: #0a2540; color: #e2e8f0;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
 }
-.rsm-review-row {
-  display: flex; justify-content: space-between;
-  padding: 7px 14px; border-bottom: 1px solid #f1f5f9; gap: 10px;
-}
+.rsm-review-row { display: flex; justify-content: space-between; padding: 7px 14px; border-bottom: 1px solid #f1f5f9; gap: 10px; }
 .rsm-review-label { font-size: 12px; color: #64748b; flex-shrink: 0; }
 .rsm-review-value { font-size: 12px; font-weight: 500; color: #0a2540; text-align: right; }
 .rsm-review-value--highlight { font-weight: 700; color: #166534; }
@@ -440,17 +406,14 @@
   margin-top: 24px; padding-top: 16px; border-top: 1px solid #f1f5f9;
 }
 .rsm-primary-btn {
-  background: #0a2540; color: #fff; border: none;
-  border-radius: 7px; padding: 10px 24px;
-  font-size: 14px; font-weight: 600; cursor: pointer;
-  transition: background 0.15s;
+  background: #0a2540; color: #fff; border: none; border-radius: 7px;
+  padding: 10px 24px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s;
 }
 .rsm-primary-btn:hover:not(:disabled) { background: #1e3a5f; }
 .rsm-primary-btn:disabled { background: #94a3b8; cursor: not-allowed; }
 .rsm-ghost-btn2 {
-  background: #fff; color: #0a2540;
-  border: 1.5px solid #e2e8f0; border-radius: 7px;
-  padding: 9px 20px; font-size: 14px; font-weight: 500;
+  background: #fff; color: #0a2540; border: 1.5px solid #e2e8f0;
+  border-radius: 7px; padding: 9px 20px; font-size: 14px; font-weight: 500;
   cursor: pointer; transition: border-color 0.15s;
 }
 .rsm-ghost-btn2:hover { border-color: #94a3b8; }
@@ -458,8 +421,7 @@
 /* ─── Banners ────────────────────────────────────────────────────────────── */
 .rsm-success-banner {
   background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
-  border-radius: 7px; padding: 10px 14px; font-weight: 600;
-  font-size: 13px; margin-top: 16px;
+  border-radius: 7px; padding: 10px 14px; font-weight: 600; font-size: 13px; margin-top: 16px;
 }
 .rsm-error-banner {
   background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
@@ -467,76 +429,51 @@
 }
 .rsm-revision-banner {
   display: flex; align-items: flex-start; gap: 10px;
-  background: #fef9c3; border: 1px solid #fde68a;
-  border-left: 3px solid #f59e0b;
-  border-radius: 7px; padding: 10px 14px;
-  margin-bottom: 14px; font-size: 13px; color: #92400e;
+  background: #fef9c3; border: 1px solid #fde68a; border-left: 3px solid #f59e0b;
+  border-radius: 7px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; color: #92400e;
 }
 .rsm-revision-icon { font-size: 14px; flex-shrink: 0; }
 
 /* ─── Spinners ───────────────────────────────────────────────────────────── */
 .rsm-spinner {
-  width: 30px; height: 30px;
-  border: 2.5px solid #e2e8f0; border-top-color: #1e3a5f;
+  width: 30px; height: 30px; border: 2.5px solid #e2e8f0; border-top-color: #1e3a5f;
   border-radius: 50%; animation: rsm-spin 0.75s linear infinite; margin: 0 auto;
 }
 .rsm-spinner-sm {
-  width: 13px; height: 13px;
-  border: 2px solid #e2e8f0; border-top-color: #1e3a5f;
+  width: 13px; height: 13px; border: 2px solid #e2e8f0; border-top-color: #1e3a5f;
   border-radius: 50%; animation: rsm-spin 0.75s linear infinite; flex-shrink: 0;
 }
 @keyframes rsm-spin { to { transform: rotate(360deg); } }
-
-/* ─── SearchableSelect inside forms ─────────────────────────────────────── */
-.rsm-form-row1 .ss-trigger,
-.rsm-form-row2 .ss-trigger {
-  height: 38px;
-  font-size: 13px;
-}
-.rsm-td .ss-trigger {
-  height: 32px;
-  font-size: 12px;
-  padding: 5px 8px;
-  border-radius: 6px;
-}
-.rsm-td .ss-wrap { position: relative; z-index: 10; }
-.rsm-td .ss-wrap:focus-within { z-index: 9999; }
-.rsm-td .ss-dropdown { z-index: 9999; min-width: 160px; }
-
-/* error outline on SearchableSelect */
-.rsm-select-error-wrap .ss-trigger { border-color: #ef4444 !important; background: #fff8f8; }
 
 /* ══════════════════════════════════════════════════════
    RESPONSIVE
 ══════════════════════════════════════════════════════ */
 @media (max-width: 1024px) {
-  .rsm-form-row1,
-  .rsm-form-row2 { grid-template-columns: repeat(2, 1fr); }
+  .rsm-form-row1, .rsm-form-row2 { grid-template-columns: repeat(2, 1fr); }
 }
+
 @media (max-width: 768px) {
-  .rsm-topbar { padding: 0 14px; }
+  .rsm-topbar    { padding: 0 14px; }
   .rsm-avatar-name { display: none; }
-  .rsm-main { padding: 14px 12px 48px; }
+  .rsm-main      { padding: 14px 12px 48px; }
   .rsm-doc-banner { padding: 16px; flex-direction: column; }
   .rsm-doc-title  { font-size: 18px; }
   .rsm-doc-meta   { align-items: flex-start; flex-direction: row; flex-wrap: wrap; gap: 10px; }
   .rsm-meta-item  { align-items: flex-start; }
-  .rsm-step-bar   { padding: 0; }
-  .rsm-step-btn   { padding: 12px 8px; }
+  .rsm-step-bar  { padding: 0; }
+  .rsm-step-btn  { padding: 12px 8px; }
   .rsm-step-label { display: none; }
-  .rsm-card-head  { flex-direction: column; gap: 8px; padding: 14px 14px 12px; }
-  .rsm-card-body  { padding: 14px; }
-  .rsm-form-row1,
-  .rsm-form-row2  { grid-template-columns: repeat(2, 1fr); gap: 10px; }
-  .rsm-review-grid { grid-template-columns: 1fr; }
+  .rsm-card-head { flex-direction: column; gap: 8px; padding: 14px 14px 12px; }
+  .rsm-card-body { padding: 14px; }
+  .rsm-form-row1, .rsm-form-row2 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .rsm-review-grid  { grid-template-columns: 1fr; }
   .rsm-section-footer { flex-direction: column-reverse; gap: 8px; }
-  .rsm-primary-btn,
-  .rsm-ghost-btn2 { width: 100%; text-align: center; }
+  .rsm-primary-btn, .rsm-ghost-btn2 { width: 100%; text-align: center; }
   .rsm-totals-strip { gap: 8px; }
 }
+
 @media (max-width: 480px) {
-  .rsm-form-row1,
-  .rsm-form-row2  { grid-template-columns: 1fr; }
+  .rsm-form-row1, .rsm-form-row2 { grid-template-columns: 1fr; }
   .rsm-doc-banner { padding: 12px; }
   .rsm-doc-title  { font-size: 16px; }
   .rsm-totals-strip { flex-direction: column; }

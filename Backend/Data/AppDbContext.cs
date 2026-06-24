@@ -52,6 +52,8 @@ public class AppDbContext : DbContext
             e.Property(p => p.SubmittedBy).HasMaxLength(200).IsRequired();
             e.Property(p => p.TotalBudget).HasPrecision(18, 2);
             e.Property(p => p.Cac).HasPrecision(18, 2);
+            e.Property(p => p.AllowedCac).HasDefaultValue(4000);          // ← new
+            e.Property(p => p.CacWarning).HasMaxLength(500);
             e.Property(p => p.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
             e.HasMany(p => p.Activities)
              .WithOne(a => a.Proposal!)

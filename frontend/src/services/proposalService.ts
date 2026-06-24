@@ -34,6 +34,8 @@ export interface ProposalResponse {
   totalBudget:            number;
   totalTarget:            number;
   cac:                    number;
+  allowedCac:             number;        // ← new
+  cacWarning:             string | null; // ← new
   submittedBy:            string;
   submittedByDisplayName: string | null;
   createdAt:              string;
