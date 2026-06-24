@@ -5,6 +5,8 @@ import {
   submitProposal,
   updateProposal,
   fetchProposalById,
+  fetchProposalsByDealer,
+  type ProposalResponse,
 } from "../services/proposalService";
 import { fetchStates, fetchCitiesByState } from "../services/locationService";
 import { fetchDealers, type DealerOption } from "../services/dealerService";
@@ -15,7 +17,7 @@ import * as XLSX from "xlsx";
 import "./RSMForm.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const LOCATION_TYPES = ["Old", "New"];
+const LOCATION_TYPES      = ["Old", "New"];
 const ELIGIBILITY_OPTIONS = ["Eligible", "Not Eligible", "Pending Approval"];
 const MONTHS = [
   "January","February","March","April","May","June",
@@ -25,28 +27,48 @@ const CURRENT_MONTH = MONTHS[new Date().getMonth()];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface ActivityRow {
-  id: string;
+  id:           string;
   activityType: string;
-  target: string;
-  startDate: string;
-  endDate: string;
-  budget: string;
-  incentive: string;
-  remarks: string;
+  target:       string;
+  startDate:    string;
+  endDate:      string;
+  budget:       string;
+  incentive:    string;
+  remarks:      string;
 }
 
 interface ProposalHeader {
-  dealerId: string;
-  state: string;
-  stateId: number | null;
-  location: string;
-  type: string;
-  dealerName: string;
-  rsmName: string;
+  dealerId:     string;
+  state:        string;
+  stateId:      number | null;
+  location:     string;
+  type:         string;
+  dealerName:   string;
+  rsmName:      string;
   commandoName: string;
-  month: string;
-  eligibility: string;
-  remarks: string;
+  month:        string;
+  eligibility:  string;
+  remarks:      string;
+}
+
+interface FieldErrors {
+  dealerName?: string;
+  state?:      string;
+  location?:   string;
+  type?:       string;
+  rsmName?:    string;
+  month?:      string;
+  eligibility?: string;
+}
+
+interface ActivityErrors {
+  [rowId: string]: {
+    activityType?: string;
+    target?:       string;
+    startDate?:    string;
+    endDate?:      string;
+    budget?:       string;
+  };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -78,6 +100,35 @@ const emptyHeader = (): ProposalHeader => ({
   eligibility: "", remarks: "",
 });
 
+// ─── Validation ───────────────────────────────────────────────────────────────
+function validateDetails(h: ProposalHeader): FieldErrors {
+  const e: FieldErrors = {};
+  if (!h.dealerName.trim()) e.dealerName  = "Dealer is required.";
+  if (!h.state.trim())      e.state       = "State is required.";
+  if (!h.location.trim())   e.location    = "City is required.";
+  if (!h.type.trim())       e.type        = "Location type is required.";
+  if (!h.rsmName.trim())    e.rsmName     = "RSM / TSM name is required.";
+  if (!h.month.trim())      e.month       = "Month is required.";
+  if (!h.eligibility.trim()) e.eligibility = "Eligibility is required.";
+  return e;
+}
+
+function validateActivities(rows: ActivityRow[]): ActivityErrors {
+  const e: ActivityErrors = {};
+  rows.forEach((a) => {
+    const rowErr: ActivityErrors[string] = {};
+    if (!a.activityType.trim()) rowErr.activityType = "Required";
+    if (!a.target || num(a.target) <= 0) rowErr.target = "Required";
+    if (!a.startDate) rowErr.startDate = "Required";
+    if (!a.endDate)   rowErr.endDate   = "Required";
+    if (a.startDate && a.endDate && a.endDate < a.startDate)
+      rowErr.endDate = "End must be after start";
+    if (!a.budget || num(a.budget) <= 0) rowErr.budget = "Required";
+    if (Object.keys(rowErr).length) e[a.id] = rowErr;
+  });
+  return e;
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function RSMProposalForm() {
   const { instance, accounts } = useMsal();
@@ -86,49 +137,58 @@ export default function RSMProposalForm() {
   const account        = accounts[0];
   const xlsxRef        = useRef<HTMLInputElement>(null);
 
-  // Edit mode — triggered by ?edit={proposalId} from revision email link
   const editId   = searchParams.get("edit");
   const editMode = !!editId;
 
   const [docNumber] = useState<string>(generateDocNumber);
   const [docDate]   = useState<string>(() => formatDate(new Date()));
 
-  const [header, setHeader]         = useState<ProposalHeader>(emptyHeader());
-  const [activities, setActivities] = useState<ActivityRow[]>([emptyActivity()]);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitted,  setSubmitted]  = useState(false);
-  const [error, setError]           = useState<string | null>(null);
+  const [header,       setHeader]       = useState<ProposalHeader>(emptyHeader());
+  const [activities,   setActivities]   = useState<ActivityRow[]>([emptyActivity()]);
+  const [submitting,   setSubmitting]   = useState(false);
+  const [submitted,    setSubmitted]    = useState(false);
+  const [error,        setError]        = useState<string | null>(null);
   const [revisionNote, setRevisionNote] = useState<string | null>(null);
   const [loadingEdit,  setLoadingEdit]  = useState(false);
 
+  // Validation errors
+  const [fieldErrors,    setFieldErrors]    = useState<FieldErrors>({});
+  const [activityErrors, setActivityErrors] = useState<ActivityErrors>({});
+  const [showDetailErr,  setShowDetailErr]  = useState(false);
+  const [showActErr,     setShowActErr]     = useState(false);
+
   // Location
-  const [states, setStates]               = useState<StateOption[]>([]);
-  const [cities, setCities]               = useState<CityOption[]>([]);
+  const [states,        setStates]        = useState<StateOption[]>([]);
+  const [cities,        setCities]        = useState<CityOption[]>([]);
   const [loadingCities, setLoadingCities] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
 
   // Dealers
-  const [dealers, setDealers]               = useState<DealerOption[]>([]);
+  const [dealers,        setDealers]        = useState<DealerOption[]>([]);
   const [loadingDealers, setLoadingDealers] = useState(false);
-  const [dealerError, setDealerError]       = useState<string | null>(null);
+  const [dealerError,    setDealerError]    = useState<string | null>(null);
+
+  // Dealer history
+  const [dealerHistory,        setDealerHistory]        = useState<ProposalResponse[]>([]);
+  const [loadingDealerHistory, setLoadingDealerHistory] = useState(false);
 
   // Activity types
   const [activityTypes, setActivityTypes] = useState<ActivityType[]>([]);
 
-  const [activeSection, setActiveSection]     = useState<"details" | "activities" | "summary">("details");
+  const [activeSection,   setActiveSection]   = useState<"details" | "activities" | "summary">("details");
   const [showDealerPanel, setShowDealerPanel] = useState(false);
-  const [xlsxMsg, setXlsxMsg]                 = useState<{ ok: boolean; text: string } | null>(null);
+  const [xlsxMsg,         setXlsxMsg]         = useState<{ ok: boolean; text: string } | null>(null);
 
   const selectedDealer = dealers.find((d) => d.customerCode === header.dealerId) ?? null;
 
-  // ── Load states ────────────────────────────────────────────────────────────
+  // ── Load states ──────────────────────────────────────────────────────────
   useEffect(() => {
     fetchStates(instance)
       .then(setStates)
       .catch(() => setLocationError("Could not load states."));
   }, [instance]);
 
-  // ── Load dealers ───────────────────────────────────────────────────────────
+  // ── Load dealers ─────────────────────────────────────────────────────────
   useEffect(() => {
     setLoadingDealers(true);
     fetchDealers(instance)
@@ -137,12 +197,12 @@ export default function RSMProposalForm() {
       .finally(() => setLoadingDealers(false));
   }, [instance]);
 
-  // ── Load activity types ────────────────────────────────────────────────────
+  // ── Load activity types ──────────────────────────────────────────────────
   useEffect(() => {
     fetchActivityTypes(instance).then(setActivityTypes).catch(() => {});
   }, [instance]);
 
-  // ── Load existing proposal if in edit mode ─────────────────────────────────
+  // ── Load existing proposal in edit mode ──────────────────────────────────
   useEffect(() => {
     if (!editId) return;
     setLoadingEdit(true);
@@ -177,7 +237,7 @@ export default function RSMProposalForm() {
       .finally(() => setLoadingEdit(false));
   }, [editId, instance]);
 
-  // ── Computed totals ────────────────────────────────────────────────────────
+  // ── Computed totals ───────────────────────────────────────────────────────
   const { totalBudget, totalTarget, cac } = useMemo(() => {
     const totalBudget = activities.reduce((s, a) => s + num(a.budget) + num(a.incentive), 0);
     const totalTarget = activities.reduce((s, a) => s + num(a.target), 0);
@@ -185,13 +245,20 @@ export default function RSMProposalForm() {
     return { totalBudget, totalTarget, cac };
   }, [activities]);
 
-  const setField = (key: keyof ProposalHeader, value: string) =>
+  const setField = (key: keyof ProposalHeader, value: string) => {
     setHeader((h) => ({ ...h, [key]: value }));
+    // Clear error for this field on change
+    if (fieldErrors[key as keyof FieldErrors]) {
+      setFieldErrors((e) => { const n = { ...e }; delete n[key as keyof FieldErrors]; return n; });
+    }
+  };
 
-  // ── Dealer select ──────────────────────────────────────────────────────────
+  // ── Dealer select ─────────────────────────────────────────────────────────
   const handleDealerSelect = (customerCode: string) => {
     const dealer = dealers.find((d) => d.customerCode === customerCode);
     setShowDealerPanel(false);
+    setDealerHistory([]);
+
     if (dealer) {
       setHeader((h) => ({
         ...h,
@@ -204,6 +271,14 @@ export default function RSMProposalForm() {
         commandoName: dealer.tsmName ?? dealer.tsmCode ?? "",
       }));
       setCities([]);
+      // Clear dealer error
+      setFieldErrors((e) => { const n = { ...e }; delete n.dealerName; return n; });
+
+      setLoadingDealerHistory(true);
+      fetchProposalsByDealer(dealer.customerName, instance)
+        .then(setDealerHistory)
+        .catch(() => {})
+        .finally(() => setLoadingDealerHistory(false));
     } else {
       setHeader((h) => ({
         ...h, dealerId: "", dealerName: "", state: "", stateId: null,
@@ -212,13 +287,14 @@ export default function RSMProposalForm() {
     }
   };
 
-  // ── State dropdown ─────────────────────────────────────────────────────────
+  // ── State change ──────────────────────────────────────────────────────────
   const handleStateChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const id       = e.target.value ? Number(e.target.value) : null;
-    const selected = states.find((s) => s.id === id) ?? null;
-    setHeader((h) => ({ ...h, state: selected?.name ?? "", stateId: id, location: "" }));
+    const id  = e.target.value ? Number(e.target.value) : null;
+    const sel = states.find((s) => s.id === id) ?? null;
+    setHeader((h) => ({ ...h, state: sel?.name ?? "", stateId: id, location: "" }));
     setCities([]);
     setLocationError(null);
+    if (fieldErrors.state) setFieldErrors((err) => { const n = { ...err }; delete n.state; return n; });
     if (id) {
       setLoadingCities(true);
       fetchCitiesByState(id, instance)
@@ -228,13 +304,28 @@ export default function RSMProposalForm() {
     }
   };
 
-  // ── Activity helpers ───────────────────────────────────────────────────────
-  const setActivity = (id: string, key: keyof ActivityRow, value: string) =>
+  // ── Activity helpers ──────────────────────────────────────────────────────
+  const setActivity = (id: string, key: keyof ActivityRow, value: string) => {
     setActivities((rows) => rows.map((r) => (r.id === id ? { ...r, [key]: value } : r)));
+    // Clear that field's error
+    if (activityErrors[id]?.[key as keyof ActivityErrors[string]]) {
+      setActivityErrors((prev) => {
+        const next = { ...prev };
+        if (next[id]) {
+          next[id] = { ...next[id] };
+          delete next[id][key as keyof ActivityErrors[string]];
+          if (!Object.keys(next[id]).length) delete next[id];
+        }
+        return next;
+      });
+    }
+  };
 
   const addActivity    = () => setActivities((rows) => [...rows, emptyActivity()]);
-  const removeActivity = (id: string) =>
+  const removeActivity = (id: string) => {
     setActivities((rows) => rows.length > 1 ? rows.filter((r) => r.id !== id) : rows);
+    setActivityErrors((prev) => { const n = { ...prev }; delete n[id]; return n; });
+  };
 
   const resetForm = useCallback(() => {
     setHeader(emptyHeader());
@@ -242,9 +333,77 @@ export default function RSMProposalForm() {
     setCities([]);
     setShowDealerPanel(false);
     setRevisionNote(null);
+    setDealerHistory([]);
+    setFieldErrors({});
+    setActivityErrors({});
+    setShowDetailErr(false);
+    setShowActErr(false);
   }, []);
 
-  // ── Excel helpers ──────────────────────────────────────────────────────────
+  // ── Step navigation with validation ──────────────────────────────────────
+  const goToActivities = () => {
+    const errs = validateDetails(header);
+    if (Object.keys(errs).length) {
+      setFieldErrors(errs);
+      setShowDetailErr(true);
+      // Scroll to top of card
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    setFieldErrors({});
+    setShowDetailErr(false);
+    setActiveSection("activities");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const goToSummary = () => {
+    const errs = validateActivities(activities);
+    if (Object.keys(errs).length) {
+      setActivityErrors(errs);
+      setShowActErr(true);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    setActivityErrors({});
+    setShowActErr(false);
+    setActiveSection("summary");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const goToSection = (key: "details" | "activities" | "summary") => {
+    // Allow backward navigation freely
+    // Forward navigation requires validation
+    if (key === "details") {
+      setActiveSection("details");
+      return;
+    }
+    if (key === "activities") {
+      if (activeSection === "details") { goToActivities(); return; }
+      setActiveSection("activities");
+      return;
+    }
+    if (key === "summary") {
+      if (activeSection === "details") {
+        const errs = validateDetails(header);
+        if (Object.keys(errs).length) {
+          setFieldErrors(errs); setShowDetailErr(true);
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          return;
+        }
+        const aErrs = validateActivities(activities);
+        if (Object.keys(aErrs).length) {
+          setActiveSection("activities");
+          setActivityErrors(aErrs); setShowActErr(true);
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          return;
+        }
+      }
+      if (activeSection === "activities") { goToSummary(); return; }
+      setActiveSection("summary");
+    }
+  };
+
+  // ── Excel helpers ─────────────────────────────────────────────────────────
   function excelDate(v: string | number): string {
     if (!v) return "";
     if (typeof v === "number") {
@@ -279,6 +438,7 @@ export default function RSMProposalForm() {
           remarks:      String(r["Remarks"]         ?? r["remarks"]      ?? ""),
         }));
         setActivities(mapped);
+        setActivityErrors({});
         setXlsxMsg({ ok: true, text: `${mapped.length} row${mapped.length !== 1 ? "s" : ""} imported.` });
       } catch {
         setXlsxMsg({ ok: false, text: "Could not parse the file. Please use the provided template." });
@@ -297,8 +457,24 @@ export default function RSMProposalForm() {
     XLSX.writeFile(wb, "BTL_Activity_Template.xlsx");
   };
 
-  // ── Submit / Resubmit ──────────────────────────────────────────────────────
+  // ── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = async () => {
+    // Final validation before submit
+    const dErrs = validateDetails(header);
+    const aErrs = validateActivities(activities);
+    if (Object.keys(dErrs).length) {
+      setFieldErrors(dErrs); setShowDetailErr(true);
+      setActiveSection("details");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (Object.keys(aErrs).length) {
+      setActivityErrors(aErrs); setShowActErr(true);
+      setActiveSection("activities");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
     setError(null);
     setSubmitting(true);
     try {
@@ -313,7 +489,6 @@ export default function RSMProposalForm() {
       }));
 
       if (editMode && editId) {
-        // Resubmit revised proposal via PUT
         await updateProposal(editId, {
           dealerName:   header.dealerName,
           location:     header.location,
@@ -330,7 +505,6 @@ export default function RSMProposalForm() {
           cac,
         }, instance);
       } else {
-        // New proposal submission via POST
         await submitProposal({
           state:        header.state,
           location:     header.location,
@@ -359,7 +533,7 @@ export default function RSMProposalForm() {
     }
   };
 
-  // ── Dropdown options ───────────────────────────────────────────────────────
+  // ── Dropdown options ──────────────────────────────────────────────────────
   const dealerOptions = dealers.map((d) => ({
     value:    d.customerCode,
     label:    d.customerName,
@@ -397,8 +571,9 @@ export default function RSMProposalForm() {
 
   const monthOptions = MONTHS.map((m) => ({ value: m, label: m }));
 
-  const detailsComplete    = !!(header.dealerName && header.type && header.rsmName && header.month && header.eligibility);
-  const activitiesComplete = activities.every((a) => a.activityType && a.target && a.startDate && a.endDate && a.budget);
+  // ── Step circle class ─────────────────────────────────────────────────────
+  const detailsComplete    = Object.keys(validateDetails(header)).length === 0;
+  const activitiesComplete = Object.keys(validateActivities(activities)).length === 0;
 
   const stepCircleClass = (key: string, done: boolean) => {
     if (done) return "rsm-step-circle rsm-step-circle--done";
@@ -406,12 +581,23 @@ export default function RSMProposalForm() {
     return "rsm-step-circle rsm-step-circle--pending";
   };
 
-  // ── Loading state while fetching proposal for edit ─────────────────────────
+  // ── History helpers ───────────────────────────────────────────────────────
+  const fmtShort = (iso: string) =>
+    new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+
+  const statusCls = (s: string) => {
+    if (s === "Approved")      return "rsm-history-status--approved";
+    if (s === "Rejected")      return "rsm-history-status--rejected";
+    if (s === "NeedsRevision") return "rsm-history-status--revision";
+    return "rsm-history-status--pending";
+  };
+
+  // ── Loading state ─────────────────────────────────────────────────────────
   if (loadingEdit) {
     return (
       <div className="rsm-page">
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "60vh" }}>
-          <div style={{ textAlign: "center", color: "var(--color-text-secondary)" }}>
+        <div style={{ display:"flex", justifyContent:"center", alignItems:"center", minHeight:"60vh" }}>
+          <div style={{ textAlign:"center", color:"#64748b" }}>
             <div className="rsm-spinner" />
             <p style={{ marginTop: 12 }}>Loading proposal for editing…</p>
           </div>
@@ -420,11 +606,11 @@ export default function RSMProposalForm() {
     );
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="rsm-page">
 
-      {/* ── Top bar ── */}
+      {/* Top bar */}
       <header className="rsm-topbar">
         <div className="rsm-brand">
           <img src="/BGauss_Logo.png" alt="BGauss" className="rsm-brand-logo" />
@@ -450,7 +636,7 @@ export default function RSMProposalForm() {
 
       <main className="rsm-main">
 
-        {/* ── Document banner ── */}
+        {/* Document banner */}
         <div className="rsm-doc-banner">
           <div>
             <div className="rsm-doc-tag">{editMode ? "Revision" : "New Proposal"}</div>
@@ -474,7 +660,7 @@ export default function RSMProposalForm() {
           </div>
         </div>
 
-        {/* ── Revision note banner ── */}
+        {/* Revision note banner */}
         {editMode && revisionNote && (
           <div className="rsm-revision-banner">
             <span className="rsm-revision-icon">↩</span>
@@ -485,14 +671,18 @@ export default function RSMProposalForm() {
           </div>
         )}
 
-        {/* ── Step bar ── */}
+        {/* Step bar */}
         <div className="rsm-step-bar">
           {([
             { key: "details",    label: "Proposal Details", n: 1, done: detailsComplete },
-            { key: "activities", label: "Activities",        n: 2, done: activitiesComplete },
+            { key: "activities", label: "Activities",        n: 2, done: activitiesComplete && detailsComplete },
             { key: "summary",    label: "Review & Submit",   n: 3, done: false },
           ] as const).map(({ key, label, n, done }) => (
-            <button key={key} className="rsm-step-btn" onClick={() => setActiveSection(key)}>
+            <button
+              key={key}
+              className="rsm-step-btn"
+              onClick={() => goToSection(key)}
+            >
               <div className={stepCircleClass(key, done)}>{done ? "✓" : n}</div>
               <span className={`rsm-step-label${activeSection === key ? " rsm-step-label--active" : ""}`}>
                 {label}
@@ -503,133 +693,256 @@ export default function RSMProposalForm() {
 
         {/* ════════ SECTION 1 — Proposal Details ════════ */}
         {activeSection === "details" && (
-          <Card title="Proposal Details" subtitle="Select a dealer and fill in the proposal basics.">
+          <Card title="Proposal Details" subtitle="Fill in all required fields marked with *.">
 
-            {/* Dealer */}
-            <div className="rsm-field rsm-field--full">
-              <Label text="Dealer" required />
-              {dealerError && <span className="rsm-field-error">{dealerError}</span>}
-              <div className="rsm-dealer-input-wrap">
-                <div style={{ flex: 1 }}>
-                  {editMode ? (
-                    // In edit mode, dealer is shown as a read-only input (can be manually overridden)
-                    <input
-                      className="rsm-select"
-                      value={header.dealerName}
-                      onChange={(e) => setField("dealerName", e.target.value)}
-                      placeholder="Dealer name"
-                    />
-                  ) : (
-                    <SearchableSelect
-                      options={dealerOptions}
-                      value={header.dealerId}
-                      onChange={handleDealerSelect}
-                      placeholder={loadingDealers ? "Loading dealers…" : "Search by dealer name or city…"}
-                      loading={loadingDealers}
-                    />
-                  )}
-                </div>
-                {!editMode && header.dealerId && (
-                  <button className="rsm-info-btn" title="View dealer details"
-                    onClick={() => setShowDealerPanel((v) => !v)}>ⓘ</button>
-                )}
-              </div>
-            </div>
-
-            {/* Dealer info panel */}
-            {!editMode && showDealerPanel && selectedDealer && (
-              <div className="rsm-dealer-panel">
-                <div className="rsm-dealer-panel-head">
-                  <div>
-                    <h3 className="rsm-dealer-panel-name">{selectedDealer.customerName}</h3>
-                    <p className="rsm-dealer-panel-sub">
-                      Code: <b>{selectedDealer.customerCode}</b> &nbsp;·&nbsp;
-                      {[selectedDealer.city, selectedDealer.state].filter(Boolean).join(", ")}
-                    </p>
-                  </div>
-                  <button className="rsm-close-panel-btn" onClick={() => setShowDealerPanel(false)}>✕</button>
-                </div>
-                <div className="rsm-dealer-contacts">
-                  {selectedDealer.contactPerson && <span className="rsm-dealer-contact">👤 {selectedDealer.contactPerson}</span>}
-                  {selectedDealer.mobile        && <span className="rsm-dealer-contact">📞 {selectedDealer.mobile}</span>}
-                  {selectedDealer.tsmName       && <span className="rsm-dealer-contact">🧑‍💼 TSM: {selectedDealer.tsmName}</span>}
-                  {selectedDealer.rsmName       && <span className="rsm-dealer-contact">👔 RSM: {selectedDealer.rsmName}</span>}
+            {/* Validation summary banner */}
+            {showDetailErr && Object.keys(fieldErrors).length > 0 && (
+              <div className="rsm-validation-banner">
+                <span className="rsm-validation-icon">⚠</span>
+                <div>
+                  <strong>Please fill in all required fields before continuing.</strong>
+                  <ul className="rsm-validation-list">
+                    {Object.values(fieldErrors).map((msg, i) => (
+                      <li key={i}>{msg}</li>
+                    ))}
+                  </ul>
                 </div>
               </div>
             )}
 
-            <div className="rsm-grid3">
+            {/* Row 1: Dealer · State · City · Location Type */}
+            <div className="rsm-form-row1">
+
+              {/* Dealer */}
+              <div className="rsm-field">
+                <Label text="Dealer" required />
+                {dealerError && <span className="rsm-field-error">{dealerError}</span>}
+                <div className="rsm-dealer-input-wrap">
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {editMode ? (
+                      <input
+                        className={`rsm-select${fieldErrors.dealerName ? " rsm-input--error" : ""}`}
+                        value={header.dealerName}
+                        onChange={(e) => setField("dealerName", e.target.value)}
+                        placeholder="Dealer name"
+                      />
+                    ) : (
+                      <div className={fieldErrors.dealerName ? "rsm-select-error-wrap" : ""}>
+                        <SearchableSelect
+                          options={dealerOptions}
+                          value={header.dealerId}
+                          onChange={handleDealerSelect}
+                          placeholder={loadingDealers ? "Loading…" : "Search dealer…"}
+                          loading={loadingDealers}
+                        />
+                      </div>
+                    )}
+                  </div>
+                  {!editMode && header.dealerId && (
+                    <button className="rsm-info-btn" title="View dealer details & history"
+                      onClick={() => setShowDealerPanel((v) => !v)}>ⓘ</button>
+                  )}
+                </div>
+                {fieldErrors.dealerName && (
+                  <span className="rsm-field-error">{fieldErrors.dealerName}</span>
+                )}
+              </div>
 
               {/* State */}
               <div className="rsm-field">
                 <Label text="State" required />
                 {header.state && !header.stateId ? (
-                  <select className="rsm-select" value={header.stateId ?? ""} onChange={handleStateChange}>
-                    <option value="">{header.state} (from dealer)</option>
+                  <select
+                    className={`rsm-select${fieldErrors.state ? " rsm-input--error" : ""}`}
+                    value={header.stateId ?? ""}
+                    onChange={handleStateChange}>
+                    <option value="">{header.state} (dealer)</option>
                     {states.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 ) : (
-                  <select className="rsm-select" value={header.stateId ?? ""} onChange={handleStateChange}>
+                  <select
+                    className={`rsm-select${fieldErrors.state ? " rsm-input--error" : ""}`}
+                    value={header.stateId ?? ""}
+                    onChange={handleStateChange}>
                     <option value="">Select state</option>
                     {states.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 )}
+                {fieldErrors.state && <span className="rsm-field-error">{fieldErrors.state}</span>}
               </div>
 
               {/* City */}
               <div className="rsm-field">
                 <Label text="City" required />
                 {header.location && !header.stateId ? (
-                  <input className="rsm-select" value={header.location}
-                    onChange={(e) => setField("location", e.target.value)} placeholder="City" />
+                  <input
+                    className={`rsm-select${fieldErrors.location ? " rsm-input--error" : ""}`}
+                    value={header.location}
+                    onChange={(e) => setField("location", e.target.value)}
+                    placeholder="City" />
                 ) : (
-                  <select className="rsm-select" value={header.location}
+                  <select
+                    className={`rsm-select${fieldErrors.location ? " rsm-input--error" : ""}`}
+                    value={header.location}
                     onChange={(e) => setField("location", e.target.value)}
                     disabled={!header.stateId || loadingCities}>
                     <option value="">
-                      {!header.stateId ? "Select a state first" : loadingCities ? "Loading…" : "Select city"}
+                      {!header.stateId ? "Select state first" : loadingCities ? "Loading…" : "Select city"}
                     </option>
                     {cities.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
                   </select>
                 )}
-                {locationError && <span className="rsm-field-error">{locationError}</span>}
+                {(fieldErrors.location || locationError) && (
+                  <span className="rsm-field-error">{fieldErrors.location || locationError}</span>
+                )}
               </div>
 
-              {/* Location Type */}
+              {/* Dealer Type */}
               <div className="rsm-field">
-                <Label text="Location Type" required />
-                <select className="rsm-select" value={header.type}
+                <Label text="Dealer Type" required />
+                <select
+                  className={`rsm-select${fieldErrors.type ? " rsm-input--error" : ""}`}
+                  value={header.type}
                   onChange={(e) => setField("type", e.target.value)}>
                   <option value="">Select type</option>
                   {LOCATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
+                {fieldErrors.type && <span className="rsm-field-error">{fieldErrors.type}</span>}
               </div>
 
-              {/* RSM / TSM Name */}
+            </div>
+
+            {/* Dealer info + history panel */}
+            {!editMode && showDealerPanel && selectedDealer && (
+              <div className="rsm-dealer-panel">
+                <div className="rsm-dealer-panel-head">
+                  <div>
+                    <h3 className="rsm-dealer-panel-name">{selectedDealer.customerName}</h3>
+                    <p className="rsm-dealer-panel-sub">
+                      Code: <b>{selectedDealer.customerCode}</b>&nbsp;·&nbsp;
+                      {[selectedDealer.city, selectedDealer.state].filter(Boolean).join(", ")}
+                    </p>
+                  </div>
+                  <button className="rsm-close-panel-btn" onClick={() => setShowDealerPanel(false)}>✕</button>
+                </div>
+                <div className="rsm-dealer-contacts">
+                  {selectedDealer.contactPerson && (
+                    <span className="rsm-dealer-contact">👤 {selectedDealer.contactPerson}</span>
+                  )}
+                  {selectedDealer.mobile && (
+                    <span className="rsm-dealer-contact">📞 {selectedDealer.mobile}</span>
+                  )}
+                  {selectedDealer.tsmName && (
+                    <span className="rsm-dealer-contact">🧑‍💼 TSM: {selectedDealer.tsmName}</span>
+                  )}
+                  {selectedDealer.rsmName && (
+                    <span className="rsm-dealer-contact">👔 RSM: {selectedDealer.rsmName}</span>
+                  )}
+                </div>
+
+                {/* Proposal history */}
+                <div className="rsm-dealer-history">
+                  <p className="rsm-panel-section-title">
+                    Previous Proposals
+                    {!loadingDealerHistory && dealerHistory.length > 0 && (
+                      <span className="rsm-history-count">{dealerHistory.length}</span>
+                    )}
+                  </p>
+                  {loadingDealerHistory && (
+                    <div className="rsm-history-loading">
+                      <div className="rsm-spinner-sm" />
+                      <span>Loading history…</span>
+                    </div>
+                  )}
+                  {!loadingDealerHistory && dealerHistory.length === 0 && (
+                    <p className="rsm-history-empty">No previous proposals for this dealer.</p>
+                  )}
+                  {!loadingDealerHistory && dealerHistory.length > 0 && (
+                    <div className="rsm-panel-table-wrap">
+                      <table className="rsm-panel-table">
+                        <thead>
+                          <tr>
+                            <th className="rsm-panel-th">Token</th>
+                            <th className="rsm-panel-th">Month</th>
+                            <th className="rsm-panel-th">RSM / TSM</th>
+                            <th className="rsm-panel-th">Activities</th>
+                            <th className="rsm-panel-th rsm-panel-th--right">Budget</th>
+                            <th className="rsm-panel-th rsm-panel-th--right">Target</th>
+                            <th className="rsm-panel-th">Status</th>
+                            <th className="rsm-panel-th">Submitted</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dealerHistory.map((p, i) => (
+                            <tr key={p.id}
+                              className={i % 2 === 0 ? "rsm-panel-row--even" : "rsm-panel-row--odd"}>
+                              <td className="rsm-panel-td">
+                                <span className="rsm-history-token">{p.tokenNumber ?? "—"}</span>
+                              </td>
+                              <td className="rsm-panel-td">{p.month}</td>
+                              <td className="rsm-panel-td" style={{ whiteSpace:"nowrap" }}>
+                                {p.rsmName || "—"}
+                              </td>
+                              <td className="rsm-panel-td">
+                                {p.activities.slice(0, 2).map((a, ai) => (
+                                  <span key={ai} className="rsm-history-chip">{a.activityType}</span>
+                                ))}
+                                {p.activities.length > 2 && (
+                                  <span className="rsm-history-chip rsm-history-chip--more">
+                                    +{p.activities.length - 2}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="rsm-panel-td rsm-panel-td--right">
+                                ₹{Math.round(p.totalBudget).toLocaleString("en-IN")}
+                              </td>
+                              <td className="rsm-panel-td rsm-panel-td--right">{p.totalTarget}</td>
+                              <td className="rsm-panel-td">
+                                <span className={`rsm-history-status ${statusCls(p.status)}`}>
+                                  {p.status === "NeedsRevision" ? "Revision" : p.status}
+                                </span>
+                              </td>
+                              <td className="rsm-panel-td" style={{ whiteSpace:"nowrap", fontSize:11 }}>
+                                {fmtShort(p.createdAt)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Row 2: RSM/TSM · Commando · Month · Eligibility */}
+            <div className="rsm-form-row2">
               <div className="rsm-field">
                 <Label text="RSM / TSM Name" required />
                 <SearchableSelect
                   options={rsmOptions}
                   value={header.rsmName}
                   onChange={(v) => setField("rsmName", v)}
-                  placeholder="Search or type RSM / TSM name…"
+                  placeholder="Search or type…"
                   allowCreate={true}
+                  className={fieldErrors.rsmName ? "rsm-select-error-wrap" : ""}
                 />
+                {fieldErrors.rsmName && (
+                  <span className="rsm-field-error">{fieldErrors.rsmName}</span>
+                )}
               </div>
 
-              {/* Commando Name */}
               <div className="rsm-field">
                 <Label text="Commando Name" />
                 <SearchableSelect
                   options={commandoOptions}
                   value={header.commandoName}
                   onChange={(v) => setField("commandoName", v)}
-                  placeholder="Search or type commando name…"
+                  placeholder="Search or type…"
                   allowCreate={true}
                 />
               </div>
 
-              {/* Month */}
               <div className="rsm-field">
                 <Label text="Month" required />
                 <SearchableSelect
@@ -638,21 +951,29 @@ export default function RSMProposalForm() {
                   onChange={(v) => setField("month", v)}
                   placeholder="Select month"
                   allowCreate={false}
+                  className={fieldErrors.month ? "rsm-select-error-wrap" : ""}
                 />
+                {fieldErrors.month && (
+                  <span className="rsm-field-error">{fieldErrors.month}</span>
+                )}
               </div>
 
-              {/* Eligibility */}
               <div className="rsm-field">
                 <Label text="Eligibility" required />
-                <select className="rsm-select" value={header.eligibility}
+                <select
+                  className={`rsm-select${fieldErrors.eligibility ? " rsm-input--error" : ""}`}
+                  value={header.eligibility}
                   onChange={(e) => setField("eligibility", e.target.value)}>
                   <option value="">Select eligibility</option>
                   {ELIGIBILITY_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
                 </select>
+                {fieldErrors.eligibility && (
+                  <span className="rsm-field-error">{fieldErrors.eligibility}</span>
+                )}
               </div>
-
             </div>
 
+            {/* Remarks */}
             <div className="rsm-remarks-row">
               <Label text="Overall Remarks" />
               <textarea className="rsm-textarea" placeholder="Additional notes for the approver…"
@@ -660,7 +981,7 @@ export default function RSMProposalForm() {
             </div>
 
             <div className="rsm-section-footer">
-              <button className="rsm-primary-btn" onClick={() => setActiveSection("activities")}>
+              <button className="rsm-primary-btn" onClick={goToActivities}>
                 Continue to Activities →
               </button>
             </div>
@@ -671,7 +992,7 @@ export default function RSMProposalForm() {
         {activeSection === "activities" && (
           <Card
             title="Activity Plan"
-            subtitle="Add activities manually or import from an Excel file."
+            subtitle="Add at least one activity. All starred fields are required."
             action={
               <div className="rsm-card-actions">
                 <input ref={xlsxRef} type="file" accept=".xlsx,.xls"
@@ -682,6 +1003,19 @@ export default function RSMProposalForm() {
               </div>
             }
           >
+            {/* Activity validation banner */}
+            {showActErr && Object.keys(activityErrors).length > 0 && (
+              <div className="rsm-validation-banner">
+                <span className="rsm-validation-icon">⚠</span>
+                <div>
+                  <strong>
+                    {Object.keys(activityErrors).length} row{Object.keys(activityErrors).length > 1 ? "s have" : " has"} errors.
+                    Please fix them before continuing.
+                  </strong>
+                </div>
+              </div>
+            )}
+
             {xlsxMsg && (
               <div className={`rsm-feedback ${xlsxMsg.ok ? "rsm-feedback--ok" : "rsm-feedback--err"}`}>
                 {xlsxMsg.ok ? "✓" : "⚠"} {xlsxMsg.text}
@@ -698,11 +1032,11 @@ export default function RSMProposalForm() {
                 <thead>
                   <tr className="rsm-thead-row">
                     <th className="rsm-th" style={{ width: 32 }}>#</th>
-                    <th className="rsm-th" style={{ width: 180 }}>Activity Type</th>
-                    <th className="rsm-th" style={{ width: 80 }}>Target</th>
-                    <th className="rsm-th" style={{ width: 130 }}>Start Date</th>
-                    <th className="rsm-th" style={{ width: 130 }}>End Date</th>
-                    <th className="rsm-th rsm-th--right" style={{ width: 110 }}>Budget (₹)</th>
+                    <th className="rsm-th" style={{ width: 180 }}>Activity Type <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width: 80 }}>Target <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width: 130 }}>Start Date <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width: 130 }}>End Date <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th rsm-th--right" style={{ width: 110 }}>Budget (₹) <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th rsm-th--right" style={{ width: 110 }}>Incentive (₹)</th>
                     <th className="rsm-th rsm-th--right" style={{ width: 110 }}>Total (₹)</th>
                     <th className="rsm-th" style={{ width: 150 }}>Remarks</th>
@@ -710,58 +1044,78 @@ export default function RSMProposalForm() {
                   </tr>
                 </thead>
                 <tbody>
-                  {activities.map((a, idx) => (
-                    <tr key={a.id} className={idx % 2 === 0 ? "rsm-row--even" : "rsm-row--odd"}>
-                      <td className="rsm-td"><span className="rsm-row-num">{idx + 1}</span></td>
-                      <td className="rsm-td" style={{ minWidth: 170 }}>
-                        <SearchableSelect
-                          options={activityOptions}
-                          value={a.activityType}
-                          onChange={(v) => setActivity(a.id, "activityType", v)}
-                          placeholder="Select or type…"
-                          allowCreate={true}
-                        />
-                      </td>
-                      <td className="rsm-td">
-                        <input type="number" min={0} className="rsm-input-sm"
-                          style={{ width: 72 }} value={a.target}
-                          onChange={(e) => setActivity(a.id, "target", e.target.value)} />
-                      </td>
-                      <td className="rsm-td">
-                        <input type="date" className="rsm-input-sm" style={{ width: 126 }}
-                          value={a.startDate}
-                          onChange={(e) => setActivity(a.id, "startDate", e.target.value)} />
-                      </td>
-                      <td className="rsm-td">
-                        <input type="date" className="rsm-input-sm" style={{ width: 126 }}
-                          value={a.endDate} min={a.startDate || undefined}
-                          onChange={(e) => setActivity(a.id, "endDate", e.target.value)} />
-                      </td>
-                      <td className="rsm-td rsm-td--right">
-                        <input type="number" min={0} className="rsm-input-sm"
-                          style={{ width: 100, textAlign: "right" }} value={a.budget}
-                          onChange={(e) => setActivity(a.id, "budget", e.target.value)} />
-                      </td>
-                      <td className="rsm-td rsm-td--right">
-                        <input type="number" min={0} className="rsm-input-sm"
-                          style={{ width: 100, textAlign: "right" }} value={a.incentive}
-                          onChange={(e) => setActivity(a.id, "incentive", e.target.value)} />
-                      </td>
-                      <td className="rsm-td rsm-td--total">
-                        ₹{inr(num(a.budget) + num(a.incentive))}
-                      </td>
-                      <td className="rsm-td">
-                        <input type="text" className="rsm-input-sm" style={{ width: 140 }}
-                          placeholder="Note…" value={a.remarks}
-                          onChange={(e) => setActivity(a.id, "remarks", e.target.value)} />
-                      </td>
-                      <td className="rsm-td">
-                        <button className="rsm-remove-btn"
-                          onClick={() => removeActivity(a.id)}
-                          disabled={activities.length === 1} title="Remove row">×</button>
-                      </td>
-                    </tr>
-                  ))}
+                  {activities.map((a, idx) => {
+                    const rowErr = activityErrors[a.id];
+                    return (
+                      <tr key={a.id} className={idx % 2 === 0 ? "rsm-row--even" : "rsm-row--odd"}>
+                        <td className="rsm-td"><span className="rsm-row-num">{idx + 1}</span></td>
+                        <td className="rsm-td" style={{ minWidth: 170 }}>
+                          <SearchableSelect
+                            options={activityOptions}
+                            value={a.activityType}
+                            onChange={(v) => setActivity(a.id, "activityType", v)}
+                            placeholder="Select or type…"
+                            allowCreate={true}
+                            className={rowErr?.activityType ? "rsm-select-error-wrap" : ""}
+                          />
+                          {rowErr?.activityType && (
+                            <span className="rsm-field-error">{rowErr.activityType}</span>
+                          )}
+                        </td>
+                        <td className="rsm-td">
+                          <input type="number" min={0} className={`rsm-input-sm${rowErr?.target ? " rsm-input-sm--error" : ""}`}
+                            style={{ width: 72 }} value={a.target}
+                            onChange={(e) => setActivity(a.id, "target", e.target.value)} />
+                          {rowErr?.target && (
+                            <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.target}</span>
+                          )}
+                        </td>
+                        <td className="rsm-td">
+                          <input type="date" className={`rsm-input-sm${rowErr?.startDate ? " rsm-input-sm--error" : ""}`}
+                            style={{ width: 126 }} value={a.startDate}
+                            onChange={(e) => setActivity(a.id, "startDate", e.target.value)} />
+                          {rowErr?.startDate && (
+                            <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.startDate}</span>
+                          )}
+                        </td>
+                        <td className="rsm-td">
+                          <input type="date" className={`rsm-input-sm${rowErr?.endDate ? " rsm-input-sm--error" : ""}`}
+                            style={{ width: 126 }} value={a.endDate} min={a.startDate || undefined}
+                            onChange={(e) => setActivity(a.id, "endDate", e.target.value)} />
+                          {rowErr?.endDate && (
+                            <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.endDate}</span>
+                          )}
+                        </td>
+                        <td className="rsm-td rsm-td--right">
+                          <input type="number" min={0}
+                            className={`rsm-input-sm${rowErr?.budget ? " rsm-input-sm--error" : ""}`}
+                            style={{ width: 100, textAlign: "right" }} value={a.budget}
+                            onChange={(e) => setActivity(a.id, "budget", e.target.value)} />
+                          {rowErr?.budget && (
+                            <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.budget}</span>
+                          )}
+                        </td>
+                        <td className="rsm-td rsm-td--right">
+                          <input type="number" min={0} className="rsm-input-sm"
+                            style={{ width: 100, textAlign: "right" }} value={a.incentive}
+                            onChange={(e) => setActivity(a.id, "incentive", e.target.value)} />
+                        </td>
+                        <td className="rsm-td rsm-td--total">
+                          ₹{inr(num(a.budget) + num(a.incentive))}
+                        </td>
+                        <td className="rsm-td">
+                          <input type="text" className="rsm-input-sm" style={{ width: 140 }}
+                            placeholder="Note…" value={a.remarks}
+                            onChange={(e) => setActivity(a.id, "remarks", e.target.value)} />
+                        </td>
+                        <td className="rsm-td">
+                          <button className="rsm-remove-btn"
+                            onClick={() => removeActivity(a.id)}
+                            disabled={activities.length === 1} title="Remove row">×</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -775,8 +1129,11 @@ export default function RSMProposalForm() {
             </div>
 
             <div className="rsm-section-footer">
-              <button className="rsm-ghost-btn2" onClick={() => setActiveSection("details")}>← Back</button>
-              <button className="rsm-primary-btn" onClick={() => setActiveSection("summary")}>
+              <button className="rsm-ghost-btn2" onClick={() => {
+                setActiveSection("details");
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}>← Back</button>
+              <button className="rsm-primary-btn" onClick={goToSummary}>
                 Review & Submit →
               </button>
             </div>
@@ -792,7 +1149,8 @@ export default function RSMProposalForm() {
                 <ReviewRow label="Document No."  value={docNumber} mono />
                 <ReviewRow label="Date"          value={docDate} />
                 <ReviewRow label="Dealer"        value={header.dealerName || "—"} />
-                <ReviewRow label="Location"      value={header.location ? `${header.location}, ${header.state}` : "—"} />
+                <ReviewRow label="Location"
+                  value={header.location ? `${header.location}, ${header.state}` : "—"} />
                 <ReviewRow label="Type"          value={header.type || "—"} />
                 <ReviewRow label="Month"         value={header.month || "—"} />
                 <ReviewRow label="Eligibility"   value={header.eligibility || "—"} />
@@ -832,11 +1190,15 @@ export default function RSMProposalForm() {
                       <td className="rsm-td">{a.activityType || "—"}</td>
                       <td className="rsm-td">{a.target || "—"}</td>
                       <td className="rsm-td">
-                        {a.startDate && a.endDate ? `${a.startDate} → ${a.endDate}` : a.startDate || "—"}
+                        {a.startDate && a.endDate
+                          ? `${a.startDate} → ${a.endDate}`
+                          : a.startDate || "—"}
                       </td>
                       <td className="rsm-td rsm-td--right">₹{inr(num(a.budget))}</td>
                       <td className="rsm-td rsm-td--right">₹{inr(num(a.incentive))}</td>
-                      <td className="rsm-td rsm-td--total">₹{inr(num(a.budget) + num(a.incentive))}</td>
+                      <td className="rsm-td rsm-td--total">
+                        ₹{inr(num(a.budget) + num(a.incentive))}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -851,7 +1213,10 @@ export default function RSMProposalForm() {
             {error && <div className="rsm-error-banner">{error}</div>}
 
             <div className="rsm-section-footer">
-              <button className="rsm-ghost-btn2" onClick={() => setActiveSection("activities")}>← Back</button>
+              <button className="rsm-ghost-btn2" onClick={() => {
+                setActiveSection("activities");
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}>← Back</button>
               <button className="rsm-primary-btn" onClick={handleSubmit} disabled={submitting}>
                 {submitting
                   ? "Submitting…"

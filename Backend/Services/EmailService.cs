@@ -5,18 +5,6 @@ using Microsoft.Extensions.Options;
 
 namespace BGL_BT_App.Backend.Services;
 
-public class SmtpSettings
-{
-    public string Host          { get; set; } = string.Empty;
-    public int    Port          { get; set; } = 587;
-    public string User          { get; set; } = string.Empty;
-    public string Password      { get; set; } = string.Empty;
-    public string From          { get; set; } = string.Empty;
-    public bool   EnableSsl     { get; set; } = true;
-    public string ApproverEmail { get; set; } = string.Empty;
-    public string PortalBaseUrl { get; set; } = "http://localhost:5173";
-}
-
 public class EmailService : IEmailService
 {
     private readonly SmtpSettings          _settings;
@@ -28,72 +16,43 @@ public class EmailService : IEmailService
         _logger   = logger;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Public interface
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public async Task<(bool Sent, string? Error)> SendSubmissionMailAsync(Proposal p)
+    public async Task<(bool Sent, string? Error)> SendSubmissionMailAsync(
+        Proposal p, string graphToken)
     {
         var subject = $"{p.TokenNumber}" +
                       $"-{p.Activities.FirstOrDefault()?.ActivityType ?? "Activity"}" +
                       $"-{p.DealerName.ToUpper()}-{p.Month}-{p.State}";
-
-        return await SendAsync(
-            to:       _settings.ApproverEmail,
-            replyTo:  p.SubmittedBy,
-            subject:  subject,
-            htmlBody: BuildSubmissionBody(p));
+        return await SendAsync(_settings.ApproverEmail, p.SubmittedBy, subject, BuildSubmissionBody(p));
     }
 
     public async Task<(bool Sent, string? Error)> SendDecisionMailAsync(
-        Proposal p, ApprovalDecision decision)
+        Proposal p, ApprovalDecision decision, string graphToken)
     {
         var subject = $"Re: {p.TokenNumber}" +
                       $"-{p.Activities.FirstOrDefault()?.ActivityType ?? "Activity"}" +
                       $"-{p.DealerName.ToUpper()}-{p.Month}-{p.State}";
-
-        return await SendAsync(
-            to:       p.SubmittedBy,
-            replyTo:  null,
-            subject:  subject,
-            htmlBody: BuildDecisionBody(p, decision));
+        return await SendAsync(p.SubmittedBy, _settings.ApproverEmail, subject, BuildDecisionBody(p, decision));
     }
 
     public async Task<(bool Sent, string? Error)> SendRevisionRequestMailAsync(
-        Proposal p, string? note)
+        Proposal p, string? note, string graphToken)
     {
-        var subject = $"Revision Requested — {p.TokenNumber}" +
-                      $" — {p.DealerName.ToUpper()} — {p.Month}";
-
-        return await SendAsync(
-            to:       p.SubmittedBy,
-            replyTo:  null,
-            subject:  subject,
-            htmlBody: BuildRevisionBody(p, note));
+        var subject = $"Revision Requested — {p.TokenNumber} — {p.DealerName.ToUpper()} — {p.Month}";
+        return await SendAsync(p.SubmittedBy, _settings.ApproverEmail, subject, BuildRevisionBody(p, note));
     }
 
-    public async Task<(bool Sent, string? Error)> SendResubmissionMailAsync(Proposal p)
+    public async Task<(bool Sent, string? Error)> SendResubmissionMailAsync(
+        Proposal p, string graphToken)
     {
-        var subject = $"Resubmitted — {p.TokenNumber}" +
-                      $" — {p.DealerName.ToUpper()} — {p.Month}";
-
-        return await SendAsync(
-            to:       _settings.ApproverEmail,
-            replyTo:  p.SubmittedBy,
-            subject:  subject,
-            htmlBody: BuildResubmissionBody(p));
+        var subject = $"Resubmitted — {p.TokenNumber} — {p.DealerName.ToUpper()} — {p.Month}";
+        return await SendAsync(_settings.ApproverEmail, p.SubmittedBy, subject, BuildResubmissionBody(p));
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Core SMTP send
-    // ─────────────────────────────────────────────────────────────────────────
 
     private async Task<(bool Sent, string? Error)> SendAsync(
         string to, string? replyTo, string subject, string htmlBody)
     {
         if (string.IsNullOrWhiteSpace(to))
-            return (false, "No recipient address available.");
-
+            return (false, "No recipient address.");
         try
         {
             using var client = new SmtpClient(_settings.Host, _settings.Port)
@@ -101,26 +60,22 @@ public class EmailService : IEmailService
                 Credentials = new NetworkCredential(_settings.User, _settings.Password),
                 EnableSsl   = _settings.EnableSsl,
             };
-
-            using var message = new MailMessage
+            using var msg = new MailMessage
             {
                 From       = ParseFrom(_settings.From),
                 Subject    = subject,
                 Body       = htmlBody,
                 IsBodyHtml = true,
             };
-
-            message.To.Add(to);
-
+            msg.To.Add(to);
             if (!string.IsNullOrWhiteSpace(replyTo))
-                message.ReplyToList.Add(new MailAddress(replyTo));
-
-            await client.SendMailAsync(message);
+                try { msg.ReplyToList.Add(new MailAddress(replyTo)); } catch { }
+            await client.SendMailAsync(msg);
             return (true, null);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to send mail to {To}", to);
+            _logger.LogError(ex, "SMTP failed to {To}", to);
             return (false, ex.Message);
         }
     }
@@ -569,14 +524,10 @@ public class EmailService : IEmailService
 
     private static MailAddress ParseFrom(string from)
     {
-        var start = from.IndexOf('<');
-        var end   = from.IndexOf('>');
-        if (start >= 0 && end > start)
-        {
-            var name    = from[..start].Trim();
-            var address = from[(start + 1)..end].Trim();
-            return new MailAddress(address, name);
-        }
+        var s = from.IndexOf('<');
+        var e = from.IndexOf('>');
+        if (s >= 0 && e > s)
+            return new MailAddress(from[(s + 1)..e].Trim(), from[..s].Trim());
         return new MailAddress(from.Trim());
     }
 }
