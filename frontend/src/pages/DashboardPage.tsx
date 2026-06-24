@@ -273,8 +273,8 @@ export default function DashboardPage() {
           <button className="dash-action-card" onClick={() => navigate("/admin/users")}>
             <span className="dash-action-icon">👥</span>
             <div>
-              <div className="dash-action-title">Manage Users</div>
-              <div className="dash-action-desc">Edit roles and active status</div>
+              <div className="dash-action-title">Manage Users & Activity</div>
+              <div className="dash-action-desc">Add Activity, Edit roles and active status</div>
             </div>
           </button>
         )}

@@ -17,14 +17,17 @@ public class ProposalsController : ControllerBase
     private readonly AppDbContext _db;
     private readonly IEmailService _emailService;
     private readonly ILogger<ProposalsController> _logger;
+    private string GraphToken() =>
+    Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
 
     public ProposalsController(AppDbContext db, IEmailService emailService, ILogger<ProposalsController> logger)
     {
-        _db = db;
+        _db           = db;
         _emailService = emailService;
-        _logger = logger;
+        _logger       = logger;
     }
 
+    // ── POST /api/proposals ───────────────────────────────────────────────────
     [HttpPost]
     public async Task<ActionResult<ProposalResponseDto>> Create(CreateProposalDto dto)
     {
@@ -33,7 +36,6 @@ public class ProposalsController : ControllerBase
 
         var submittedBy = CurrentUserEmail();
 
-        // Look up the user's display name from our Users table
         var submitter = await _db.Users
             .AsNoTracking()
             .FirstOrDefaultAsync(u => u.Email == submittedBy);
@@ -51,39 +53,40 @@ public class ProposalsController : ControllerBase
 
         var totalBudget = activities.Sum(a => a.Budget + a.Incentive);
         var totalTarget = activities.Sum(a => a.Target);
-        var cac = totalTarget > 0 ? Math.Round(totalBudget / totalTarget, 2) : 0m;
+        var cac         = totalTarget > 0 ? Math.Round(totalBudget / totalTarget, 2) : 0m;
 
         var proposal = new Proposal
         {
-            State        = dto.State,
-            Location     = dto.Location,
-            Type         = dto.Type,
-            DealerName   = dto.DealerName,
-            RsmName      = dto.RsmName,
-            CommandoName = dto.CommandoName,
-            Month        = dto.Month,
-            Eligibility  = dto.Eligibility,
-            Remarks      = dto.Remarks,
-            TotalBudget  = totalBudget,
-            TotalTarget  = totalTarget,
-            Cac          = cac,
-            SubmittedBy  = submittedBy,
-            SubmittedByDisplayName = submitter?.DisplayName ?? dto.RsmName, // ← use DB display name
-            Activities   = activities,
-            TokenNumber  = GenerateTokenNumber(),
-            Status       = "Pending",
+            State                  = dto.State,
+            Location               = dto.Location,
+            Type                   = dto.Type,
+            DealerName             = dto.DealerName,
+            RsmName                = dto.RsmName,
+            CommandoName           = dto.CommandoName,
+            Month                  = dto.Month,
+            Eligibility            = dto.Eligibility,
+            Remarks                = dto.Remarks,
+            TotalBudget            = totalBudget,
+            TotalTarget            = totalTarget,
+            Cac                    = cac,
+            SubmittedBy            = submittedBy,
+            SubmittedByDisplayName = submitter?.DisplayName ?? dto.RsmName,
+            Activities             = activities,
+            TokenNumber            = GenerateTokenNumber(),
+            Status                 = "Pending",
         };
 
         _db.Proposals.Add(proposal);
         await _db.SaveChangesAsync();
 
-        var (sent, error) = await _emailService.SendSubmissionMailAsync(proposal);
+        var (sent, error) = await _emailService.SendSubmissionMailAsync(proposal, GraphToken());
         if (!sent)
             _logger.LogWarning("Submission mail failed for proposal {Id}: {Error}", proposal.Id, error);
 
         return CreatedAtAction(nameof(GetById), new { id = proposal.Id }, ToResponse(proposal));
     }
 
+    // ── GET /api/proposals — admin sees all ───────────────────────────────────
     [HttpGet]
     public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetAll()
     {
@@ -96,6 +99,41 @@ public class ProposalsController : ControllerBase
         return Ok(proposals.Select(ToResponse));
     }
 
+    // ── GET /api/proposals/mine — RSM sees only their own ─────────────────────
+    [HttpGet("mine")]
+    public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMine()
+    {
+        var email = CurrentUserEmail();
+
+        var proposals = await _db.Proposals
+            .Include(p => p.Activities)
+            .Where(p => p.SubmittedBy == email)
+            .OrderByDescending(p => p.CreatedAt)
+            .AsNoTracking()
+            .ToListAsync();
+
+        return Ok(proposals.Select(ToResponse));
+    }
+
+    // ── GET /api/proposals/by-dealer?name={dealerName} ────────────────────────
+    [HttpGet("by-dealer")]
+    public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetByDealer(
+        [FromQuery] string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return BadRequest(new { message = "Dealer name is required." });
+
+        var proposals = await _db.Proposals
+            .Include(p => p.Activities)
+            .Where(p => p.DealerName == name)
+            .OrderByDescending(p => p.CreatedAt)
+            .AsNoTracking()
+            .ToListAsync();
+
+        return Ok(proposals.Select(ToResponse));
+    }
+
+    // ── GET /api/proposals/{id} ───────────────────────────────────────────────
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<ProposalResponseDto>> GetById(Guid id)
     {
@@ -107,97 +145,7 @@ public class ProposalsController : ControllerBase
         return proposal is null ? NotFound() : Ok(ToResponse(proposal));
     }
 
-    // PATCH /api/proposals/{id}/decide — matches decideProposal() in proposalService.ts
-    [HttpPatch("{id:guid}/decide")]
-    public async Task<ActionResult<ProposalResponseDto>> Decide(Guid id, DecideProposalDto dto)
-    {
-        if (dto.Status != "Approved" && dto.Status != "Rejected")
-            return BadRequest("Status must be 'Approved' or 'Rejected'.");
-
-        var proposal = await _db.Proposals
-            .Include(p => p.Activities)
-            .FirstOrDefaultAsync(p => p.Id == id);
-
-        if (proposal is null) return NotFound();
-
-        // Once a final decision is recorded, lock the record — no further
-        // modification or re-decision is allowed (per the approval policy).
-        if (proposal.Status is "Approved" or "Rejected")
-            return Conflict(new { message = $"This proposal was already {proposal.Status} and can no longer be modified." });
-
-        var approvedBy = dto.ApprovedBy ?? CurrentUserEmail();
-
-        proposal.Status = dto.Status;
-        proposal.ApproverNote = dto.ApproverNote;
-        proposal.ApprovedBy = approvedBy;
-        proposal.DecidedAt = DateTimeOffset.UtcNow;
-
-        var decision = new ApprovalDecision
-        {
-            ProposalId = proposal.Id,
-            Status = dto.Status,
-            ApproverNote = dto.ApproverNote,
-            ApprovedBy = approvedBy,
-        };
-        _db.ApprovalDecisions.Add(decision);
-
-        await _db.SaveChangesAsync();
-
-        var (sent, error) = await _emailService.SendDecisionMailAsync(proposal, decision);
-        decision.MailSent = sent;
-        decision.MailSentAt = sent ? DateTimeOffset.UtcNow : null;
-        decision.MailError = error;
-        await _db.SaveChangesAsync();
-
-        if (!sent)
-            _logger.LogWarning("Decision mail failed for proposal {Id}: {Error}", proposal.Id, error);
-
-        return Ok(ToResponse(proposal));
-    }
-
-    [HttpGet("mine")]
-    public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMine()
-    {
-        var email = CurrentUserEmail();
-    
-        var proposals = await _db.Proposals
-            .Include(p => p.Activities)
-            .Where(p => p.SubmittedBy == email)
-            .OrderByDescending(p => p.CreatedAt)
-            .AsNoTracking()
-            .ToListAsync();
-    
-        return Ok(proposals.Select(ToResponse));
-    }
-
-    // PATCH /api/proposals/{id}/sendback
-    [HttpPatch("{id:guid}/sendback")]
-    public async Task<ActionResult<ProposalResponseDto>> SendBack(Guid id, [FromBody] SendBackDto dto)
-    {
-        var proposal = await _db.Proposals
-            .Include(p => p.Activities)
-            .FirstOrDefaultAsync(p => p.Id == id);
-
-        if (proposal is null) return NotFound();
-
-        if (proposal.Status is "Approved" or "Rejected")
-            return Conflict(new { message = "Cannot send back a finalised proposal." });
-
-        proposal.Status      = "NeedsRevision";
-        proposal.ApproverNote = dto.Note?.Trim();
-        proposal.ApprovedBy  = dto.SentBackBy ?? CurrentUserEmail();
-
-        await _db.SaveChangesAsync();
-
-        // Email RSM — tell them to revise
-        var (sent, error) = await _emailService.SendRevisionRequestMailAsync(proposal, dto.Note);
-        if (!sent)
-            _logger.LogWarning("Send-back mail failed for {Id}: {Error}", proposal.Id, error);
-
-        return Ok(ToResponse(proposal));
-    }
-
-    // PUT /api/proposals/{id} — RSM resubmits revised proposal
+    // ── PUT /api/proposals/{id} — RSM resubmits / admin edits ────────────────
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<ProposalResponseDto>> Update(Guid id, UpdateProposalDto dto)
     {
@@ -222,7 +170,7 @@ public class ProposalsController : ControllerBase
         proposal.Eligibility  = dto.Eligibility;
         proposal.Remarks      = dto.Remarks;
 
-        // Delete existing activities directly to avoid concurrency issues
+        // Delete existing activities and replace
         await _db.ProposalActivities
             .Where(a => a.ProposalId == id)
             .ExecuteDeleteAsync();
@@ -247,7 +195,6 @@ public class ProposalsController : ControllerBase
         proposal.Cac         = proposal.TotalTarget > 0
             ? Math.Round(proposal.TotalBudget / proposal.TotalTarget, 2) : 0m;
 
-        // Reset NeedsRevision → Pending when RSM resubmits
         if (wasNeedsRevision)
         {
             proposal.Status       = "Pending";
@@ -256,16 +203,14 @@ public class ProposalsController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        // Reload with fresh activities for mail + response
         var updated = await _db.Proposals
             .Include(p => p.Activities)
             .AsNoTracking()
             .FirstAsync(p => p.Id == id);
 
-        // Send mail — resubmission (was NeedsRevision) or fresh submission notify
         if (wasNeedsRevision)
         {
-            var (sent, error) = await _emailService.SendResubmissionMailAsync(updated);
+            var (sent, error) = await _emailService.SendResubmissionMailAsync(updated, GraphToken());
             if (!sent)
                 _logger.LogWarning("Resubmission mail failed for {Id}: {Error}", updated.Id, error);
         }
@@ -273,7 +218,79 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(updated));
     }
 
-    // PATCH /api/proposals/{id}/actuals — RSM fills in actual dates + media after approval
+    // ── PATCH /api/proposals/{id}/decide ─────────────────────────────────────
+    [HttpPatch("{id:guid}/decide")]
+    public async Task<ActionResult<ProposalResponseDto>> Decide(Guid id, DecideProposalDto dto)
+    {
+        if (dto.Status != "Approved" && dto.Status != "Rejected")
+            return BadRequest("Status must be 'Approved' or 'Rejected'.");
+
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+
+        if (proposal.Status is "Approved" or "Rejected")
+            return Conflict(new { message = $"This proposal was already {proposal.Status} and can no longer be modified." });
+
+        var approvedBy = dto.ApprovedBy ?? CurrentUserEmail();
+
+        proposal.Status       = dto.Status;
+        proposal.ApproverNote = dto.ApproverNote;
+        proposal.ApprovedBy   = approvedBy;
+        proposal.DecidedAt    = DateTimeOffset.UtcNow;
+
+        var decision = new ApprovalDecision
+        {
+            ProposalId   = proposal.Id,
+            Status       = dto.Status,
+            ApproverNote = dto.ApproverNote,
+            ApprovedBy   = approvedBy,
+        };
+        _db.ApprovalDecisions.Add(decision);
+
+        await _db.SaveChangesAsync();
+
+        var (sent, error) = await _emailService.SendDecisionMailAsync(proposal, decision, GraphToken());
+        decision.MailSent  = sent;
+        decision.MailSentAt = sent ? DateTimeOffset.UtcNow : null;
+        decision.MailError  = error;
+        await _db.SaveChangesAsync();
+
+        if (!sent)
+            _logger.LogWarning("Decision mail failed for proposal {Id}: {Error}", proposal.Id, error);
+
+        return Ok(ToResponse(proposal));
+    }
+
+    // ── PATCH /api/proposals/{id}/sendback ───────────────────────────────────
+    [HttpPatch("{id:guid}/sendback")]
+    public async Task<ActionResult<ProposalResponseDto>> SendBack(Guid id, [FromBody] SendBackDto dto)
+    {
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+
+        if (proposal.Status is "Approved" or "Rejected")
+            return Conflict(new { message = "Cannot send back a finalised proposal." });
+
+        proposal.Status       = "NeedsRevision";
+        proposal.ApproverNote = dto.Note?.Trim();
+        proposal.ApprovedBy   = dto.SentBackBy ?? CurrentUserEmail();
+
+        await _db.SaveChangesAsync();
+
+        var (sent, error) = await _emailService.SendRevisionRequestMailAsync(proposal, dto.Note, GraphToken());
+        if (!sent)
+            _logger.LogWarning("Send-back mail failed for {Id}: {Error}", proposal.Id, error);
+
+        return Ok(ToResponse(proposal));
+    }
+
+    // ── PATCH /api/proposals/{id}/actuals ─────────────────────────────────────
     [HttpPatch("{id:guid}/actuals")]
     public async Task<ActionResult<ProposalResponseDto>> UpdateActuals(
         Guid id, [FromBody] List<UpdateActivityActualsDto> actuals)
@@ -303,6 +320,7 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(proposal));
     }
 
+    // ── Helpers ───────────────────────────────────────────────────────────────
     private string CurrentUserEmail() =>
         User.FindFirstValue("preferred_username")
         ?? User.FindFirstValue(ClaimTypes.Upn)
@@ -324,8 +342,8 @@ public class ProposalsController : ControllerBase
         p.Activities.Select(a => new ActivityResponseDto(
             a.Id, a.ActivityType, a.Target, a.StartDate, a.EndDate,
             a.Budget, a.Incentive, a.Remarks,
-            a.ActualStartDate, a.ActualEndDate,         // ← new
-            a.MediaFileUrl, a.MediaFileName, a.MediaFileType  // ← new
+            a.ActualStartDate, a.ActualEndDate,
+            a.MediaFileUrl, a.MediaFileName, a.MediaFileType
         )).ToList()
     );
 }

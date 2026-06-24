@@ -1,3 +1,4 @@
+// frontend\src\services\authService.ts
 import { IPublicClientApplication } from "@azure/msal-browser";
 import { apiRequest, API_BASE_URL } from "../authConfig";
 import type { UserProfile } from "../types/user";

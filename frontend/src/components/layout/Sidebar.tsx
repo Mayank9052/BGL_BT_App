@@ -19,8 +19,8 @@ const NAV_ITEMS = [
 ];
 
 const ADMIN_ITEMS = [
-  { to: "/admin/users",      label: "Manage Users",    icon: "ti-users"      },
-  { to: "/admin/activities", label: "Activity Types",  icon: "ti-list-check" },
+  { to: "/admin/users",      label: "Manage Users & Activity",    icon: "ti-users"      },
+  // { to: "/admin/activities", label: "Activity Types",  icon: "ti-list-check" },
 ];
 
 export default function Sidebar({
