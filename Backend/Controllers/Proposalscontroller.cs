@@ -352,41 +352,55 @@ public class ProposalsController : ControllerBase
 
     // ── ERP CAC validation helper ─────────────────────────────────────────────
     private async Task<(int AllowedCac, string? Warning)>
-        GetCacLimitAsync(string dealerName, decimal actualCac)
+    GetCacLimitAsync(string dealerName, decimal actualCac)
     {
         try
         {
             var cutoff = DateTime.UtcNow.AddMonths(-3).Date;
 
-            // Match by name (ERP may not have exact match — safe fallback)
+            // Match dealer by name in C_CustomerMaster
             var dealer = await _bapl.DealerMasters
                 .AsNoTracking()
-                .FirstOrDefaultAsync(d => d.CustomerName == dealerName);
+                .FirstOrDefaultAsync(d => d.CustomerName == dealerName
+                                    && d.Active == "Y");
 
             if (dealer == null)
             {
-                _logger.LogInformation("Dealer '{Name}' not found in ERP — using default CAC 4000", dealerName);
+                _logger.LogInformation(
+                    "Dealer '{Name}' not found in ERP — using default CAC 4000",
+                    dealerName);
                 return (4000, null);
             }
 
+            // New dealer check
             bool isNew = dealer.OnboardedDate.HasValue &&
-                         dealer.OnboardedDate.Value.Date >= cutoff;
+                        dealer.OnboardedDate.Value.Date >= cutoff;
 
-            var counts = await _bapl.RetailBillings
-                .AsNoTracking()
-                .Where(r => r.DealerCode == dealer.CustomerCode &&
-                            r.BillingDate >= cutoff)
-                .GroupBy(r => new { r.BillingDate.Year, r.BillingDate.Month })
-                .Select(g => g.Count())
+            // Count retails using salebill_date (nvarchar dd-MM-yyyy)
+            var rows = await _bapl.Database
+                .SqlQueryRaw<MonthlyCount>(@"
+                    SELECT
+                        YEAR(TRY_CONVERT(DATE, salebill_date, 105))  AS [Year],
+                        MONTH(TRY_CONVERT(DATE, salebill_date, 105)) AS [Month],
+                        COUNT(*) AS RetailCount
+                    FROM DMS_SaleBill
+                    WHERE dealer_code = {0}
+                    AND IsDelete    = 0
+                    AND TRY_CONVERT(DATE, salebill_date, 105) IS NOT NULL
+                    AND TRY_CONVERT(DATE, salebill_date, 105) >= {1}
+                    GROUP BY
+                        YEAR(TRY_CONVERT(DATE, salebill_date, 105)),
+                        MONTH(TRY_CONVERT(DATE, salebill_date, 105))",
+                    dealer.CustomerCode, cutoff)
                 .ToListAsync();
 
-            double avg        = (double)counts.Sum() / 3.0;
+            double avg        = (double)rows.Sum(r => r.RetailCount) / 3.0;
             int    allowedCac = isNew ? 6000 : 4000;
 
             string? warning = actualCac > allowedCac
                 ? $"CAC ₹{actualCac:N0} exceeds allowed ₹{allowedCac}/vehicle " +
-                  $"({(isNew ? "new" : "old")} dealer, avg {avg:N1} retails/month). " +
-                  "Deviation approval required."
+                $"({(isNew ? "New" : "Old")} dealer, avg {avg:N1} retails/month). " +
+                "Deviation approval required."
                 : null;
 
             return (allowedCac, warning);
@@ -394,7 +408,7 @@ public class ProposalsController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
-                "CAC validation failed for dealer '{Name}' — skipping, using default 4000", dealerName);
+                "CAC check failed for '{Name}' — using default 4000", dealerName);
             return (4000, null);
         }
     }

@@ -15,7 +15,7 @@ public class BaplDbContext : DbContext
         // Read-only ERP — no migrations, no key generation
         modelBuilder.Entity<ErpDealerMaster>(e =>
         {
-            e.ToTable("CustomerMaster");   // ← change to your actual table name
+            e.ToTable("C_CustomerMaster");   // ← change to your actual table name
             e.HasKey(d => d.CustomerCode);
         });
 

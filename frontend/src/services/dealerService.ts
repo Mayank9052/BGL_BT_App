@@ -37,13 +37,13 @@ export async function fetchDealers(
 
 // ── Dealer eligibility from ERP ───────────────────────────────────────────────
 export interface DealerEligibility {
-  dealerCode:        string;
-  isEligible:        boolean;
-  isNewDealer:       boolean;
-  avgMonthlyRetails: number;
-  eligibilityReason: string;
-  baseCacPerVehicle: number;
-  dealerType:        "New" | "Old";
+  dealerCode:          string;
+  isEligible:          boolean;
+  isNewDealer:         boolean;
+  avgMonthlyRetails:   number;
+  eligibilityReason:   string;
+  baseCacPerVehicle:   number;
+  dealerType:          string;   // "New" or "Old"
 }
 
 export async function fetchDealerEligibility(
