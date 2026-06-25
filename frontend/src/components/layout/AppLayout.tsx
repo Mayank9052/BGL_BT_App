@@ -11,34 +11,59 @@ const SIDEBAR_KEY = "bgauss_sidebar_collapsed";
 
 export default function AppLayout() {
   const { instance } = useMsal();
-  const { user } = useAuthStore();
-  const navigate = useNavigate();
+  const { user }     = useAuthStore();
+  const navigate     = useNavigate();
 
+  // Desktop: persisted collapsed state
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_KEY) === "true"
   );
 
+  // Mobile: slide-in drawer state
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Persist desktop collapsed state
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, String(collapsed));
   }, [collapsed]);
+
+  // Close mobile sidebar on window resize to desktop
+  useEffect(() => {
+    const handler = () => {
+      if (window.innerWidth > 768) setMobileOpen(false);
+    };
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, []);
 
   const handleLogout = () => {
     instance.logoutRedirect({ postLogoutRedirectUri: "/" }).catch(console.error);
   };
 
+  const isAdmin = user?.role === "Admin" || user?.role === "Manager";
+
   return (
-    <div className="app-layout">
+    <div className={[
+      "app-layout",
+      collapsed  ? "app-layout--collapsed"    : "",
+      mobileOpen ? "app-layout--mobile-open"  : "",
+    ].filter(Boolean).join(" ")}>
+
       <Sidebar
-        isAdmin={user?.role === "Admin"}
+        isAdmin={isAdmin}
         collapsed={collapsed}
+        mobileOpen={mobileOpen}
         onToggle={() => setCollapsed((c) => !c)}
+        onMobileClose={() => setMobileOpen(false)}
         onLogout={handleLogout}
         userName={user?.displayName}
         userRole={user?.role}
       />
+
       <div className="app-layout-body">
         <Navbar
           user={user}
+          onMenuClick={() => setMobileOpen((v) => !v)}
           onBrandClick={() => navigate("/dashboard")}
         />
         <main className="app-layout-content">

@@ -1,4 +1,4 @@
-/* Sidebar.css */
+/* ─── Sidebar ────────────────────────────────────────────────────────────── */
 .sb {
   width: 240px;
   flex-shrink: 0;
@@ -11,6 +11,7 @@
   transition: width 0.22s ease;
   overflow: hidden;
   min-height: 100vh;
+  z-index: 300;
 }
 
 .sb--col {
@@ -18,7 +19,23 @@
   padding: 16px 8px;
 }
 
-/* Brand */
+/* ─── Mobile overlay ─────────────────────────────────────────────────────── */
+.sb-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 299;
+  backdrop-filter: blur(1px);
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ─── Brand ──────────────────────────────────────────────────────────────── */
 .sb-brand {
   display: flex;
   align-items: center;
@@ -32,7 +49,6 @@
   height: 26px;
   width: auto;
   flex-shrink: 0;
-  /*filter: brightness(0) invert(1);*/
 }
 
 .sb-brand-name {
@@ -42,11 +58,9 @@
   letter-spacing: -0.3px;
 }
 
-/* Toggle */
+/* ─── Toggle buttons ─────────────────────────────────────────────────────── */
 .sb-toggle {
   position: absolute;
-  top: 16px;
-  right: -12px;
   width: 24px;
   height: 24px;
   border-radius: 50%;
@@ -68,7 +82,26 @@
   color: #fff;
 }
 
-/* Nav */
+/* Desktop toggle — right edge */
+.sb-toggle--desktop {
+  top: 16px;
+  right: -12px;
+}
+
+/* Mobile close button — top-right inside sidebar */
+.sb-toggle--mobile {
+  display: none;
+  top: 14px;
+  right: 14px;
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  border-radius: 6px;
+  border: 1px solid #2a3a52;
+}
+
+/* ─── Nav ────────────────────────────────────────────────────────────────── */
 .sb-nav {
   flex: 1;
   display: flex;
@@ -93,7 +126,7 @@
   margin: 10px 6px;
 }
 
-/* Links */
+/* ─── Links ──────────────────────────────────────────────────────────────── */
 .sb-link {
   display: flex;
   align-items: center;
@@ -138,7 +171,7 @@
   text-overflow: ellipsis;
 }
 
-/* Badge (expanded) */
+/* ─── Badge / Dot ────────────────────────────────────────────────────────── */
 .sb-badge {
   margin-left: auto;
   background: rgba(251, 191, 36, 0.15);
@@ -151,7 +184,6 @@
   flex-shrink: 0;
 }
 
-/* Dot (collapsed) */
 .sb-dot {
   position: absolute;
   top: 6px;
@@ -162,7 +194,7 @@
   background: #fbbf24;
 }
 
-/* Footer */
+/* ─── Footer ─────────────────────────────────────────────────────────────── */
 .sb-footer {
   margin-top: auto;
 }
@@ -250,4 +282,60 @@
 .sb-logout:hover {
   background: rgba(239, 68, 68, 0.12);
   color: #f87171;
+}
+
+/* ══════════════════════════════════════════════════════
+   RESPONSIVE — Tablet & Mobile (≤ 768px)
+   Sidebar becomes a slide-in drawer on mobile
+══════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* Hide desktop toggle */
+  .sb-toggle--desktop { display: none; }
+
+  /* Show mobile close button */
+  .sb-toggle--mobile { display: flex; }
+
+  /* Sidebar hidden off-screen by default on mobile */
+  .sb {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 260px !important; /* always full width on mobile, ignore collapsed */
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: none;
+    min-height: 0;
+  }
+
+  /* Collapsed class has no effect on mobile */
+  .sb--col {
+    width: 260px !important;
+    padding: 16px 12px;
+  }
+
+  /* Show sidebar when mobileOpen */
+  .sb--mobile-open {
+    transform: translateX(0);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Show overlay */
+  .sb--mobile-open ~ .sb-overlay,
+  .sb-overlay { display: block; }
+
+  /* Force expanded appearance on mobile */
+  .sb--col .sb-link   { justify-content: flex-start; padding: 9px 10px; }
+  .sb--col .sb-user-card { justify-content: flex-start; padding: 9px 10px; }
+  .sb--col .sb-logout { justify-content: flex-start; padding: 8px 10px; }
+
+  /* Always show labels on mobile */
+  .sb--col .sb-link-label { display: block !important; }
+  .sb--col .sb-brand-name { display: block !important; }
+  .sb--col .sb-user-info  { display: flex !important; }
+  .sb--col .sb-section-lbl{ display: block !important; }
+
+  /* Larger touch targets on mobile */
+  .sb-link { padding: 11px 12px; font-size: 14px; }
+  .sb-link i { font-size: 18px; width: 20px; }
 }
