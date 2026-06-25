@@ -1,47 +1,116 @@
-/* Navbar.css */
+/* ─── Navbar ─────────────────────────────────────────────────────────────── */
 .app-navbar {
-  height: 60px;
+  height: 56px;
   flex-shrink: 0;
   background: #fff;
   border-bottom: 1px solid #e6e9ee;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
-  position: relative;
+  padding: 0 20px;
+  position: sticky;
+  top: 0;
   z-index: 100;
+  gap: 12px;
 }
 
-.app-navbar-brand {
+/* ─── Left side ──────────────────────────────────────────────────────────── */
+.app-navbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Hamburger — hidden on desktop, visible on mobile */
+.app-navbar-hamburger {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
   background: none;
   border: none;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.app-navbar-hamburger:hover { background: #f1f5f9; }
+.app-navbar-hamburger span {
+  display: block;
+  width: 20px;
+  height: 2px;
+  background: #334155;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+
+/* Brand */
+.app-navbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  text-decoration: none;
+  transition: background 0.15s;
+  min-width: 0;
+}
+.app-navbar-brand:hover { background: #f8fafc; }
+.app-navbar-logo {
+  height: 24px;
+  width: auto;
+  flex-shrink: 0;
+}
+.app-navbar-brand-text {
   font-weight: 600;
   font-size: 15px;
   color: #1a2233;
-  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* ─── Right side ─────────────────────────────────────────────────────────── */
 .app-navbar-right {
   position: relative;
   display: flex;
   align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
-/* Avatar circle button */
+/* Role chip in navbar */
+.role-chip--nav {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+/* ─── Avatar ─────────────────────────────────────────────────────────────── */
 .nav-avatar-btn {
   background: none;
   border: none;
   padding: 0;
   cursor: pointer;
   border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .nav-avatar {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   background: #0a2540;
   color: #fff;
@@ -49,13 +118,19 @@
   font-weight: 700;
   letter-spacing: 0.5px;
   transition: box-shadow 0.15s;
+  user-select: none;
 }
-
 .nav-avatar-btn:hover .nav-avatar {
   box-shadow: 0 0 0 3px rgba(10, 37, 64, 0.15);
 }
+.nav-avatar--lg {
+  width: 40px;
+  height: 40px;
+  font-size: 15px;
+  flex-shrink: 0;
+}
 
-/* Dropdown */
+/* ─── Dropdown ───────────────────────────────────────────────────────────── */
 .nav-profile-dropdown {
   position: absolute;
   top: calc(100% + 10px);
@@ -63,29 +138,45 @@
   background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.12);
-  min-width: 220px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  min-width: 240px;
   padding: 4px 0;
   z-index: 200;
+  animation: dropIn 0.15s ease;
+}
+
+@keyframes dropIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .nav-profile-header {
   padding: 14px 16px 10px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 8px;
+}
+
+.nav-profile-avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .nav-profile-name {
+  display: block;
   font-size: 14px;
   font-weight: 600;
   color: #0a2540;
+  line-height: 1.3;
 }
 
 .nav-profile-email {
+  display: block;
   font-size: 12px;
   color: #64748b;
   word-break: break-all;
+  line-height: 1.4;
 }
 
 .nav-profile-divider {
@@ -95,7 +186,9 @@
 }
 
 .nav-profile-logout {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 10px 16px;
   background: none;
@@ -105,13 +198,13 @@
   color: #dc2626;
   cursor: pointer;
   font-weight: 500;
+  font-family: inherit;
+  transition: background 0.15s;
 }
+.nav-profile-logout:hover { background: #fef2f2; }
+.nav-profile-logout i { font-size: 15px; }
 
-.nav-profile-logout:hover {
-  background: #fef2f2;
-}
-
-/* Role chip (shared) */
+/* ─── Role chips (shared) ────────────────────────────────────────────────── */
 .role-chip {
   display: inline-block;
   font-size: 11px;
@@ -120,10 +213,40 @@
   border-radius: 999px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  margin-top: 4px;
   width: fit-content;
 }
-
 .role-admin   { background: #fee2e2; color: #b91c1c; }
 .role-manager { background: #fef3c7; color: #92400e; }
 .role-user    { background: #e0f2fe; color: #0369a1; }
+
+/* ══════════════════════════════════════════════════════
+   RESPONSIVE
+══════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* Show hamburger on mobile */
+  .app-navbar-hamburger { display: flex; }
+
+  /* Hide role chip on small screens */
+  .role-chip--nav { display: none; }
+
+  /* Smaller navbar */
+  .app-navbar { height: 52px; padding: 0 14px; }
+
+  /* Smaller brand text */
+  .app-navbar-brand-text { font-size: 14px; }
+  .app-navbar-logo       { height: 20px; }
+
+  /* Dropdown full width on mobile */
+  .nav-profile-dropdown {
+    position: fixed;
+    top: 52px;
+    right: 8px;
+    left: 8px;
+    min-width: 0;
+    border-radius: 10px;
+  }
+}
+
+@media (max-width: 400px) {
+  .app-navbar-brand-text { display: none; }
+}

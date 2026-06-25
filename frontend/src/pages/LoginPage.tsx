@@ -21,7 +21,7 @@ export default function LoginPage() {
             <span className="login-logo-text">BGauss</span>
           </div>
           <h1 className="login-brand-headline">
-            BTL
+            Below The Line(BTL)
           </h1>
           <p className="login-brand-sub">
             The internal operations portal for BGauss Auto — connect with your
