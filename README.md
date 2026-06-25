@@ -1,38 +1,66 @@
-# BTL Frontend Application
+# BTL Application
 
-A modern web application built with React and Vite, designed to provide a fast, responsive, and scalable user experience.
-
-## Features
-
-* Responsive UI design
-* Reusable React components
-* Fast development with Vite
-* API integration support
-* ESLint configuration for code quality
-* Optimized production build
+A full-stack web application consisting of a React + Vite frontend and an ASP.NET Core Web API backend.
 
 ## Tech Stack
 
+### Frontend
+
 * React
 * Vite
-* JavaScript (ES6+)
-* CSS / SCSS
-* ESLint
+* JavaScript
+* CSS / Bootstrap
+
+### Backend
+
+* ASP.NET Core Web API
+* Entity Framework Core
+* SQL Server
+
+## Features
+
+* Responsive user interface
+* RESTful API architecture
+* Database integration
+* Authentication and authorization
+* CRUD operations
+* Error handling and validation
 
 ## Prerequisites
 
-Before running the project, ensure you have:
+Make sure the following are installed:
 
-* Node.js (v18 or later)
-* npm or yarn
+* Node.js (v18+)
+* .NET SDK (8.0 or later)
+* SQL Server
+* Git
 
-## Installation
+## Project Structure
 
-Clone the repository:
+```text
+BTL/
+├── Frontend/
+│   ├── src/
+│   ├── public/
+│   └── package.json
+│
+├── Backend/
+│   ├── Controllers/
+│   ├── Models/
+│   ├── Services/
+│   ├── Data/
+│   ├── Program.cs
+│   └── appsettings.json
+│
+└── README.md
+```
+
+## Frontend Setup
+
+Navigate to the frontend directory:
 
 ```bash
-git clone <repository-url>
-cd <project-folder>
+cd Frontend
 ```
 
 Install dependencies:
@@ -41,74 +69,97 @@ Install dependencies:
 npm install
 ```
 
-## Running the Application
-
 Start the development server:
 
 ```bash
 npm run dev
 ```
 
-The application will be available at:
+Frontend URL:
 
 ```text
 http://localhost:5173
 ```
 
-## Build for Production
+## Backend Setup
 
-Generate a production build:
+Navigate to the backend directory:
+
+```bash
+cd Backend
+```
+
+Restore packages:
+
+```bash
+dotnet restore
+```
+
+Update the database connection string in `appsettings.json`.
+
+Run database migrations:
+
+```bash
+dotnet ef database update
+```
+
+Start the API:
+
+```bash
+dotnet run
+```
+
+API URL:
+
+```text
+https://localhost:5001
+or
+http://localhost:5000
+```
+
+## Configuration
+
+Update the API base URL in the frontend environment file:
+
+```env
+VITE_API_BASE_URL=https://localhost:5001/api
+```
+
+## Build
+
+### Frontend
 
 ```bash
 npm run build
 ```
 
-Preview the production build:
+### Backend
 
 ```bash
-npm run preview
+dotnet publish -c Release
 ```
 
-## Project Structure
+## API Documentation
+
+Swagger is available when running the backend:
 
 ```text
-src/
-├── assets/
-├── components/
-├── pages/
-├── services/
-├── hooks/
-├── utils/
-├── App.jsx
-└── main.jsx
+https://localhost:5001/swagger
 ```
 
-## Code Quality
+## Development Workflow
 
-Run ESLint:
-
-```bash
-npm run lint
-```
-
-## Environment Variables
-
-Create a `.env` file in the root directory and add the required environment variables:
-
-```env
-VITE_API_URL=your_api_url
-```
-
-## Deployment
-
-Build the application and deploy the generated `dist` folder to your preferred hosting platform.
+1. Start SQL Server.
+2. Run the ASP.NET Core API.
+3. Start the React application.
+4. Access the application in the browser.
 
 ## Contributors
 
 * Development Team
 * QA Team
-* Project Stakeholders
+* Business Team Lead (BTL)
 
 ## License
 
-This project is intended for internal use only.
+Internal project – not intended for public distribution.
