@@ -6,24 +6,26 @@ public class Proposal
 {
     public Guid Id { get; set; } = Guid.NewGuid();
 
-    [MaxLength(100)] public string State        { get; set; } = string.Empty;
-    [MaxLength(150)] public string Location     { get; set; } = string.Empty;
-    [MaxLength(20)]  public string Type         { get; set; } = string.Empty;
-    [MaxLength(200)] public string DealerName   { get; set; } = string.Empty;
-    [MaxLength(150)] public string RsmName      { get; set; } = string.Empty;
-    [MaxLength(150)] public string CommandoName { get; set; } = string.Empty;
-    [MaxLength(20)]  public string Month        { get; set; } = string.Empty;
-    [MaxLength(50)]  public string Eligibility  { get; set; } = string.Empty;
-    [MaxLength(2000)] public string? Remarks    { get; set; }
+    [MaxLength(100)]  public string  State        { get; set; } = string.Empty;
+    [MaxLength(150)]  public string  Location     { get; set; } = string.Empty;
+    [MaxLength(20)]   public string  Type         { get; set; } = string.Empty;
+    [MaxLength(200)]  public string  DealerName   { get; set; } = string.Empty;
+    [MaxLength(200)]  public string? VendorName   { get; set; }
+    public int?       VendorId  { get; set; }
+    [MaxLength(150)]  public string  RsmName      { get; set; } = string.Empty;
+    [MaxLength(150)]  public string  CommandoName { get; set; } = string.Empty;
+    [MaxLength(20)]   public string  Month        { get; set; } = string.Empty;
+    [MaxLength(50)]   public string  Eligibility  { get; set; } = string.Empty;
+    [MaxLength(2000)] public string? Remarks      { get; set; }
 
-    public decimal TotalBudget { get; set; }
-    public int     TotalTarget { get; set; }
-    public decimal Cac         { get; set; }
+    public decimal TotalBudget       { get; set; }
+    public int     TotalLeadTarget   { get; set; }
+    public int     TotalRetailTarget { get; set; }
+    public decimal Cac               { get; set; }  // TotalBudget / TotalRetailTarget
+    public decimal Cpl               { get; set; }  // TotalBudget / TotalLeadTarget
 
-    // ── NEW: CAC validation from ERP ──────────────────────────────────────
-    public int     AllowedCac  { get; set; } = 4000;           // 4000 old / 6000 new
-    [MaxLength(500)] public string? CacWarning { get; set; }   // null = within limit
-    // ─────────────────────────────────────────────────────────────────────
+    public int      AllowedCac  { get; set; } = 4000;
+    [MaxLength(500)] public string? CacWarning { get; set; }
 
     [MaxLength(200)] public string  SubmittedBy            { get; set; } = string.Empty;
     [MaxLength(255)] public string? SubmittedByDisplayName { get; set; }

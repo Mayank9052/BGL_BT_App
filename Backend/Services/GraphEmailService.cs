@@ -161,19 +161,22 @@ public class GraphEmailService : IEmailService
         var sb = new System.Text.StringBuilder();
         foreach (var a in p.Activities)
         {
-            var total    = a.Budget + a.Incentive;
+            var total    = a.Budget + a.AdditionalBudget;
             var days     = (a.EndDate.HasValue && a.StartDate.HasValue)
                            ? (a.EndDate.Value.DayNumber - a.StartDate.Value.DayNumber + 1) : 0;
             var fromDate = a.StartDate?.ToString("dd-MMM-yyyy") ?? "-";
             var toDate   = a.EndDate?.ToString("dd-MMM-yyyy")   ?? "-";
-            var cac      = a.Target > 0 ? Math.Round(total / (decimal)a.Target, 0) : 0;
+            var cac      = a.RetailTarget > 0 ? Math.Round(total / (decimal)a.RetailTarget, 0) : 0;
+            var cpl      = a.LeadTarget   > 0 ? Math.Round(total / (decimal)a.LeadTarget,   0) : 0;
             sb.Append("<tr>");
             sb.Append(Td("padding:9px 12px;font-weight:600;color:#0a2540;border-bottom:1px solid #f1f5f9;", a.ActivityType));
             sb.Append(Td("padding:9px 12px;color:#374151;border-bottom:1px solid #f1f5f9;", fromDate));
             sb.Append(Td("padding:9px 12px;color:#374151;border-bottom:1px solid #f1f5f9;", toDate));
             sb.Append(Td("padding:9px 12px;text-align:center;color:#374151;border-bottom:1px solid #f1f5f9;", days + "d"));
             sb.Append(Td("padding:9px 12px;font-weight:600;color:#0a2540;border-bottom:1px solid #f1f5f9;", "Rs." + total.ToString("N0")));
-            sb.Append(Td("padding:9px 12px;text-align:center;border-bottom:1px solid #f1f5f9;", a.Target.ToString()));
+            sb.Append(Td("padding:9px 12px;text-align:center;border-bottom:1px solid #f1f5f9;", a.LeadTarget.ToString()));
+            sb.Append(Td("padding:9px 12px;text-align:center;border-bottom:1px solid #f1f5f9;", a.RetailTarget.ToString()));
+            sb.Append(Td("padding:9px 12px;color:#6b7280;border-bottom:1px solid #f1f5f9;", "Rs." + cpl.ToString("N0")));
             sb.Append(Td("padding:9px 12px;color:#6b7280;border-bottom:1px solid #f1f5f9;", "Rs." + cac.ToString("N0")));
             sb.Append("</tr>");
         }
@@ -183,7 +186,8 @@ public class GraphEmailService : IEmailService
     private static string BuildActivityTable(Proposal p)
     {
         var rows = BuildActivityTableRows(p);
-        var cac  = p.TotalTarget > 0 ? Math.Round(p.TotalBudget / (decimal)p.TotalTarget, 0) : 0;
+        var cac  = p.TotalRetailTarget > 0 ? Math.Round(p.TotalBudget / (decimal)p.TotalRetailTarget, 0) : 0;
+        var cpl  = p.TotalLeadTarget   > 0 ? Math.Round(p.TotalBudget / (decimal)p.TotalLeadTarget,   0) : 0;
         return
             "<p style=\"margin:0 0 8px;font-size:12px;font-weight:700;color:#0a2540;text-transform:uppercase;\">Activities</p>" +
             "<table cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:20px;font-size:13px;\">" +
@@ -193,14 +197,18 @@ public class GraphEmailService : IEmailService
             "<th style=\"padding:9px 12px;text-align:left;color:#e2e8f0;font-size:11px;\">To</th>" +
             "<th style=\"padding:9px 12px;text-align:center;color:#e2e8f0;font-size:11px;\">Days</th>" +
             "<th style=\"padding:9px 12px;text-align:left;color:#e2e8f0;font-size:11px;\">Budget</th>" +
-            "<th style=\"padding:9px 12px;text-align:center;color:#e2e8f0;font-size:11px;\">Target</th>" +
+            "<th style=\"padding:9px 12px;text-align:center;color:#e2e8f0;font-size:11px;\">Lead</th>" +
+            "<th style=\"padding:9px 12px;text-align:center;color:#e2e8f0;font-size:11px;\">Retail</th>" +
+            "<th style=\"padding:9px 12px;text-align:left;color:#e2e8f0;font-size:11px;\">CPL</th>" +
             "<th style=\"padding:9px 12px;text-align:left;color:#e2e8f0;font-size:11px;\">CAC</th>" +
             "</tr></thead><tbody>" + rows + "</tbody></table>" +
             "<table cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;border-collapse:collapse;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;margin-bottom:20px;\">" +
             "<tr><td colspan=\"2\" style=\"padding:8px 16px;color:#166534;font-weight:700;font-size:13px;\">Summary</td></tr>" +
-            "<tr>" + TdPad("Total Target") + TdVal(p.TotalTarget + " leads") + "</tr>" +
-            "<tr>" + TdPad("Total Budget") + TdVal("Rs." + p.TotalBudget.ToString("N0")) + "</tr>" +
-            "<tr>" + TdPad("Overall CAC")  + TdVal("Rs." + cac.ToString("N0")) + "</tr>" +
+            "<tr>" + TdPad("Total Lead Target")   + TdVal(p.TotalLeadTarget + " leads") + "</tr>" +
+            "<tr>" + TdPad("Total Retail Target") + TdVal(p.TotalRetailTarget + " retail") + "</tr>" +
+            "<tr>" + TdPad("Total Budget")        + TdVal("Rs." + p.TotalBudget.ToString("N0")) + "</tr>" +
+            "<tr>" + TdPad("Overall CPL")         + TdVal("Rs." + cpl.ToString("N0")) + "</tr>" +
+            "<tr>" + TdPad("Overall CAC")         + TdVal("Rs." + cac.ToString("N0")) + "</tr>" +
             "</table>";
     }
 
@@ -210,6 +218,8 @@ public class GraphEmailService : IEmailService
         sb.Append("<table cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;margin-bottom:20px;font-size:13px;\">");
         sb.Append("<tr>" + TdPad("Token")       + TdVal(p.TokenNumber ?? "") + "</tr>");
         sb.Append("<tr>" + TdPad("Dealer")      + TdVal(p.DealerName) + "</tr>");
+        if (!string.IsNullOrWhiteSpace(p.VendorName))
+            sb.Append("<tr>" + TdPad("Vendor") + TdVal(p.VendorName) + "</tr>");
         sb.Append("<tr>" + TdPad("Location")    + TdVal(p.Location + ", " + p.State) + "</tr>");
         sb.Append("<tr>" + TdPad("Month")       + TdVal(p.Month) + "</tr>");
         sb.Append("<tr>" + TdPad("Eligibility") + TdVal(p.Eligibility) + "</tr>");

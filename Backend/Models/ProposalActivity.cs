@@ -10,17 +10,30 @@ public class ProposalActivity
     public Proposal? Proposal { get; set; }
 
     [MaxLength(100)] public string ActivityType { get; set; } = string.Empty;
-    public int Target { get; set; }
-    public DateOnly? StartDate { get; set; }
-    public DateOnly? EndDate { get; set; }
-    public decimal Budget { get; set; }
-    public decimal Incentive { get; set; }
+    [MaxLength(100)] public string? Category    { get; set; }
+
+    // Renamed: Target → LeadTarget, Incentive → AdditionalBudget
+    public int     LeadTarget        { get; set; }
+    public int     RetailTarget      { get; set; }
+    public DateOnly? StartDate       { get; set; }
+    public DateOnly? EndDate         { get; set; }
+    public decimal Budget            { get; set; }
+    public decimal AdditionalBudget  { get; set; }   // was Incentive
+    public decimal BGaussShare       { get; set; } = 100m; // percentage
     [MaxLength(1000)] public string? Remarks { get; set; }
 
-    // ── Post-approval actuals (filled by RSM after approval) ──
+    // Vendor
+    public int? VendorId { get; set; }
+
+    // Post-approval actuals
     public DateOnly? ActualStartDate { get; set; }
     public DateOnly? ActualEndDate   { get; set; }
+
+    // Legacy single media (keep for backward compat)
     [MaxLength(500)] public string? MediaFileUrl  { get; set; }
     [MaxLength(255)] public string? MediaFileName { get; set; }
     [MaxLength(100)] public string? MediaFileType { get; set; }
+
+    // Multiple media
+    public List<ActivityMedia> MediaFiles { get; set; } = new();
 }

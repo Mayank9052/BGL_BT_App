@@ -7,6 +7,9 @@ using BGL_BT_App.Backend.Auth;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,9 +21,64 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddDbContext<BaplDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("BaplConnection")));
 
-// ── Azure AD Authentication ───────────────────────────────────────────────────
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"));
+// ── Authentication — Azure AD (staff) + Local JWT (dealers) ───────────────────
+// Capture the base AuthenticationBuilder first, then add each scheme on it —
+// AddMicrosoftIdentityWebApi returns a specialized builder that doesn't
+// expose AddJwtBearer/AddPolicyScheme directly.
+var authBuilder = builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = "MultiScheme";
+    options.DefaultChallengeScheme    = "MultiScheme";
+});
+
+authBuilder.AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"), "AzureAD");
+
+authBuilder.AddJwtBearer("DealerJwt", options =>
+{
+    var jwtSecret = builder.Configuration["DealerJwt:Secret"]!;
+
+    // Prevent JwtSecurityTokenHandler from rewriting short claim names
+    // ("sub", "email", "role") into long XML-namespace ClaimTypes
+    // equivalents — keeps claims exactly as issued by JwtTokenService.
+    options.MapInboundClaims = false;
+
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer           = true,
+        ValidIssuer              = builder.Configuration["DealerJwt:Issuer"],
+        ValidateAudience         = true,
+        ValidAudience            = builder.Configuration["DealerJwt:Audience"],
+        ValidateLifetime         = true,
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
+        NameClaimType            = "name",
+        RoleClaimType             = "role",
+    };
+});
+
+authBuilder.AddPolicyScheme("MultiScheme", "MultiScheme", options =>
+{
+    options.ForwardDefaultSelector = ctx =>
+    {
+        var authHeader = ctx.Request.Headers["Authorization"].FirstOrDefault();
+        if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer "))
+            return "AzureAD";
+
+        var token = authHeader["Bearer ".Length..];
+        try
+        {
+            var handler = new JwtSecurityTokenHandler();
+            var jwt = handler.ReadJwtToken(token);
+            return jwt.Issuer == builder.Configuration["DealerJwt:Issuer"]
+                ? "DealerJwt"
+                : "AzureAD";
+        }
+        catch
+        {
+            return "AzureAD";
+        }
+    };
+});
 
 builder.Services.AddAuthorization();
 
@@ -59,14 +117,12 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddTransient<IClaimsTransformation, DbRoleClaimsTransformation>();
 
 // ── Email — Graph API (sends as logged-in user via Mail.Send scope) ───────────
 builder.Services.AddHttpClient<GraphEmailService>();
 builder.Services.AddScoped<IEmailService, GraphEmailService>();
-
-// ── DO NOT register EmailService here — it conflicts with GraphEmailService ───
-// builder.Services.AddSingleton<IEmailService, EmailService>();  ← remove this
 
 builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 
@@ -101,17 +157,14 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-// ── Serve React frontend from wwwroot ─────────────────────────────────────────
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-// ── API middleware ────────────────────────────────────────────────────────────
 app.UseCors("FrontendPolicy");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
-// ── React Router fallback ─────────────────────────────────────────────────────
 app.MapFallbackToFile("index.html");
 
 app.Run();

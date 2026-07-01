@@ -88,15 +88,17 @@ public class EmailService : IEmailService
     {
         return string.Join("\n", p.Activities.Select(a =>
         {
-            var total    = a.Budget + a.Incentive;
+            var total    = a.Budget + a.AdditionalBudget;
             var days     = (a.EndDate.HasValue && a.StartDate.HasValue)
                 ? (a.EndDate.Value.DayNumber - a.StartDate.Value.DayNumber + 1) : 0;
             var fromDate = a.StartDate.HasValue
                 ? a.StartDate.Value.ToString("dd-MMM-yyyy") : "—";
             var toDate   = a.EndDate.HasValue
                 ? a.EndDate.Value.ToString("dd-MMM-yyyy") : "—";
-            var cac      = a.Target > 0
-                ? Math.Round(total / (decimal)a.Target, 0) : 0;
+            var cac      = a.RetailTarget > 0
+                ? Math.Round(total / (decimal)a.RetailTarget, 0) : 0;
+            var cpl      = a.LeadTarget > 0
+                ? Math.Round(total / (decimal)a.LeadTarget, 0) : 0;
 
             return $"""
                 <tr>
@@ -111,7 +113,11 @@ public class EmailService : IEmailService
                   <td style="padding:9px 12px;font-weight:600;color:#0a2540;
                               border-bottom:1px solid #f1f5f9;">Rs. {total:N0}/-</td>
                   <td style="padding:9px 12px;text-align:center;color:#374151;
-                              border-bottom:1px solid #f1f5f9;">{a.Target} leads</td>
+                              border-bottom:1px solid #f1f5f9;">{a.LeadTarget} leads</td>
+                  <td style="padding:9px 12px;text-align:center;color:#374151;
+                              border-bottom:1px solid #f1f5f9;">{a.RetailTarget} retail</td>
+                  <td style="padding:9px 12px;color:#6b7280;
+                              border-bottom:1px solid #f1f5f9;">Rs. {cpl:N0}/-</td>
                   <td style="padding:9px 12px;color:#6b7280;
                               border-bottom:1px solid #f1f5f9;">Rs. {cac:N0}/-</td>
                 </tr>
@@ -121,9 +127,11 @@ public class EmailService : IEmailService
 
     private static string BuildActivityTable(Proposal p)
     {
-        var rows      = BuildActivityTableRows(p);
-        var overallCac = p.TotalTarget > 0
-            ? Math.Round(p.TotalBudget / (decimal)p.TotalTarget, 0) : 0;
+        var rows       = BuildActivityTableRows(p);
+        var overallCac = p.TotalRetailTarget > 0
+            ? Math.Round(p.TotalBudget / (decimal)p.TotalRetailTarget, 0) : 0;
+        var overallCpl = p.TotalLeadTarget > 0
+            ? Math.Round(p.TotalBudget / (decimal)p.TotalLeadTarget, 0) : 0;
 
         return $"""
             <p style="margin:0 0 8px;font-size:12px;font-weight:600;color:#0a2540;
@@ -146,7 +154,11 @@ public class EmailService : IEmailService
                   <th style="padding:9px 12px;text-align:left;color:#e2e8f0;
                               font-weight:600;font-size:12px;">Budget</th>
                   <th style="padding:9px 12px;text-align:center;color:#e2e8f0;
-                              font-weight:600;font-size:12px;">Target</th>
+                              font-weight:600;font-size:12px;">Lead Target</th>
+                  <th style="padding:9px 12px;text-align:center;color:#e2e8f0;
+                              font-weight:600;font-size:12px;">Retail Target</th>
+                  <th style="padding:9px 12px;text-align:left;color:#e2e8f0;
+                              font-weight:600;font-size:12px;">CPL</th>
                   <th style="padding:9px 12px;text-align:left;color:#e2e8f0;
                               font-weight:600;font-size:12px;">CAC</th>
                 </tr>
@@ -165,13 +177,24 @@ public class EmailService : IEmailService
               </tr>
               <tr>
                 <td style="padding:4px 16px;color:#6b7280;width:200px;font-size:13px;">
-                  Total Target (Leads)</td>
-                <td style="padding:4px 0;font-weight:600;font-size:13px;">{p.TotalTarget}</td>
+                  Total Lead Target</td>
+                <td style="padding:4px 0;font-weight:600;font-size:13px;">{p.TotalLeadTarget}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 16px;color:#6b7280;width:200px;font-size:13px;">
+                  Total Retail Target</td>
+                <td style="padding:4px 0;font-weight:600;font-size:13px;">{p.TotalRetailTarget}</td>
               </tr>
               <tr>
                 <td style="padding:4px 16px;color:#6b7280;font-size:13px;">Total Budget</td>
                 <td style="padding:4px 0;font-weight:600;font-size:13px;">
                   Rs. {p.TotalBudget:N0}/-</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 16px;color:#6b7280;font-size:13px;">
+                  Overall CPL</td>
+                <td style="padding:4px 0;font-weight:600;font-size:13px;">
+                  Rs. {overallCpl:N0}/-</td>
               </tr>
               <tr>
                 <td style="padding:4px 16px 10px;color:#6b7280;font-size:13px;">
@@ -199,24 +222,30 @@ public class EmailService : IEmailService
                 <td style="padding:7px 16px 7px 14px;color:#6b7280;">Dealer Name</td>
                 <td style="padding:7px 0;font-weight:600;">{p.DealerName}</td>
               </tr>
+              {(string.IsNullOrWhiteSpace(p.VendorName) ? "" : $"""
               <tr>
+                <td style="padding:7px 16px 7px 14px;color:#6b7280;">Vendor</td>
+                <td style="padding:7px 0;">{p.VendorName}</td>
+              </tr>
+              """)}
+              <tr style="background:#fff;">
                 <td style="padding:7px 16px 7px 14px;color:#6b7280;">Location</td>
                 <td style="padding:7px 0;">{p.Location}, {p.State}</td>
               </tr>
-              <tr style="background:#fff;">
+              <tr>
                 <td style="padding:7px 16px 7px 14px;color:#6b7280;">Month</td>
                 <td style="padding:7px 0;">{p.Month}</td>
               </tr>
-              <tr>
+              <tr style="background:#fff;">
                 <td style="padding:7px 16px 7px 14px;color:#6b7280;">Eligibility</td>
                 <td style="padding:7px 0;">{p.Eligibility}</td>
               </tr>
-              <tr style="background:#fff;">
+              <tr>
                 <td style="padding:7px 16px 7px 14px;color:#6b7280;">RSM / TSM</td>
                 <td style="padding:7px 0;">{p.RsmName}</td>
               </tr>
               {(string.IsNullOrWhiteSpace(p.CommandoName) ? "" : $"""
-              <tr>
+              <tr style="background:#fff;">
                 <td style="padding:7px 16px 7px 14px;color:#6b7280;">Commando</td>
                 <td style="padding:7px 0;">{p.CommandoName}</td>
               </tr>
@@ -357,11 +386,19 @@ public class EmailService : IEmailService
                     <td style="padding:7px 0;font-weight:600;">₹{p.TotalBudget:N0}</td>
                   </tr>
                   <tr>
-                    <td style="padding:7px 16px 7px 14px;color:#6b7280;">Total Target</td>
-                    <td style="padding:7px 0;">{p.TotalTarget} leads</td>
+                    <td style="padding:7px 16px 7px 14px;color:#6b7280;">Lead Target</td>
+                    <td style="padding:7px 0;">{p.TotalLeadTarget} leads</td>
                   </tr>
                   <tr style="background:#fff;">
-                    <td style="padding:7px 16px 7px 14px;color:#6b7280;">Overall CAC</td>
+                    <td style="padding:7px 16px 7px 14px;color:#6b7280;">Retail Target</td>
+                    <td style="padding:7px 0;">{p.TotalRetailTarget} retail</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:7px 16px 7px 14px;color:#6b7280;">CPL</td>
+                    <td style="padding:7px 0;">₹{p.Cpl:N0}</td>
+                  </tr>
+                  <tr style="background:#fff;">
+                    <td style="padding:7px 16px 7px 14px;color:#6b7280;">CAC</td>
                     <td style="padding:7px 0;">₹{p.Cac:N0}</td>
                   </tr>
                 </table>

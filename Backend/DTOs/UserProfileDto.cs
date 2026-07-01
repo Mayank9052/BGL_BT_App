@@ -2,7 +2,7 @@ namespace BGL_BT_App.Backend.DTOs;
 
 public record UserProfileDto(
     int Id,
-    string AzureObjectId,
+    string? AzureObjectId,
     string Email,
     string DisplayName,
     string? FirstName,

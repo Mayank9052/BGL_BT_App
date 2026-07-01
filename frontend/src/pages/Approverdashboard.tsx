@@ -36,14 +36,18 @@ const ACT_TYPES   = [
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface EditActivity {
-  id?: string; activityType: string; target: string;
+  id?: string; activityType: string; category: string;
+  leadTarget: string; retailTarget: string;
   startDate: string; endDate: string; budget: string;
-  incentive: string; remarks: string;
+  additionalBudget: string; bgaussShare: string;
+  vendorId: string; remarks: string;
 }
 interface EditableProposal {
   dealerName: string; location: string; state: string; type: string;
   rsmName: string; commandoName: string; month: string;
-  eligibility: string; remarks: string; activities: EditActivity[];
+  eligibility: string; remarks: string;
+  vendorId: string; vendorName: string;
+  activities: EditActivity[];
 }
 interface ActualEntry {
   actualStartDate: string;
@@ -60,11 +64,16 @@ function toEditable(p: ProposalResponse): EditableProposal {
     dealerName: p.dealerName, location: p.location, state: p.state,
     type: p.type, rsmName: p.rsmName, commandoName: p.commandoName,
     month: p.month, eligibility: p.eligibility, remarks: p.remarks ?? "",
+    vendorId: String(p.vendorId ?? ""), vendorName: p.vendorName ?? "",
     activities: p.activities.map((a: ActivityResponse) => ({
-      id: a.id, activityType: a.activityType,
-      target: String(a.target), startDate: a.startDate?.split("T")[0] ?? "",
+      id: a.id, activityType: a.activityType, category: a.category ?? "",
+      leadTarget: String(a.leadTarget ?? 0), retailTarget: String(a.retailTarget ?? 0),
+      startDate: a.startDate?.split("T")[0] ?? "",
       endDate: a.endDate?.split("T")[0] ?? "",
-      budget: String(a.budget), incentive: String(a.incentive), remarks: a.remarks ?? "",
+      budget: String(a.budget), additionalBudget: String(a.additionalBudget ?? 0),
+      bgaussShare: String(a.bgaussShare ?? 100),
+      vendorId: String(a.vendorId ?? ""),
+      remarks: a.remarks ?? "",
     })),
   };
 }
@@ -147,10 +156,17 @@ export default function ApproverDashboard() {
   }, [proposals]);
 
   const editTotals = useMemo(() => {
-    if (!editData) return { totalBudget: 0, totalTarget: 0, cac: 0 };
-    const tb = editData.activities.reduce((s, a) => s + num(a.budget) + num(a.incentive), 0);
-    const tt = editData.activities.reduce((s, a) => s + num(a.target), 0);
-    return { totalBudget: tb, totalTarget: tt, cac: tt > 0 ? tb / tt : 0 };
+    if (!editData) return { totalBudget: 0, totalLeadTarget: 0, totalRetailTarget: 0, cac: 0, cpl: 0 };
+    const tb  = editData.activities.reduce((s, a) => s + num(a.budget) + num(a.additionalBudget), 0);
+    const tlt = editData.activities.reduce((s, a) => s + num(a.leadTarget), 0);
+    const trt = editData.activities.reduce((s, a) => s + num(a.retailTarget), 0);
+    return {
+      totalBudget: tb,
+      totalLeadTarget: tlt,
+      totalRetailTarget: trt,
+      cac: trt > 0 ? tb / trt : 0,
+      cpl: tlt > 0 ? tb / tlt : 0,
+    };
   }, [editData]);
 
   // ── Toast ────────────────────────────────────────────────────────────────────
@@ -266,7 +282,9 @@ export default function ApproverDashboard() {
 
   const addRow = () =>
     setEditData((d) => d ? { ...d, activities: [...d.activities,
-      { activityType:"",target:"",startDate:"",endDate:"",budget:"",incentive:"",remarks:"" }] } : d);
+      { activityType:"", category:"", leadTarget:"", retailTarget:"",
+        startDate:"", endDate:"", budget:"", additionalBudget:"", bgaussShare:"100",
+        vendorId:"", remarks:"" }] } : d);
 
   const removeRow = (idx: number) =>
     setEditData((d) => (!d || d.activities.length <= 1) ? d :
@@ -277,13 +295,37 @@ export default function ApproverDashboard() {
     setSaveLoading(true);
     try {
       const payload = {
-        ...editData,
+        dealerName:        editData.dealerName,
+        location:          editData.location,
+        state:             editData.state,
+        type:              editData.type,
+        rsmName:           editData.rsmName,
+        commandoName:      editData.commandoName,
+        month:             editData.month,
+        eligibility:       editData.eligibility,
+        remarks:           editData.remarks,
+        vendorId:          editData.vendorId ? Number(editData.vendorId) : null,
+        vendorName:        editData.vendorName || null,
         activities: editData.activities.map((a) => ({
-          ...a, target: num(a.target), budget: num(a.budget), incentive: num(a.incentive),
+          activityType:     a.activityType,
+          category:         a.category || null,
+          leadTarget:       num(a.leadTarget),
+          retailTarget:     num(a.retailTarget),
+          startDate:        a.startDate,
+          endDate:          a.endDate,
+          budget:           num(a.budget),
+          additionalBudget: num(a.additionalBudget),
+          bgaussShare:      num(a.bgaussShare) || 100,
+          vendorId:         a.vendorId ? Number(a.vendorId) : null,
+          remarks:          a.remarks,
         })),
-        ...editTotals,
+        totalBudget:       editTotals.totalBudget,
+        totalLeadTarget:   Math.round(editTotals.totalLeadTarget),
+        totalRetailTarget: Math.round(editTotals.totalRetailTarget),
+        cac:               editTotals.cac,
+        cpl:               editTotals.cpl,
       };
-      const updated = await updateProposal(selected.id, payload, instance);
+      const updated = await updateProposal(selected.id, payload as any, instance);
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
       setSelected(updated); setEditData(toEditable(updated)); setIsEditing(false);
       showToast("Proposal updated.", true);
@@ -411,14 +453,16 @@ export default function ApproverDashboard() {
                     <th>Month</th>
                     <th>Activities</th>
                     <th className="ap-num">Budget</th>
-                    <th className="ap-num">Target</th>
+                    <th className="ap-num">Lead Target</th>
+                    <th className="ap-num">Retail Target</th>
                     <th className="ap-num">CAC</th>
+                    <th className="ap-num">CPL</th>
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length === 0 && (
-                    <tr><td colSpan={isAdmin ? 11 : 10} className="ap-empty">
+                    <tr><td colSpan={isAdmin ? 13 : 12} className="ap-empty">
                       {proposals.length === 0 ? "No proposals yet." : "No results match."}
                     </td></tr>
                   )}
@@ -460,8 +504,10 @@ export default function ApproverDashboard() {
                         )}
                       </td>
                       <td className="ap-num ap-bold">{inr(p.totalBudget)}</td>
-                      <td className="ap-num">{p.totalTarget}</td>
+                      <td className="ap-num">{p.totalLeadTarget}</td>
+                      <td className="ap-num">{p.totalRetailTarget}</td>
                       <td className="ap-num">{inr(p.cac)}</td>
+                      <td className="ap-num">{inr(p.cpl)}</td>
                       <td>
                         <span className={statusClass(p.status)}>
                           {p.status === "NeedsRevision" ? "Needs revision" : p.status}
@@ -599,6 +645,16 @@ export default function ApproverDashboard() {
                 ))}
               </div>
 
+              {/* Vendor row (display only — edit happens via RSM form) */}
+              {(selected.vendorName || isEditing) && (
+                <div className="ap-meta-grid-3" style={{ marginTop: 0 }}>
+                  <div className="ap-meta-cell">
+                    <span className="ap-meta-lbl">Vendor</span>
+                    <span className="ap-meta-val">{selected.vendorName || "—"}</span>
+                  </div>
+                </div>
+              )}
+
               {/* Remarks */}
               {isAdmin && isEditing ? (
                 <div className="ap-remarks-edit">
@@ -624,15 +680,16 @@ export default function ApproverDashboard() {
 
               <div className="ap-itbl-wrap">
                 <div style={{ overflowX: "auto" }}>
-                  <table className="ap-itbl" style={{ minWidth: isEditing ? 700 : "auto" }}>
+                  <table className="ap-itbl" style={{ minWidth: isEditing ? 900 : "auto" }}>
                     <thead>
                       <tr>
                         <th style={{ width: 28 }}>#</th>
                         <th>Activity type</th>
-                        <th className="ap-num" style={{ width: 70 }}>Target</th>
+                        <th className="ap-num" style={{ width: 70 }}>Lead</th>
+                        <th className="ap-num" style={{ width: 70 }}>Retail</th>
                         <th>Dates</th>
                         <th className="ap-num" style={{ width: 100 }}>Budget (₹)</th>
-                        <th className="ap-num" style={{ width: 100 }}>Incentive (₹)</th>
+                        <th className="ap-num" style={{ width: 100 }}>Add. Budget (₹)</th>
                         <th className="ap-num" style={{ width: 100 }}>Total (₹)</th>
                         {isAdmin && isEditing && <th style={{ width: 32 }}></th>}
                       </tr>
@@ -652,8 +709,13 @@ export default function ApproverDashboard() {
                             </td>
                             <td className="ap-td-num">
                               <input type="number" min={0} className="ap-cell-num"
-                                value={(a as EditActivity).target}
-                                onChange={(e) => setAF(i, "target", e.target.value)} />
+                                value={(a as EditActivity).leadTarget}
+                                onChange={(e) => setAF(i, "leadTarget", e.target.value)} />
+                            </td>
+                            <td className="ap-td-num">
+                              <input type="number" min={0} className="ap-cell-num"
+                                value={(a as EditActivity).retailTarget}
+                                onChange={(e) => setAF(i, "retailTarget", e.target.value)} />
                             </td>
                             <td className="ap-td">
                               <div className="ap-date-pair">
@@ -674,11 +736,11 @@ export default function ApproverDashboard() {
                             </td>
                             <td className="ap-td-num">
                               <input type="number" min={0} className="ap-cell-num"
-                                value={(a as EditActivity).incentive}
-                                onChange={(e) => setAF(i, "incentive", e.target.value)} />
+                                value={(a as EditActivity).additionalBudget}
+                                onChange={(e) => setAF(i, "additionalBudget", e.target.value)} />
                             </td>
                             <td className="ap-td-num ap-bold">
-                              {inr(num((a as EditActivity).budget) + num((a as EditActivity).incentive))}
+                              {inr(num((a as EditActivity).budget) + num((a as EditActivity).additionalBudget))}
                             </td>
                             <td className="ap-td" style={{ textAlign: "center" }}>
                               <button className="ap-rm-btn"
@@ -690,16 +752,17 @@ export default function ApproverDashboard() {
                           <tr key={i}>
                             <td className="ap-td-num" style={{ color: "var(--color-text-tertiary)" }}>{i + 1}</td>
                             <td className="ap-td ap-bold">{(a as ActivityResponse).activityType}</td>
-                            <td className="ap-td-num">{(a as ActivityResponse).target}</td>
+                            <td className="ap-td-num">{(a as ActivityResponse).leadTarget}</td>
+                            <td className="ap-td-num">{(a as ActivityResponse).retailTarget}</td>
                             <td className="ap-td" style={{ color: "var(--color-text-secondary)" }}>
                               {fmtDate((a as ActivityResponse).startDate)}
                               {(a as ActivityResponse).startDate !== (a as ActivityResponse).endDate &&
                                 <> → {fmtDate((a as ActivityResponse).endDate)}</>}
                             </td>
                             <td className="ap-td-num">{inr((a as ActivityResponse).budget)}</td>
-                            <td className="ap-td-num">{inr((a as ActivityResponse).incentive)}</td>
+                            <td className="ap-td-num">{inr((a as ActivityResponse).additionalBudget)}</td>
                             <td className="ap-td-num ap-bold">
-                              {inr((a as ActivityResponse).budget + (a as ActivityResponse).incentive)}
+                              {inr((a as ActivityResponse).budget + (a as ActivityResponse).additionalBudget)}
                             </td>
                           </tr>
                         )
@@ -712,9 +775,15 @@ export default function ApproverDashboard() {
               {/* Totals */}
               <div className="ap-summary">
                 <div className="ap-sum-cell">
-                  <span className="ap-sum-lbl">Total target</span>
+                  <span className="ap-sum-lbl">Lead target</span>
                   <span className="ap-sum-val">
-                    {isEditing ? Math.round(editTotals.totalTarget) : selected.totalTarget}
+                    {isEditing ? Math.round(editTotals.totalLeadTarget) : selected.totalLeadTarget}
+                  </span>
+                </div>
+                <div className="ap-sum-cell">
+                  <span className="ap-sum-lbl">Retail target</span>
+                  <span className="ap-sum-val">
+                    {isEditing ? Math.round(editTotals.totalRetailTarget) : selected.totalRetailTarget}
                   </span>
                 </div>
                 <div className="ap-sum-cell">
@@ -723,10 +792,16 @@ export default function ApproverDashboard() {
                     {inr(isEditing ? editTotals.totalBudget : selected.totalBudget)}
                   </span>
                 </div>
-                <div className="ap-sum-cell ap-sum-last">
+                <div className="ap-sum-cell">
                   <span className="ap-sum-lbl">CAC (auto)</span>
                   <span className="ap-sum-val ap-amber">
                     {inr(isEditing ? editTotals.cac : selected.cac)}
+                  </span>
+                </div>
+                <div className="ap-sum-cell ap-sum-last">
+                  <span className="ap-sum-lbl">CPL (auto)</span>
+                  <span className="ap-sum-val ap-amber">
+                    {inr(isEditing ? editTotals.cpl : selected.cpl)}
                   </span>
                 </div>
               </div>

@@ -1,23 +1,37 @@
 // src/services/proposalService.ts
 import { IPublicClientApplication, InteractionRequiredAuthError } from "@azure/msal-browser";
 import { apiRequest, graphMailRequest, API_BASE_URL } from "../authConfig";
+import { getDealerToken } from "./dealerAuthService";
 
 /* ── Types ────────────────────────────────────────────────────────────────── */
+export interface ActivityMediaResponse {
+  id:       string;
+  fileUrl:  string;
+  fileName: string;
+  fileType: string;
+}
+
 export interface ActivityResponse {
-  id:           string;
-  activityType: string;
-  target:       number;
-  startDate:    string | null;
-  endDate:      string | null;
-  budget:       number;
-  incentive:    number;
-  remarks:      string | null;
+  id:               string;
+  activityType:     string;
+  category:         string | null;
+  leadTarget:       number;
+  retailTarget:     number;
+  startDate:        string | null;
+  endDate:          string | null;
+  budget:           number;
+  additionalBudget: number;
+  bgaussShare:      number;
+  vendorId:         number | null;
+  remarks:          string | null;
   // ── actuals (filled after approval) ──
   actualStartDate: string | null;
   actualEndDate:   string | null;
   mediaFileUrl:    string | null;
   mediaFileName:   string | null;
   mediaFileType:   string | null;
+  // ── multiple media files ──
+  mediaFiles:      ActivityMediaResponse[];
 }
 
 export interface ProposalResponse {
@@ -26,16 +40,20 @@ export interface ProposalResponse {
   location:               string;
   type:                   string;
   dealerName:             string;
+  vendorId:               number | null;
+  vendorName:             string | null;
   rsmName:                string;
   commandoName:           string;
   month:                  string;
   eligibility:            string;
   remarks:                string | null;
   totalBudget:            number;
-  totalTarget:            number;
+  totalLeadTarget:        number;
+  totalRetailTarget:      number;
   cac:                    number;
-  allowedCac:             number;        // ← new
-  cacWarning:             string | null; // ← new
+  cpl:                    number;
+  allowedCac:             number;
+  cacWarning:             string | null;
   submittedBy:            string;
   submittedByDisplayName: string | null;
   createdAt:              string;
@@ -48,47 +66,59 @@ export interface ProposalResponse {
 }
 
 interface ActivityPayload {
-  activityType: string;
-  target:       number;
-  startDate:    string;
-  endDate:      string;
-  budget:       number;
-  incentive:    number;
-  remarks?:     string;
+  activityType:     string;
+  category:         string | null;
+  leadTarget:       number;
+  retailTarget:     number;
+  startDate:        string;
+  endDate:          string;
+  budget:           number;
+  additionalBudget: number;
+  bgaussShare:      number;
+  vendorId:         number | null;
+  remarks?:         string;
 }
 
 interface ProposalPayload {
-  state:        string;
-  location:     string;
-  type:         string;
-  dealerName:   string;
-  rsmName:      string;
-  commandoName: string;
-  month:        string;
-  eligibility:  string;
-  remarks:      string;
-  submittedBy:  string | null;
-  docNumber:    string;
-  activities:   ActivityPayload[];
-  totalBudget:  number;
-  totalTarget:  number;
-  cac:          number;
+  state:              string;
+  location:           string;
+  type:               string;
+  dealerName:         string;
+  vendorId:           number | null;
+  vendorName:         string | null;
+  rsmName:            string;
+  commandoName:       string;
+  month:              string;
+  eligibility:        string;
+  remarks:            string;
+  submittedBy:        string | null;
+  docNumber:          string;
+  activities:         ActivityPayload[];
+  totalBudget:        number;
+  totalLeadTarget:    number;
+  totalRetailTarget:  number;
+  cac:                number;
+  cpl:                number;
 }
 
 export interface UpdateProposalPayload {
-  dealerName:   string;
-  location:     string;
-  state:        string;
-  type:         string;
-  rsmName:      string;
-  commandoName: string;
-  month:        string;
-  eligibility:  string;
-  remarks:      string;
-  activities:   ActivityPayload[];
-  totalBudget:  number;
-  totalTarget:  number;
-  cac:          number;
+  dealerName:         string;
+  vendorId:           number | null;
+  vendorName:         string | null;
+  location:           string;
+  state:              string;
+  type:               string;
+  rsmName:            string;
+  commandoName:       string;
+  month:              string;
+  eligibility:        string;
+  remarks:            string;
+  activities:         ActivityPayload[];
+  totalBudget:        number;
+  totalLeadTarget:    number;
+  totalRetailTarget:  number;
+  cac:                number;
+  cpl:                number;
 }
 
 export interface DecidePayload {
@@ -111,15 +141,7 @@ export interface ActivityActualsPayload {
   mediaFileType:   string | null;
 }
 
-/* ── Token helper ─────────────────────────────────────────────────────────── */
-// async function getAccessToken(instance: IPublicClientApplication): Promise<string> {
-//   const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
-//   if (!account) throw new Error("No active account — please sign in again.");
-//   const result = await instance.acquireTokenSilent({ ...apiRequest, account });
-//   return result.accessToken;
-// }
-
-// ── Token helpers ─────────────────────────────────────────────────────────────
+/* ── Token helpers ────────────────────────────────────────────────────────── */
 async function getAccessToken(instance: IPublicClientApplication): Promise<string> {
   const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
   if (!account) throw new Error("No active account — please sign in again.");
@@ -245,6 +267,25 @@ export async function fetchProposalsByDealer(
   return res.json();
 }
 
+/**
+ * Fetch activity types already used for a dealer in a given month.
+ * Used by frontend to warn about duplicate activity types before submit.
+ */
+export async function fetchActivityTypesUsed(
+  dealerName: string,
+  month: string,
+  instance: IPublicClientApplication,
+): Promise<string[]> {
+  const token = await getAccessToken(instance);
+  const res = await fetch(
+    `${API_BASE_URL}/api/proposals/activity-types-used` +
+    `?dealerName=${encodeURIComponent(dealerName)}&month=${encodeURIComponent(month)}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw new Error(`Failed to check activity types (${res.status})`);
+  return res.json();
+}
+
 /** Approve or reject a proposal */
 export async function decideProposal(
   id: string,
@@ -328,4 +369,59 @@ export async function uploadActivityMedia(
     throw new Error(text || `Upload failed (${res.status})`);
   }
   return res.json();
+}
+
+export async function fetchMyDealerProposals(): Promise<ProposalResponse[]> {
+  const token = getDealerToken();          // from dealerAuthService
+  if (!token) throw new Error("Not signed in as a dealer.");
+
+  const res = await fetch(`${API_BASE_URL}/api/proposals/my-dealer-proposals`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Failed to load proposals (${res.status})`);
+  }
+  return res.json();
+}
+
+/** Attach an already-uploaded media file to a specific activity */
+export async function addActivityMedia(
+  proposalId: string,
+  activityId: string,
+  media: { fileUrl: string; fileName: string; fileType: string },
+  instance: IPublicClientApplication,
+): Promise<ActivityMediaResponse> {
+  const token = await getAccessToken(instance);
+  const res = await fetch(
+    `${API_BASE_URL}/api/proposals/${proposalId}/activities/${activityId}/media`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(media),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Failed to attach media (${res.status})`);
+  }
+  return res.json();
+}
+
+/** Remove a media file from an activity */
+export async function removeActivityMedia(
+  proposalId: string,
+  activityId: string,
+  mediaId: string,
+  instance: IPublicClientApplication,
+): Promise<void> {
+  const token = await getAccessToken(instance);
+  const res = await fetch(
+    `${API_BASE_URL}/api/proposals/${proposalId}/activities/${activityId}/media/${mediaId}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Failed to remove media (${res.status})`);
+  }
 }

@@ -41,6 +41,33 @@ public class ProposalsController : ControllerBase
         if (dto.Activities is null || dto.Activities.Count == 0)
             return BadRequest("At least one activity is required.");
 
+        // ── Validate: no duplicate activity type in same proposal/month ───────
+        var duplicateTypes = dto.Activities
+            .Where(a => !string.IsNullOrWhiteSpace(a.ActivityType))
+            .GroupBy(a => a.ActivityType.Trim().ToLower())
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        if (duplicateTypes.Count > 0)
+            return BadRequest(new
+            {
+                message = $"Duplicate activity type(s) not allowed in the same proposal: " +
+                           $"{string.Join(", ", duplicateTypes)}"
+            });
+
+        // ── Validate: end date must be after start date for each activity ─────
+        foreach (var a in dto.Activities)
+        {
+            var s = ParseDate(a.StartDate);
+            var e = ParseDate(a.EndDate);
+            if (s.HasValue && e.HasValue && e.Value < s.Value)
+                return BadRequest(new
+                {
+                    message = $"Activity '{a.ActivityType}': End date cannot be before start date."
+                });
+        }
+
         var submittedBy = CurrentUserEmail();
 
         var submitter = await _db.Users
@@ -49,18 +76,24 @@ public class ProposalsController : ControllerBase
 
         var activities = dto.Activities.Select(a => new ProposalActivity
         {
-            ActivityType = a.ActivityType,
-            Target       = a.Target,
-            StartDate    = ParseDate(a.StartDate),
-            EndDate      = ParseDate(a.EndDate),
-            Budget       = a.Budget,
-            Incentive    = a.Incentive,
-            Remarks      = a.Remarks,
+            ActivityType     = a.ActivityType,
+            Category         = a.Category,
+            LeadTarget       = a.LeadTarget,
+            RetailTarget     = a.RetailTarget,
+            StartDate        = ParseDate(a.StartDate),
+            EndDate          = ParseDate(a.EndDate),
+            Budget           = a.Budget,
+            AdditionalBudget = a.AdditionalBudget,
+            BGaussShare      = a.BGaussShare > 0 ? a.BGaussShare : 100m,
+            VendorId         = a.VendorId,
+            Remarks          = a.Remarks,
         }).ToList();
 
-        var totalBudget = activities.Sum(a => a.Budget + a.Incentive);
-        var totalTarget = activities.Sum(a => a.Target);
-        var cac         = totalTarget > 0 ? Math.Round(totalBudget / totalTarget, 2) : 0m;
+        var totalBudget       = activities.Sum(a => a.Budget + a.AdditionalBudget);
+        var totalLeadTarget   = activities.Sum(a => a.LeadTarget);
+        var totalRetailTarget = activities.Sum(a => a.RetailTarget);
+        var cac = totalRetailTarget > 0 ? Math.Round(totalBudget / totalRetailTarget, 2) : 0m;
+        var cpl = totalLeadTarget   > 0 ? Math.Round(totalBudget / totalLeadTarget,   2) : 0m;
 
         // ── ERP eligibility / CAC validation ──────────────────────────────
         var (allowedCac, cacWarning) = await GetCacLimitAsync(dto.DealerName, cac);
@@ -71,16 +104,20 @@ public class ProposalsController : ControllerBase
             Location               = dto.Location,
             Type                   = dto.Type,
             DealerName             = dto.DealerName,
+            VendorId               = dto.VendorId,
+            VendorName             = dto.VendorName,
             RsmName                = dto.RsmName,
             CommandoName           = dto.CommandoName,
             Month                  = dto.Month,
             Eligibility            = dto.Eligibility,
             Remarks                = dto.Remarks,
             TotalBudget            = totalBudget,
-            TotalTarget            = totalTarget,
+            TotalLeadTarget        = totalLeadTarget,
+            TotalRetailTarget      = totalRetailTarget,
             Cac                    = cac,
-            AllowedCac             = allowedCac,   // ← new
-            CacWarning             = cacWarning,   // ← new
+            Cpl                    = cpl,
+            AllowedCac             = allowedCac,
+            CacWarning             = cacWarning,
             SubmittedBy            = submittedBy,
             SubmittedByDisplayName = submitter?.DisplayName ?? dto.RsmName,
             Activities             = activities,
@@ -104,6 +141,7 @@ public class ProposalsController : ControllerBase
     {
         var proposals = await _db.Proposals
             .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
             .OrderByDescending(p => p.CreatedAt)
             .AsNoTracking()
             .ToListAsync();
@@ -119,6 +157,7 @@ public class ProposalsController : ControllerBase
 
         var proposals = await _db.Proposals
             .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
             .Where(p => p.SubmittedBy == email)
             .OrderByDescending(p => p.CreatedAt)
             .AsNoTracking()
@@ -137,6 +176,7 @@ public class ProposalsController : ControllerBase
 
         var proposals = await _db.Proposals
             .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
             .Where(p => p.DealerName == name)
             .OrderByDescending(p => p.CreatedAt)
             .AsNoTracking()
@@ -145,12 +185,35 @@ public class ProposalsController : ControllerBase
         return Ok(proposals.Select(ToResponse));
     }
 
+    // ── GET /api/proposals/by-dealer-month?name={dealerName}&month={month} ────
+    // Helper to check existing activity types for a dealer in a given month
+    // (used by frontend to warn about duplicates before submit)
+    [HttpGet("activity-types-used")]
+    public async Task<ActionResult<IEnumerable<string>>> GetActivityTypesUsed(
+        [FromQuery] string dealerName, [FromQuery] string month)
+    {
+        if (string.IsNullOrWhiteSpace(dealerName) || string.IsNullOrWhiteSpace(month))
+            return BadRequest(new { message = "dealerName and month are required." });
+
+        var types = await _db.Proposals
+            .Where(p => p.DealerName == dealerName
+                     && p.Month == month
+                     && p.Status != "Rejected")
+            .SelectMany(p => p.Activities)
+            .Select(a => a.ActivityType)
+            .Distinct()
+            .ToListAsync();
+
+        return Ok(types);
+    }
+
     // ── GET /api/proposals/{id} ───────────────────────────────────────────────
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<ProposalResponseDto>> GetById(Guid id)
     {
         var proposal = await _db.Proposals
             .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == id);
 
@@ -163,6 +226,7 @@ public class ProposalsController : ControllerBase
     {
         var proposal = await _db.Proposals
             .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
@@ -170,9 +234,41 @@ public class ProposalsController : ControllerBase
         if (proposal.Status is "Approved" or "Rejected")
             return Conflict(new { message = $"This proposal was already {proposal.Status} and cannot be modified." });
 
+        if (dto.Activities is null || dto.Activities.Count == 0)
+            return BadRequest(new { message = "At least one activity is required." });
+
+        // ── Validate: no duplicate activity type ───────────────────────────────
+        var duplicateTypes = dto.Activities
+            .Where(a => !string.IsNullOrWhiteSpace(a.ActivityType))
+            .GroupBy(a => a.ActivityType.Trim().ToLower())
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        if (duplicateTypes.Count > 0)
+            return BadRequest(new
+            {
+                message = $"Duplicate activity type(s) not allowed in the same proposal: " +
+                           $"{string.Join(", ", duplicateTypes)}"
+            });
+
+        // ── Validate: end date after start date ─────────────────────────────────
+        foreach (var a in dto.Activities)
+        {
+            var s = ParseDate(a.StartDate);
+            var e = ParseDate(a.EndDate);
+            if (s.HasValue && e.HasValue && e.Value < s.Value)
+                return BadRequest(new
+                {
+                    message = $"Activity '{a.ActivityType}': End date cannot be before start date."
+                });
+        }
+
         var wasNeedsRevision = proposal.Status == "NeedsRevision";
 
         proposal.DealerName   = dto.DealerName;
+        proposal.VendorId     = dto.VendorId;
+        proposal.VendorName   = dto.VendorName;
         proposal.Location     = dto.Location;
         proposal.State        = dto.State;
         proposal.Type         = dto.Type;
@@ -182,29 +278,37 @@ public class ProposalsController : ControllerBase
         proposal.Eligibility  = dto.Eligibility;
         proposal.Remarks      = dto.Remarks;
 
+        // Remove old activities (cascades to ActivityMedia via FK delete)
         await _db.ProposalActivities
             .Where(a => a.ProposalId == id)
             .ExecuteDeleteAsync();
 
         var newActivities = dto.Activities.Select(a => new ProposalActivity
         {
-            Id           = Guid.NewGuid(),
-            ProposalId   = id,
-            ActivityType = a.ActivityType,
-            Target       = a.Target,
-            StartDate    = ParseDate(a.StartDate),
-            EndDate      = ParseDate(a.EndDate),
-            Budget       = a.Budget,
-            Incentive    = a.Incentive,
-            Remarks      = a.Remarks,
+            Id               = Guid.NewGuid(),
+            ProposalId       = id,
+            ActivityType     = a.ActivityType,
+            Category         = a.Category,
+            LeadTarget       = a.LeadTarget,
+            RetailTarget     = a.RetailTarget,
+            StartDate        = ParseDate(a.StartDate),
+            EndDate          = ParseDate(a.EndDate),
+            Budget           = a.Budget,
+            AdditionalBudget = a.AdditionalBudget,
+            BGaussShare      = a.BGaussShare > 0 ? a.BGaussShare : 100m,
+            VendorId         = a.VendorId,
+            Remarks          = a.Remarks,
         }).ToList();
 
         await _db.ProposalActivities.AddRangeAsync(newActivities);
 
-        proposal.TotalBudget = newActivities.Sum(a => a.Budget + a.Incentive);
-        proposal.TotalTarget = newActivities.Sum(a => a.Target);
-        proposal.Cac         = proposal.TotalTarget > 0
-            ? Math.Round(proposal.TotalBudget / proposal.TotalTarget, 2) : 0m;
+        proposal.TotalBudget       = newActivities.Sum(a => a.Budget + a.AdditionalBudget);
+        proposal.TotalLeadTarget   = newActivities.Sum(a => a.LeadTarget);
+        proposal.TotalRetailTarget = newActivities.Sum(a => a.RetailTarget);
+        proposal.Cac = proposal.TotalRetailTarget > 0
+            ? Math.Round(proposal.TotalBudget / proposal.TotalRetailTarget, 2) : 0m;
+        proposal.Cpl = proposal.TotalLeadTarget > 0
+            ? Math.Round(proposal.TotalBudget / proposal.TotalLeadTarget, 2) : 0m;
 
         // Recompute CAC limit on resubmit
         var (allowedCac, cacWarning) = await GetCacLimitAsync(proposal.DealerName, proposal.Cac);
@@ -221,6 +325,7 @@ public class ProposalsController : ControllerBase
 
         var updated = await _db.Proposals
             .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
             .AsNoTracking()
             .FirstAsync(p => p.Id == id);
 
@@ -243,6 +348,7 @@ public class ProposalsController : ControllerBase
 
         var proposal = await _db.Proposals
             .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
@@ -286,6 +392,7 @@ public class ProposalsController : ControllerBase
     {
         var proposal = await _db.Proposals
             .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
@@ -313,6 +420,7 @@ public class ProposalsController : ControllerBase
     {
         var proposal = await _db.Proposals
             .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
@@ -334,6 +442,85 @@ public class ProposalsController : ControllerBase
 
         await _db.SaveChangesAsync();
         return Ok(ToResponse(proposal));
+    }
+
+    // ── POST /api/proposals/{id}/activities/{activityId}/media ───────────────
+    // Attach an already-uploaded media file (via /api/media/upload) to an activity
+    [HttpPost("{id:guid}/activities/{activityId:guid}/media")]
+    public async Task<ActionResult<ActivityMediaDto>> AddActivityMedia(
+        Guid id, Guid activityId, [FromBody] AddActivityMediaDto dto)
+    {
+        var activity = await _db.ProposalActivities
+            .FirstOrDefaultAsync(a => a.Id == activityId && a.ProposalId == id);
+
+        if (activity is null) return NotFound(new { message = "Activity not found." });
+
+        var media = new ActivityMedia
+        {
+            ActivityId = activityId,
+            FileUrl    = dto.FileUrl,
+            FileName   = dto.FileName,
+            FileType   = dto.FileType,
+        };
+
+        _db.ActivityMediaFiles.Add(media);
+        await _db.SaveChangesAsync();
+
+        return Ok(new ActivityMediaDto(media.Id, media.FileUrl, media.FileName, media.FileType));
+    }
+
+    // ── DELETE /api/proposals/{id}/activities/{activityId}/media/{mediaId} ───
+    [HttpDelete("{id:guid}/activities/{activityId:guid}/media/{mediaId:guid}")]
+    public async Task<IActionResult> RemoveActivityMedia(Guid id, Guid activityId, Guid mediaId)
+    {
+        var media = await _db.ActivityMediaFiles
+            .FirstOrDefaultAsync(m => m.Id == mediaId && m.ActivityId == activityId);
+
+        if (media is null) return NotFound();
+
+        _db.ActivityMediaFiles.Remove(media);
+        await _db.SaveChangesAsync();
+
+        return Ok(new { message = "Removed." });
+    }
+
+    // ── GET /api/proposals/my-dealer-proposals — Dealer-auth only ──────────────
+    // Returns proposals matching the logged-in dealer's DealerName/DealerCode.
+    [HttpGet("my-dealer-proposals")]
+    [Authorize(AuthenticationSchemes = "DealerJwt")]
+    public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMyDealerProposals()
+    {
+        Console.WriteLine($"[GetMyDealerProposals] Authenticated via scheme: {User.Identity?.AuthenticationType}");
+        Console.WriteLine($"[GetMyDealerProposals] Claims: {string.Join(", ", User.Claims.Select(c => $"{c.Type}={c.Value}"))}");
+
+        var dealerCode = User.FindFirstValue("dealerCode");
+        var dealerName = User.FindFirstValue("name"); // display name claim from JwtTokenService
+
+        if (string.IsNullOrWhiteSpace(dealerCode) && string.IsNullOrWhiteSpace(dealerName))
+            return BadRequest(new { message = "No dealer identity found in token." });
+
+        // Look up the actual DealerName used in Proposals via the Users table,
+        // since the JWT only carries dealerCode reliably.
+        var sub = User.FindFirstValue("sub");
+        if (string.IsNullOrWhiteSpace(sub) || !int.TryParse(sub, out var userId))
+            return Unauthorized();
+
+        var dealerUser = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+        if (dealerUser is null) return Unauthorized();
+
+        var matchName = dealerUser.DealerName;
+        if (string.IsNullOrWhiteSpace(matchName))
+            return Ok(Array.Empty<ProposalResponseDto>());
+
+        var proposals = await _db.Proposals
+            .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
+            .Where(p => p.DealerName == matchName)
+            .OrderByDescending(p => p.CreatedAt)
+            .AsNoTracking()
+            .ToListAsync();
+
+        return Ok(proposals.Select(ToResponse));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -394,11 +581,13 @@ public class ProposalsController : ControllerBase
                     dealer.CustomerCode, cutoff)
                 .ToListAsync();
 
+            // Always divide by 3 — fixed 3-month window regardless of actual
+            // months with data, so a month with zero sales still counts.
             double avg        = (double)rows.Sum(r => r.RetailCount) / 3.0;
             int    allowedCac = isNew ? 6000 : 4000;
 
             string? warning = actualCac > allowedCac
-                ? $"CAC ₹{actualCac:N0} exceeds allowed ₹{allowedCac}/vehicle " +
+                ? $"CAC/CPL ₹{actualCac:N0} exceeds allowed ₹{allowedCac}/vehicle " +
                 $"({(isNew ? "New" : "Old")} dealer, avg {avg:N1} retails/month). " +
                 "Deviation approval required."
                 : null;
@@ -414,17 +603,52 @@ public class ProposalsController : ControllerBase
     }
 
     private static ProposalResponseDto ToResponse(Proposal p) => new(
-        p.Id, p.State, p.Location, p.Type, p.DealerName, p.RsmName, p.CommandoName,
-        p.Month, p.Eligibility, p.Remarks, p.TotalBudget, p.TotalTarget, p.Cac,
-        p.SubmittedBy, p.CreatedAt, p.SubmittedByDisplayName, p.Status,
-        p.ApproverNote, p.ApprovedBy, p.DecidedAt, p.TokenNumber,
-        p.AllowedCac,    // ← new
-        p.CacWarning,    // ← new
+        p.Id,
+        p.State,
+        p.Location,
+        p.Type,
+        p.DealerName,
+        p.VendorId,
+        p.VendorName,
+        p.RsmName,
+        p.CommandoName,
+        p.Month,
+        p.Eligibility,
+        p.Remarks,
+        p.TotalBudget,
+        p.TotalLeadTarget,
+        p.TotalRetailTarget,
+        p.Cac,
+        p.Cpl,
+        p.SubmittedBy,
+        p.CreatedAt,
+        p.SubmittedByDisplayName,
+        p.Status,
+        p.ApproverNote,
+        p.ApprovedBy,
+        p.DecidedAt,
+        p.TokenNumber,
+        p.AllowedCac,
+        p.CacWarning,
         p.Activities.Select(a => new ActivityResponseDto(
-            a.Id, a.ActivityType, a.Target, a.StartDate, a.EndDate,
-            a.Budget, a.Incentive, a.Remarks,
-            a.ActualStartDate, a.ActualEndDate,
-            a.MediaFileUrl, a.MediaFileName, a.MediaFileType
+            a.Id,
+            a.ActivityType,
+            a.Category,
+            a.LeadTarget,
+            a.RetailTarget,
+            a.StartDate,
+            a.EndDate,
+            a.Budget,
+            a.AdditionalBudget,
+            a.BGaussShare,
+            a.VendorId,
+            a.Remarks,
+            a.ActualStartDate,
+            a.ActualEndDate,
+            a.MediaFileUrl,
+            a.MediaFileName,
+            a.MediaFileType,
+            a.MediaFiles.Select(m => new ActivityMediaDto(m.Id, m.FileUrl, m.FileName, m.FileType)).ToList()
         )).ToList()
     );
 }

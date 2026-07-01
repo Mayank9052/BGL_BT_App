@@ -1,3 +1,35 @@
+/* frontend\src\pages\LoginPage.css */
+
+.login-forgot-link {
+  font-size: 0.78rem; color: #0078d4; text-decoration: none;
+  align-self: flex-end; margin-top: 2px;
+}
+.login-forgot-link:hover { text-decoration: underline; }
+.login-mode-toggle {
+  display: flex; gap: 6px; margin-bottom: 1.4rem;
+  background: #f1f5f9; border-radius: 8px; padding: 3px;
+}
+.login-mode-btn {
+  flex: 1; padding: 7px 0; border: none; background: none;
+  font-size: 0.85rem; font-weight: 600; color: #64748b;
+  border-radius: 6px; cursor: pointer; font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+.login-mode-btn--active { background: #fff; color: #0a2540; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.login-dealer-form { display: flex; flex-direction: column; gap: 12px; }
+.login-dealer-field { display: flex; flex-direction: column; gap: 4px; }
+.login-dealer-field label { font-size: 0.78rem; font-weight: 600; color: #374151; }
+.login-dealer-field input {
+  border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 0.7rem 0.9rem;
+  font-size: 0.9rem; outline: none; font-family: inherit; transition: border-color 0.15s;
+}
+.login-dealer-field input:focus { border-color: #0078d4; }
+.btn-dealer { background: #166534; box-shadow: 0 2px 8px rgba(22,101,52,0.25); }
+.btn-dealer:hover:not(:disabled) { background: #14532d; box-shadow: 0 4px 14px rgba(22,101,52,0.35); }
+.login-dealer-error {
+  background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+  border-radius: 7px; padding: 8px 12px; font-size: 0.8rem;
+}
 /* ─── Root ───────────────────────────────────────────────────────────────── */
 .login-root {
   display: flex;
