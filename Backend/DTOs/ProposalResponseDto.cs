@@ -28,5 +28,10 @@ public record ProposalResponseDto(
     string?   TokenNumber,
     int       AllowedCac,
     string?   CacWarning,
+    // ── Checker / dealer notification fields ──
+    string?          CheckedByEmail,
+    DateTimeOffset?  CheckedAt,
+    bool             DealerNotified,
+    string?          DealerEmail,
     List<ActivityResponseDto> Activities
 );

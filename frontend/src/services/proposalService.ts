@@ -62,6 +62,10 @@ export interface ProposalResponse {
   approvedBy:             string | null;
   decidedAt:              string | null;
   tokenNumber:            string | null;
+  checkedByEmail:         string | null;
+  checkedAt:              string | null;
+  dealerNotified:         boolean;
+  dealerEmail:            string | null;
   activities:             ActivityResponse[];
 }
 
@@ -77,6 +81,7 @@ interface ActivityPayload {
   bgaussShare:      number;
   vendorId:         number | null;
   remarks?:         string;
+  mediaFiles?: Array<{ fileUrl: string; fileName: string; fileType: string }>;
 }
 
 interface ProposalPayload {
@@ -405,6 +410,49 @@ export async function addActivityMedia(
     const text = await res.text().catch(() => "");
     throw new Error(text || `Failed to attach media (${res.status})`);
   }
+  return res.json();
+}
+
+/** Mayank forwards a checked proposal to Vijay (final approver) */
+export async function forwardProposalToApprover(
+  id: string,
+  instance: IPublicClientApplication,
+): Promise<ProposalResponse> {
+  const [apiToken, graphToken] = await Promise.all([
+    getAccessToken(instance),
+    getGraphToken(instance),
+  ]);
+  const res = await fetch(`${API_BASE_URL}/api/proposals/${id}/forward`, {
+    method: "POST",
+    headers: {
+      Authorization:   `Bearer ${apiToken}`,
+      "X-Graph-Token": graphToken,
+    },
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
+  return res.json();
+}
+
+/** Mayank sends approved proposal details to the dealer by email */
+export async function notifyDealer(
+  id: string,
+  dealerEmail: string,
+  instance: IPublicClientApplication,
+): Promise<ProposalResponse> {
+  const [apiToken, graphToken] = await Promise.all([
+    getAccessToken(instance),
+    getGraphToken(instance),
+  ]);
+  const res = await fetch(`${API_BASE_URL}/api/proposals/${id}/notify-dealer`, {
+    method: "POST",
+    headers: {
+      "Content-Type":  "application/json",
+      Authorization:   `Bearer ${apiToken}`,
+      "X-Graph-Token": graphToken,
+    },
+    body: JSON.stringify({ dealerEmail }),
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
   return res.json();
 }
 

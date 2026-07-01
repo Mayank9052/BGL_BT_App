@@ -39,6 +39,9 @@ public class Proposal
     // Per-activity token shown to the RSM in the decision email; generated
     // once on submission so it's stable even if the mail is resent.
     [MaxLength(50)] public string? TokenNumber { get; set; }
-
+    public string?          CheckedByEmail { get; set; }  // Mayank's confirm step
+    public DateTimeOffset?  CheckedAt      { get; set; }
+    public string?          DealerEmail    { get; set; }  // dealer's email for notification
+    public bool             DealerNotified { get; set; } = false;
     public List<ProposalActivity> Activities { get; set; } = new();
 }

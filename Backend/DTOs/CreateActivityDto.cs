@@ -7,5 +7,6 @@ public record CreateActivityDto(
     string? EndDate,
     decimal Budget,
     decimal Incentive,
-    string? Remarks
+    string? Remarks,
+    List<MediaFileDto>? MediaFiles
 );

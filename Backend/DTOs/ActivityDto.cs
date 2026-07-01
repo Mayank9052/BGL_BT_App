@@ -11,5 +11,6 @@ public record ActivityDto(
     decimal  AdditionalBudget,   // was Incentive
     decimal  BGaussShare,        // default 100
     int?     VendorId,
-    string?  Remarks
+    string?  Remarks,
+    List<MediaFileDto>? MediaFiles
 );

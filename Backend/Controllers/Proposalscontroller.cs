@@ -87,6 +87,15 @@ public class ProposalsController : ControllerBase
             BGaussShare      = a.BGaussShare > 0 ? a.BGaussShare : 100m,
             VendorId         = a.VendorId,
             Remarks          = a.Remarks,
+            // ── FIX: map incoming media file entries to ActivityMedia rows ────
+            MediaFiles       = (a.MediaFiles ?? new List<MediaFileDto>())
+                .Where(m => !string.IsNullOrWhiteSpace(m.FileUrl))
+                .Select(m => new ActivityMedia
+                {
+                    FileUrl  = m.FileUrl,
+                    FileName = m.FileName,
+                    FileType = m.FileType,
+                }).ToList(),
         }).ToList();
 
         var totalBudget       = activities.Sum(a => a.Budget + a.AdditionalBudget);
@@ -298,6 +307,15 @@ public class ProposalsController : ControllerBase
             BGaussShare      = a.BGaussShare > 0 ? a.BGaussShare : 100m,
             VendorId         = a.VendorId,
             Remarks          = a.Remarks,
+            // ── FIX: map incoming media file entries to ActivityMedia rows ────
+            MediaFiles       = (a.MediaFiles ?? new List<MediaFileDto>())
+                .Where(m => !string.IsNullOrWhiteSpace(m.FileUrl))
+                .Select(m => new ActivityMedia
+                {
+                    FileUrl  = m.FileUrl,
+                    FileName = m.FileName,
+                    FileType = m.FileType,
+                }).ToList(),
         }).ToList();
 
         await _db.ProposalActivities.AddRangeAsync(newActivities);
@@ -523,6 +541,63 @@ public class ProposalsController : ControllerBase
         return Ok(proposals.Select(ToResponse));
     }
 
+    // ── POST /api/proposals/{id}/forward — Mayank forwards to Vijay ───────────────
+    [HttpPost("{id:guid}/forward")]
+    public async Task<ActionResult<ProposalResponseDto>> ForwardToApprover(Guid id)
+    {
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+
+        if (proposal.Status != "Pending")
+            return Conflict(new { message = "Only pending proposals can be forwarded." });
+
+        // Record that Mayank has checked it
+        proposal.CheckedByEmail = CurrentUserEmail();
+        proposal.CheckedAt      = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync();
+
+        var (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, GraphToken());
+        if (!sent)
+            _logger.LogWarning("Checker-forward mail failed for {Id}: {Error}", proposal.Id, error);
+
+        return Ok(ToResponse(proposal));
+    }
+
+    // ── POST /api/proposals/{id}/notify-dealer — Mayank sends to dealer ───────────
+    [HttpPost("{id:guid}/notify-dealer")]
+    public async Task<ActionResult<ProposalResponseDto>> NotifyDealer(
+        Guid id, [FromBody] NotifyDealerDto dto)
+    {
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+
+        if (proposal.Status != "Approved")
+            return Conflict(new { message = "Only approved proposals can be sent to the dealer." });
+
+        if (string.IsNullOrWhiteSpace(dto.DealerEmail))
+            return BadRequest(new { message = "Dealer email is required." });
+
+        proposal.DealerEmail    = dto.DealerEmail;
+        proposal.DealerNotified = true;
+        await _db.SaveChangesAsync();
+
+        var (sent, error) = await _emailService.SendDealerNotificationMailAsync(
+            proposal, dto.DealerEmail, GraphToken());
+
+        if (!sent)
+            _logger.LogWarning("Dealer notification failed for {Id}: {Error}", proposal.Id, error);
+
+        return Ok(ToResponse(proposal));
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
     private string CurrentUserEmail() =>
         User.FindFirstValue("preferred_username")
@@ -603,51 +678,24 @@ public class ProposalsController : ControllerBase
     }
 
     private static ProposalResponseDto ToResponse(Proposal p) => new(
-        p.Id,
-        p.State,
-        p.Location,
-        p.Type,
-        p.DealerName,
-        p.VendorId,
-        p.VendorName,
-        p.RsmName,
-        p.CommandoName,
-        p.Month,
-        p.Eligibility,
-        p.Remarks,
-        p.TotalBudget,
-        p.TotalLeadTarget,
-        p.TotalRetailTarget,
-        p.Cac,
-        p.Cpl,
-        p.SubmittedBy,
-        p.CreatedAt,
-        p.SubmittedByDisplayName,
-        p.Status,
-        p.ApproverNote,
-        p.ApprovedBy,
-        p.DecidedAt,
-        p.TokenNumber,
-        p.AllowedCac,
-        p.CacWarning,
+        p.Id, p.State, p.Location, p.Type, p.DealerName,
+        p.VendorId, p.VendorName, p.RsmName, p.CommandoName,
+        p.Month, p.Eligibility, p.Remarks,
+        p.TotalBudget, p.TotalLeadTarget, p.TotalRetailTarget,
+        p.Cac, p.Cpl,
+        p.SubmittedBy, p.CreatedAt, p.SubmittedByDisplayName,
+        p.Status, p.ApproverNote, p.ApprovedBy, p.DecidedAt,
+        p.TokenNumber, p.AllowedCac, p.CacWarning,
+        // new fields:
+        p.CheckedByEmail, p.CheckedAt, p.DealerNotified, p.DealerEmail,
         p.Activities.Select(a => new ActivityResponseDto(
-            a.Id,
-            a.ActivityType,
-            a.Category,
-            a.LeadTarget,
-            a.RetailTarget,
-            a.StartDate,
-            a.EndDate,
-            a.Budget,
-            a.AdditionalBudget,
-            a.BGaussShare,
-            a.VendorId,
-            a.Remarks,
-            a.ActualStartDate,
-            a.ActualEndDate,
-            a.MediaFileUrl,
-            a.MediaFileName,
-            a.MediaFileType,
+            a.Id, a.ActivityType, a.Category,
+            a.LeadTarget, a.RetailTarget,
+            a.StartDate, a.EndDate,
+            a.Budget, a.AdditionalBudget, a.BGaussShare,
+            a.VendorId, a.Remarks,
+            a.ActualStartDate, a.ActualEndDate,
+            a.MediaFileUrl, a.MediaFileName, a.MediaFileType,
             a.MediaFiles.Select(m => new ActivityMediaDto(m.Id, m.FileUrl, m.FileName, m.FileType)).ToList()
         )).ToList()
     );
