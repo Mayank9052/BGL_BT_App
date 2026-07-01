@@ -650,6 +650,11 @@ export default function RSMProposalForm() {
         additionalBudget: num(a.additionalBudget),
         bgaussShare:      num(a.bgaussShare) || 100,
         remarks:          a.remarks,
+        mediaFiles: a.mediaFiles.map((m) => ({
+          fileUrl:  m.fileUrl,
+          fileName: m.fileName,
+          fileType: m.fileType,
+        })),
       }));
 
       const payload = {

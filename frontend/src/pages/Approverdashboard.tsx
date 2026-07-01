@@ -1,3 +1,4 @@
+// src/pages/ApproverDashboard.tsx
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
 import { useNavigate } from "react-router-dom";
@@ -5,25 +6,35 @@ import { useAuthStore } from "../store/authStore";
 import {
   fetchProposals, fetchMyProposals, decideProposal, updateProposal,
   sendBackProposal, updateProposalActuals, uploadActivityMedia,
-  type ActivityResponse, type ProposalResponse,
+  forwardProposalToApprover, notifyDealer,
+  type ActivityResponse, type ActivityMediaResponse, type ProposalResponse,
 } from "../services/proposalService";
 import "./ApproverDashboard.css";
 
-const inr = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
-const num = (v: string | number) => { const n = parseFloat(String(v)); return Number.isFinite(n) ? n : 0; };
+const inr     = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
+const num     = (v: string | number) => { const n = parseFloat(String(v)); return Number.isFinite(n) ? n : 0; };
 const fmtDate = (iso: string | null | undefined) => {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 };
-
-const eligClass = (e: string) =>
+const eligClass   = (e: string) =>
   e === "Eligible" ? "ap-elig-yes" : e === "Not Eligible" ? "ap-elig-no" : "ap-elig-pend";
-
 const statusClass = (s: string) =>
   s === "Approved"        ? "ap-badge ap-badge-approved"
   : s === "Rejected"      ? "ap-badge ap-badge-rejected"
   : s === "NeedsRevision" ? "ap-badge ap-badge-revision"
   : "ap-badge ap-badge-pending";
+
+// ── Media URL resolver ──────────────────────────────────────────────────────
+// Backend stores relative paths (e.g. "/uploads/activities/xxx.jpg"). The
+// browser resolves that against the frontend's own origin unless we prefix
+// it with the API base URL, which is why thumbnails were broken before.
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+const resolveUrl = (url: string | null | undefined): string => {
+  if (!url) return "";
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `${API_BASE}${url.startsWith("/") ? url : `/${url}`}`;
+};
 
 const MONTHS      = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const ELIGIBILITY = ["Eligible","Not Eligible","Pending Approval"];
@@ -34,7 +45,231 @@ const ACT_TYPES   = [
   "Society Activation","Referral Program","Other",
 ];
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ── Media helpers ─────────────────────────────────────────────────────────────
+function mediaIcon(fileType: string | null): string {
+  if (!fileType) return "📎";
+  if (fileType.startsWith("image/")) return "🖼";
+  if (fileType.includes("pdf"))      return "📄";
+  if (fileType.startsWith("video/")) return "🎬";
+  if (fileType.includes("excel") || fileType.includes("spreadsheet")) return "📊";
+  return "📎";
+}
+function isImage(fileType: string | null): boolean { return !!fileType?.startsWith("image/"); }
+function isVideo(fileType: string | null): boolean { return !!fileType?.startsWith("video/"); }
+
+// Collect all unique media for an activity (legacy single + multi-file).
+// URLs are resolved to absolute (API-hosted) URLs here, once, so every
+// consumer (table thumbnails, media strip, drawer gallery, viewer modal)
+// gets a working URL without having to resolve it itself.
+function collectMedia(activity: ActivityResponse): Array<{ id: string; url: string; name: string; type: string | null }> {
+  const all: Array<{ id: string; url: string; name: string; type: string | null }> = [];
+  const multiUrls = new Set((activity.mediaFiles ?? []).map((m) => m.fileUrl));
+
+  // Add legacy single-file if not already in multi-file list
+  if (activity.mediaFileUrl && !multiUrls.has(activity.mediaFileUrl)) {
+    all.push({
+      id:   `legacy-${activity.id}`,
+      url:  resolveUrl(activity.mediaFileUrl),
+      name: activity.mediaFileName ?? "Media file",
+      type: activity.mediaFileType ?? null,
+    });
+  }
+
+  // Add all multi-file entries
+  (activity.mediaFiles ?? []).forEach((m: ActivityMediaResponse) => {
+    all.push({ id: m.id, url: resolveUrl(m.fileUrl), name: m.fileName, type: m.fileType });
+  });
+
+  return all;
+}
+
+// ── Media viewer modal ────────────────────────────────────────────────────────
+interface MediaViewerProps { url: string; name: string; type: string | null; onClose: () => void; }
+function MediaViewer({ url, name, type, onClose }: MediaViewerProps) {
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 9999,
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{ maxWidth: "92vw", maxHeight: "92vh", position: "relative" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Close button */}
+        <button
+          onClick={onClose}
+          style={{
+            position: "absolute", top: -40, right: 0, background: "rgba(255,255,255,0.1)",
+            border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: 20,
+            cursor: "pointer", borderRadius: 6, width: 32, height: 32,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >✕</button>
+
+        {isImage(type) ? (
+          <img
+            src={url} alt={name}
+            style={{ maxWidth: "88vw", maxHeight: "82vh", borderRadius: 8, display: "block", boxShadow: "0 8px 40px rgba(0,0,0,0.5)" }}
+          />
+        ) : isVideo(type) ? (
+          <video
+            src={url} controls autoPlay
+            style={{ maxWidth: "88vw", maxHeight: "82vh", borderRadius: 8, display: "block" }}
+          />
+        ) : (
+          <div style={{ background: "#fff", borderRadius: 12, padding: "40px 56px", textAlign: "center", minWidth: 300 }}>
+            <div style={{ fontSize: 52, marginBottom: 14 }}>{mediaIcon(type)}</div>
+            <p style={{ fontWeight: 600, marginBottom: 18, color: "#0a2540", fontSize: 15 }}>{name}</p>
+            <a
+              href={url} target="_blank" rel="noopener noreferrer"
+              style={{
+                display: "inline-block", background: "#1e3a5f", color: "#fff",
+                padding: "11px 28px", borderRadius: 8, textDecoration: "none",
+                fontWeight: 600, fontSize: 14,
+              }}
+            >
+              Open / Download ↗
+            </a>
+          </div>
+        )}
+
+        {/* File name below viewer */}
+        <div style={{ textAlign: "center", marginTop: 10 }}>
+          <a href={url} target="_blank" rel="noopener noreferrer"
+            style={{ color: "#94a3b8", fontSize: 11, textDecoration: "underline" }}>
+            {name}
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Activity media strip — inline thumbnail chips ──────────────────────────────
+interface ActivityMediaStripProps { activity: ActivityResponse; }
+function ActivityMediaStrip({ activity }: ActivityMediaStripProps) {
+  const [viewer, setViewer] = useState<{ url: string; name: string; type: string | null } | null>(null);
+  const allMedia = collectMedia(activity);
+
+  if (allMedia.length === 0) {
+    return <span style={{ color: "#cbd5e1", fontSize: 11 }}>—</span>;
+  }
+
+  return (
+    <>
+      {viewer && (
+        <MediaViewer url={viewer.url} name={viewer.name} type={viewer.type} onClose={() => setViewer(null)} />
+      )}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {allMedia.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => setViewer({ url: m.url, name: m.name, type: m.type })}
+            title={`View: ${m.name}`}
+            style={{
+              display: "flex", alignItems: "center", gap: 5,
+              background: isImage(m.type) ? "transparent" : "#f1f5f9",
+              border: "1px solid #e2e8f0", borderRadius: 6,
+              padding: isImage(m.type) ? "2px" : "4px 8px",
+              cursor: "pointer", fontSize: 11, color: "#1e3a5f",
+              fontWeight: 500, maxWidth: 180, overflow: "hidden",
+              transition: "border-color 0.15s, box-shadow 0.15s",
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = "#93c5fd";
+              (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 0 0 2px #dbeafe";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.borderColor = "#e2e8f0";
+              (e.currentTarget as HTMLButtonElement).style.boxShadow = "none";
+            }}
+          >
+            {isImage(m.type) ? (
+              <img
+                src={m.url} alt={m.name}
+                style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4, flexShrink: 0, display: "block" }}
+              />
+            ) : (
+              <>
+                <span style={{ fontSize: 20, flexShrink: 0, lineHeight: 1 }}>{mediaIcon(m.type)}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 120 }}>
+                  {m.name}
+                </span>
+              </>
+            )}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// ── Drawer activities media section (expanded view) ───────────────────────────
+interface DrawerActivityMediaProps { activity: ActivityResponse; activityIndex: number; }
+function DrawerActivityMedia({ activity, activityIndex }: DrawerActivityMediaProps) {
+  const [viewer, setViewer] = useState<{ url: string; name: string; type: string | null } | null>(null);
+  const allMedia = collectMedia(activity);
+
+  if (allMedia.length === 0) return null;
+
+  return (
+    <>
+      {viewer && (
+        <MediaViewer url={viewer.url} name={viewer.name} type={viewer.type} onClose={() => setViewer(null)} />
+      )}
+      <div style={{ marginTop: 8 }}>
+        <p style={{ fontSize: 11, color: "#6b7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
+          Media files ({allMedia.length})
+        </p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {allMedia.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setViewer({ url: m.url, name: m.name, type: m.type })}
+              title={`View: ${m.name}`}
+              style={{
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
+                background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8,
+                padding: 8, cursor: "pointer", width: 90, overflow: "hidden",
+                transition: "border-color 0.15s, background 0.15s",
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.borderColor = "#3b82f6";
+                (e.currentTarget as HTMLButtonElement).style.background = "#eff6ff";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.borderColor = "#e2e8f0";
+                (e.currentTarget as HTMLButtonElement).style.background = "#f8fafc";
+              }}
+            >
+              {isImage(m.type) ? (
+                <img
+                  src={m.url} alt={m.name}
+                  style={{ width: 70, height: 50, objectFit: "cover", borderRadius: 4, display: "block" }}
+                />
+              ) : (
+                <span style={{ fontSize: 32, lineHeight: 1 }}>{mediaIcon(m.type)}</span>
+              )}
+              <span style={{
+                fontSize: 10, color: "#374151", textAlign: "center", lineHeight: 1.3,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%",
+              }}>
+                {m.name.length > 14 ? m.name.slice(0, 12) + "…" : m.name}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 interface EditActivity {
   id?: string; activityType: string; category: string;
   leadTarget: string; retailTarget: string;
@@ -50,35 +285,34 @@ interface EditableProposal {
   activities: EditActivity[];
 }
 interface ActualEntry {
-  actualStartDate: string;
-  actualEndDate:   string;
-  mediaFile:       File | null;
-  mediaFileUrl:    string | null;
-  mediaFileName:   string | null;
-  mediaFileType:   string | null;
-  uploading:       boolean;
+  actualStartDate: string; actualEndDate: string;
+  mediaFile: File | null; mediaFileUrl: string | null;
+  mediaFileName: string | null; mediaFileType: string | null;
+  uploading: boolean;
 }
 
 function toEditable(p: ProposalResponse): EditableProposal {
   return {
-    dealerName: p.dealerName, location: p.location, state: p.state,
-    type: p.type, rsmName: p.rsmName, commandoName: p.commandoName,
-    month: p.month, eligibility: p.eligibility, remarks: p.remarks ?? "",
+    dealerName: p.dealerName, location: p.location, state: p.state, type: p.type,
+    rsmName: p.rsmName, commandoName: p.commandoName, month: p.month,
+    eligibility: p.eligibility, remarks: p.remarks ?? "",
     vendorId: String(p.vendorId ?? ""), vendorName: p.vendorName ?? "",
     activities: p.activities.map((a: ActivityResponse) => ({
       id: a.id, activityType: a.activityType, category: a.category ?? "",
       leadTarget: String(a.leadTarget ?? 0), retailTarget: String(a.retailTarget ?? 0),
-      startDate: a.startDate?.split("T")[0] ?? "",
-      endDate: a.endDate?.split("T")[0] ?? "",
+      startDate: a.startDate?.split("T")[0] ?? "", endDate: a.endDate?.split("T")[0] ?? "",
       budget: String(a.budget), additionalBudget: String(a.additionalBudget ?? 0),
-      bgaussShare: String(a.bgaussShare ?? 100),
-      vendorId: String(a.vendorId ?? ""),
-      remarks: a.remarks ?? "",
+      bgaussShare: String(a.bgaussShare ?? 100), vendorId: String(a.vendorId ?? ""), remarks: a.remarks ?? "",
     })),
   };
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// Total media count for table column
+function totalMediaCount(p: ProposalResponse): number {
+  return p.activities.reduce((sum, a) => sum + collectMedia(a).length, 0);
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
   const navigate  = useNavigate();
@@ -86,7 +320,6 @@ export default function ApproverDashboard() {
   const { user }  = useAuthStore();
   const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
 
-  // ── Core state ──────────────────────────────────────────────────────────────
   const [proposals,     setProposals]     = useState<ProposalResponse[]>([]);
   const [selected,      setSelected]      = useState<ProposalResponse | null>(null);
   const [editData,      setEditData]      = useState<EditableProposal | null>(null);
@@ -102,19 +335,18 @@ export default function ApproverDashboard() {
   const [actionLoading, setActionLoading] = useState(false);
   const [saveLoading,   setSaveLoading]   = useState(false);
   const [toast,         setToast]         = useState<{ msg: string; ok: boolean } | null>(null);
-
-  // ── Actuals state ────────────────────────────────────────────────────────────
+  const [forwardLoading,    setForwardLoading]    = useState(false);
+  const [dealerEmailInput,  setDealerEmailInput]  = useState("");
+  const [showNotifyDealer,  setShowNotifyDealer]  = useState(false);
+  const [notifyLoading,     setNotifyLoading]     = useState(false);
   const [actualsData,    setActualsData]    = useState<Record<string, ActualEntry>>({});
   const [actualsLoading, setActualsLoading] = useState(false);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // ── Load proposals ───────────────────────────────────────────────────────────
   const loadProposals = useCallback(async () => {
     setLoading(true); setFetchError(null);
     try {
-      const data = isAdmin
-        ? await fetchProposals(instance)
-        : await fetchMyProposals(instance);
+      const data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
       setProposals(data);
     } catch (err) {
       setFetchError(err instanceof Error ? err.message : "Failed to load.");
@@ -123,25 +355,17 @@ export default function ApproverDashboard() {
 
   useEffect(() => { loadProposals(); }, [loadProposals]);
 
-  // ── Derived data ─────────────────────────────────────────────────────────────
-  const months = useMemo(
-    () => ["All", ...Array.from(new Set(proposals.map((p) => p.month)))],
-    [proposals]
-  );
-
-  const filtered = useMemo(() =>
-    proposals.filter((p) => {
-      if (filterStatus !== "All" && p.status !== filterStatus) return false;
-      if (filterMonth  !== "All" && p.month  !== filterMonth)  return false;
-      if (search) {
-        const q = search.toLowerCase();
-        return p.dealerName.toLowerCase().includes(q) ||
-               p.rsmName.toLowerCase().includes(q)    ||
-               p.location.toLowerCase().includes(q)   ||
-               p.id.toLowerCase().includes(q);
-      }
-      return true;
-    }), [proposals, filterStatus, filterMonth, search]);
+  const months   = useMemo(() => ["All", ...Array.from(new Set(proposals.map((p) => p.month)))], [proposals]);
+  const filtered = useMemo(() => proposals.filter((p) => {
+    if (filterStatus !== "All" && p.status !== filterStatus) return false;
+    if (filterMonth  !== "All" && p.month  !== filterMonth)  return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return p.dealerName.toLowerCase().includes(q) || p.rsmName.toLowerCase().includes(q) ||
+             p.location.toLowerCase().includes(q)   || p.id.toLowerCase().includes(q);
+    }
+    return true;
+  }), [proposals, filterStatus, filterMonth, search]);
 
   const stats = useMemo(() => {
     const approved = proposals.filter((p) => p.status === "Approved");
@@ -160,72 +384,46 @@ export default function ApproverDashboard() {
     const tb  = editData.activities.reduce((s, a) => s + num(a.budget) + num(a.additionalBudget), 0);
     const tlt = editData.activities.reduce((s, a) => s + num(a.leadTarget), 0);
     const trt = editData.activities.reduce((s, a) => s + num(a.retailTarget), 0);
-    return {
-      totalBudget: tb,
-      totalLeadTarget: tlt,
-      totalRetailTarget: trt,
-      cac: trt > 0 ? tb / trt : 0,
-      cpl: tlt > 0 ? tb / tlt : 0,
-    };
+    return { totalBudget: tb, totalLeadTarget: tlt, totalRetailTarget: trt,
+             cac: trt > 0 ? tb / trt : 0, cpl: tlt > 0 ? tb / tlt : 0 };
   }, [editData]);
 
-  // ── Toast ────────────────────────────────────────────────────────────────────
   const showToast = (msg: string, ok: boolean) => {
     setToast({ msg, ok }); setTimeout(() => setToast(null), 3500);
   };
 
-  // ── Actuals helpers ──────────────────────────────────────────────────────────
   const initActuals = useCallback((p: ProposalResponse) => {
     const init: Record<string, ActualEntry> = {};
     p.activities.forEach((a) => {
       init[a.id] = {
         actualStartDate: a.actualStartDate?.split("T")[0] ?? "",
         actualEndDate:   a.actualEndDate?.split("T")[0]   ?? "",
-        mediaFile:       null,
-        mediaFileUrl:    a.mediaFileUrl    ?? null,
-        mediaFileName:   a.mediaFileName   ?? null,
-        mediaFileType:   a.mediaFileType   ?? null,
-        uploading:       false,
+        mediaFile: null, mediaFileUrl: a.mediaFileUrl ?? null,
+        mediaFileName: a.mediaFileName ?? null, mediaFileType: a.mediaFileType ?? null,
+        uploading: false,
       };
     });
     setActualsData(init);
   }, []);
 
-  const setActualField = (
-    activityId: string,
-    key: "actualStartDate" | "actualEndDate",
-    value: string
-  ) => {
-    setActualsData((prev) => ({
-      ...prev,
-      [activityId]: { ...prev[activityId], [key]: value },
-    }));
-  };
+  const setActualField = (id: string, key: "actualStartDate" | "actualEndDate", v: string) =>
+    setActualsData((prev) => ({ ...prev, [id]: { ...prev[id], [key]: v } }));
 
   const handleMediaSelect = async (activityId: string, file: File) => {
-    setActualsData((prev) => ({
-      ...prev,
-      [activityId]: { ...prev[activityId], uploading: true, mediaFile: file },
-    }));
+    setActualsData((prev) => ({ ...prev, [activityId]: { ...prev[activityId], uploading: true, mediaFile: file } }));
     try {
       const result = await uploadActivityMedia(file, instance);
       setActualsData((prev) => ({
         ...prev,
         [activityId]: {
-          ...prev[activityId],
-          uploading:     false,
-          mediaFileUrl:  result.url,
-          mediaFileName: result.fileName,
-          mediaFileType: result.fileType,
-          mediaFile:     file,
+          ...prev[activityId], uploading: false,
+          mediaFileUrl: result.url, mediaFileName: result.fileName, mediaFileType: result.fileType,
+          mediaFile: file,
         },
       }));
       showToast("File uploaded successfully.", true);
     } catch (err) {
-      setActualsData((prev) => ({
-        ...prev,
-        [activityId]: { ...prev[activityId], uploading: false },
-      }));
+      setActualsData((prev) => ({ ...prev, [activityId]: { ...prev[activityId], uploading: false } }));
       showToast(err instanceof Error ? err.message : "Upload failed.", false);
     }
   };
@@ -237,93 +435,61 @@ export default function ApproverDashboard() {
       const payload = selected.activities.map((a) => {
         const d = actualsData[a.id];
         return {
-          activityId:      a.id,
-          actualStartDate: d?.actualStartDate || null,
-          actualEndDate:   d?.actualEndDate   || null,
-          mediaFileUrl:    d?.mediaFileUrl    ?? null,
-          mediaFileName:   d?.mediaFileName   ?? null,
-          mediaFileType:   d?.mediaFileType   ?? null,
+          activityId: a.id, actualStartDate: d?.actualStartDate || null,
+          actualEndDate: d?.actualEndDate || null, mediaFileUrl: d?.mediaFileUrl ?? null,
+          mediaFileName: d?.mediaFileName ?? null, mediaFileType: d?.mediaFileType ?? null,
         };
       });
       const updated = await updateProposalActuals(selected.id, payload, instance);
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
-      setSelected(updated);
-      initActuals(updated);
+      setSelected(updated); initActuals(updated);
       showToast("Actuals saved successfully.", true);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Failed to save actuals.", false);
-    } finally {
-      setActualsLoading(false);
-    }
+    } finally { setActualsLoading(false); }
   };
 
-  // ── Drawer helpers ───────────────────────────────────────────────────────────
   const openDrawer = (p: ProposalResponse) => {
-    setSelected(p); setEditData(toEditable(p));
-    setIsEditing(false); setShowSendBack(false);
+    setSelected(p); setEditData(toEditable(p)); setIsEditing(false); setShowSendBack(false);
     setNote(p.approverNote ?? ""); setSendBackNote("");
-    initActuals(p);
+    setShowNotifyDealer(false); setDealerEmailInput(""); initActuals(p);
   };
 
   const closeDrawer = () => {
-    setSelected(null); setEditData(null);
-    setIsEditing(false); setShowSendBack(false);
-    setActualsData({});
+    setSelected(null); setEditData(null); setIsEditing(false); setShowSendBack(false);
+    setShowNotifyDealer(false); setDealerEmailInput(""); setActualsData({});
   };
 
-  // ── Edit helpers ─────────────────────────────────────────────────────────────
-  const setF  = (key: keyof Omit<EditableProposal,"activities">, v: string) =>
+  const setF  = (key: keyof Omit<EditableProposal, "activities">, v: string) =>
     setEditData((d) => d ? { ...d, [key]: v } : d);
   const setAF = (idx: number, key: keyof EditActivity, v: string) =>
-    setEditData((d) => {
-      if (!d) return d;
-      return { ...d, activities: d.activities.map((a, i) => i === idx ? { ...a, [key]: v } : a) };
-    });
-
-  const addRow = () =>
-    setEditData((d) => d ? { ...d, activities: [...d.activities,
-      { activityType:"", category:"", leadTarget:"", retailTarget:"",
-        startDate:"", endDate:"", budget:"", additionalBudget:"", bgaussShare:"100",
-        vendorId:"", remarks:"" }] } : d);
-
-  const removeRow = (idx: number) =>
-    setEditData((d) => (!d || d.activities.length <= 1) ? d :
-      { ...d, activities: d.activities.filter((_, i) => i !== idx) });
+    setEditData((d) => d ? { ...d, activities: d.activities.map((a, i) => i === idx ? { ...a, [key]: v } : a) } : d);
+  const addRow    = () => setEditData((d) => d ? { ...d, activities: [...d.activities,
+    { activityType: "", category: "", leadTarget: "", retailTarget: "", startDate: "", endDate: "",
+      budget: "", additionalBudget: "", bgaussShare: "100", vendorId: "", remarks: "" }] } : d);
+  const removeRow = (idx: number) => setEditData((d) => (!d || d.activities.length <= 1) ? d :
+    { ...d, activities: d.activities.filter((_, i) => i !== idx) });
 
   const saveEdits = async () => {
     if (!selected || !editData) return;
     setSaveLoading(true);
     try {
       const payload = {
-        dealerName:        editData.dealerName,
-        location:          editData.location,
-        state:             editData.state,
-        type:              editData.type,
-        rsmName:           editData.rsmName,
-        commandoName:      editData.commandoName,
-        month:             editData.month,
-        eligibility:       editData.eligibility,
-        remarks:           editData.remarks,
-        vendorId:          editData.vendorId ? Number(editData.vendorId) : null,
-        vendorName:        editData.vendorName || null,
+        dealerName: editData.dealerName, location: editData.location, state: editData.state,
+        type: editData.type, rsmName: editData.rsmName, commandoName: editData.commandoName,
+        month: editData.month, eligibility: editData.eligibility, remarks: editData.remarks,
+        vendorId: editData.vendorId ? Number(editData.vendorId) : null,
+        vendorName: editData.vendorName || null,
         activities: editData.activities.map((a) => ({
-          activityType:     a.activityType,
-          category:         a.category || null,
-          leadTarget:       num(a.leadTarget),
-          retailTarget:     num(a.retailTarget),
-          startDate:        a.startDate,
-          endDate:          a.endDate,
-          budget:           num(a.budget),
-          additionalBudget: num(a.additionalBudget),
-          bgaussShare:      num(a.bgaussShare) || 100,
-          vendorId:         a.vendorId ? Number(a.vendorId) : null,
-          remarks:          a.remarks,
+          activityType: a.activityType, category: a.category || null,
+          leadTarget: num(a.leadTarget), retailTarget: num(a.retailTarget),
+          startDate: a.startDate, endDate: a.endDate,
+          budget: num(a.budget), additionalBudget: num(a.additionalBudget),
+          bgaussShare: num(a.bgaussShare) || 100, vendorId: a.vendorId ? Number(a.vendorId) : null,
+          remarks: a.remarks,
         })),
-        totalBudget:       editTotals.totalBudget,
-        totalLeadTarget:   Math.round(editTotals.totalLeadTarget),
-        totalRetailTarget: Math.round(editTotals.totalRetailTarget),
-        cac:               editTotals.cac,
-        cpl:               editTotals.cpl,
+        totalBudget: editTotals.totalBudget, totalLeadTarget: Math.round(editTotals.totalLeadTarget),
+        totalRetailTarget: Math.round(editTotals.totalRetailTarget), cac: editTotals.cac, cpl: editTotals.cpl,
       };
       const updated = await updateProposal(selected.id, payload as any, instance);
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
@@ -334,17 +500,14 @@ export default function ApproverDashboard() {
     } finally { setSaveLoading(false); }
   };
 
-  // ── Decision helpers ─────────────────────────────────────────────────────────
   const decide = async (action: "Approved" | "Rejected") => {
     if (!selected) return;
     setActionLoading(true);
     try {
       const updated = await decideProposal(selected.id,
-        { status: action, approverNote: note.trim() || null, approvedBy: account?.username ?? null },
-        instance);
+        { status: action, approverNote: note.trim() || null, approvedBy: account?.username ?? null }, instance);
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
-      setSelected(updated);
-      initActuals(updated);
+      setSelected(updated); initActuals(updated);
       showToast(action === "Approved" ? "Proposal approved." : "Proposal rejected.", action === "Approved");
       setNote("");
     } catch (err) {
@@ -357,46 +520,62 @@ export default function ApproverDashboard() {
     setActionLoading(true);
     try {
       const updated = await sendBackProposal(selected.id,
-        { note: sendBackNote.trim() || null, sentBackBy: account?.username ?? null },
-        instance);
+        { note: sendBackNote.trim() || null, sentBackBy: account?.username ?? null }, instance);
       setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
       setSelected(updated); setShowSendBack(false); setSendBackNote("");
-      showToast("Sent back for revision. RSM has been notified.", true);
+      showToast("Sent back for revision.", true);
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Failed to send back.", false);
     } finally { setActionLoading(false); }
   };
 
+  const handleForward = async () => {
+    if (!selected) return;
+    setForwardLoading(true);
+    try {
+      const updated = await forwardProposalToApprover(selected.id, instance);
+      setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
+      setSelected(updated);
+      showToast("Forwarded to Vijay Maurya for final approval.", true);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Forward failed.", false);
+    } finally { setForwardLoading(false); }
+  };
+
+  const handleNotifyDealer = async () => {
+    if (!selected || !dealerEmailInput.trim()) return;
+    setNotifyLoading(true);
+    try {
+      const updated = await notifyDealer(selected.id, dealerEmailInput.trim(), instance);
+      setProposals((prev) => prev.map((p) => p.id === updated.id ? updated : p));
+      setSelected(updated); setShowNotifyDealer(false); setDealerEmailInput("");
+      showToast("Dealer notified successfully.", true);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Notify failed.", false);
+    } finally { setNotifyLoading(false); }
+  };
+
   const pageTitle = isAdmin ? "Approver Portal" : "My Proposals";
 
-  // ─── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="ap-page">
       <main className="ap-main">
 
-        {/* Page header */}
+        {/* ── Page header ── */}
         <div className="ap-page-header">
           <div>
             <h1 className="ap-page-title">{pageTitle}</h1>
             <p className="ap-page-sub">
-              {isAdmin
-                ? "Review, edit, approve or reject RSM activity proposals."
+              {isAdmin ? "Review, edit, approve or reject RSM activity proposals."
                 : "Track the status of your submitted proposals."}
             </p>
           </div>
           {!isAdmin && (
-            <button className="ap-new-btn" onClick={() => navigate("/rsm-form")}>
-              + New Proposal
-            </button>
+            <button className="ap-new-btn" onClick={() => navigate("/rsm-form")}>+ New Proposal</button>
           )}
         </div>
 
-        {loading && (
-          <div className="ap-loading">
-            <div className="ap-spinner" />
-            <p>Loading proposals…</p>
-          </div>
-        )}
+        {loading && <div className="ap-loading"><div className="ap-spinner" /><p>Loading proposals…</p></div>}
 
         {!loading && fetchError && (
           <div className="ap-error-state">
@@ -407,7 +586,7 @@ export default function ApproverDashboard() {
 
         {!loading && !fetchError && (
           <>
-            {/* Stats */}
+            {/* ── Stats ── */}
             <div className={`ap-stats ap-stats--${isAdmin ? "admin" : "user"}`}>
               <StatCard label="Total"          value={stats.total}     color="navy" />
               <StatCard label="Pending review" value={stats.pending}   color="amber" />
@@ -415,11 +594,10 @@ export default function ApproverDashboard() {
               <StatCard label="Rejected"       value={stats.rejected}  color="red" />
               {isAdmin
                 ? <StatCard label="Approved budget" value={inr(stats.totalBudget)} color="navy" />
-                : <StatCard label="Needs revision"  value={stats.needsRevision}    color="orange" />
-              }
+                : <StatCard label="Needs revision"  value={stats.needsRevision}    color="orange" />}
             </div>
 
-            {/* Filters */}
+            {/* ── Filters ── */}
             <div className="ap-filters">
               <input className="ap-search" placeholder="Search dealer, RSM, location…"
                 value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -433,14 +611,12 @@ export default function ApproverDashboard() {
               </select>
               <select className="ap-select" value={filterMonth}
                 onChange={(e) => setFilterMonth(e.target.value)}>
-                {months.map((m) => (
-                  <option key={m} value={m}>{m === "All" ? "All months" : m}</option>
-                ))}
+                {months.map((m) => <option key={m} value={m}>{m === "All" ? "All months" : m}</option>)}
               </select>
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
             </div>
 
-            {/* Table */}
+            {/* ── Table ── */}
             <div className="ap-table-wrap">
               <table className="ap-table">
                 <thead>
@@ -453,68 +629,104 @@ export default function ApproverDashboard() {
                     <th>Month</th>
                     <th>Activities</th>
                     <th className="ap-num">Budget</th>
-                    <th className="ap-num">Lead Target</th>
-                    <th className="ap-num">Retail Target</th>
+                    <th className="ap-num">Lead</th>
+                    <th className="ap-num">Retail</th>
                     <th className="ap-num">CAC</th>
                     <th className="ap-num">CPL</th>
+                    <th>Files</th>
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.length === 0 && (
-                    <tr><td colSpan={isAdmin ? 13 : 12} className="ap-empty">
-                      {proposals.length === 0 ? "No proposals yet." : "No results match."}
-                    </td></tr>
-                  )}
-                  {filtered.map((p) => (
-                    <tr key={p.id} className="ap-row" onClick={() => openDrawer(p)}>
-                      <td onClick={(e) => e.stopPropagation()}>
-                        <button className="ap-review-btn" onClick={() => openDrawer(p)}>
-                          {isAdmin
-                            ? (p.status === "Pending" || p.status === "NeedsRevision" ? "Review" : "View")
-                            : "View"}
-                        </button>
-                      </td>
-                      <td>
-                        <span className="ap-id-chip">{p.tokenNumber ?? p.id.split("-").slice(-1)[0]}</span>
-                      </td>
-                      <td>
-                        <span className="ap-cell-p">{fmtDate(p.createdAt)}</span>
-                        {isAdmin && <span className="ap-cell-m">{p.submittedByDisplayName ?? p.submittedBy}</span>}
-                      </td>
-                      {isAdmin && (
-                        <td>
-                          <span className="ap-cell-p">{p.rsmName}</span>
-                          <span className="ap-cell-m">{p.commandoName}</span>
-                        </td>
-                      )}
-                      <td>
-                        <span className="ap-cell-p">{p.dealerName}</span>
-                        <span className="ap-cell-m">{p.location}, {p.state}</span>
-                      </td>
-                      <td>{p.month}</td>
-                      <td>
-                        {p.activities.slice(0, 2).map((a: ActivityResponse, i: number) => (
-                          <span key={i} className="ap-act-chip">{a.activityType}</span>
-                        ))}
-                        {p.activities.length > 2 && (
-                          <span className="ap-act-chip ap-act-chip--more">
-                            +{p.activities.length - 2}
-                          </span>
-                        )}
-                      </td>
-                      <td className="ap-num ap-bold">{inr(p.totalBudget)}</td>
-                      <td className="ap-num">{p.totalLeadTarget}</td>
-                      <td className="ap-num">{p.totalRetailTarget}</td>
-                      <td className="ap-num">{inr(p.cac)}</td>
-                      <td className="ap-num">{inr(p.cpl)}</td>
-                      <td>
-                        <span className={statusClass(p.status)}>
-                          {p.status === "NeedsRevision" ? "Needs revision" : p.status}
-                        </span>
+                    <tr>
+                      <td colSpan={isAdmin ? 14 : 13} className="ap-empty">
+                        {proposals.length === 0 ? "No proposals yet." : "No results match."}
                       </td>
                     </tr>
-                  ))}
+                  )}
+                  {filtered.map((p) => {
+                    const mc = totalMediaCount(p);
+                    return (
+                      <tr key={p.id} className="ap-row" onClick={() => openDrawer(p)}>
+                        <td onClick={(e) => e.stopPropagation()}>
+                          <button className="ap-review-btn" onClick={() => openDrawer(p)}>
+                            {isAdmin
+                              ? (p.status === "Pending" || p.status === "NeedsRevision" ? "Review" : "View")
+                              : "View"}
+                          </button>
+                        </td>
+                        <td><span className="ap-id-chip">{p.tokenNumber ?? p.id.split("-").slice(-1)[0]}</span></td>
+                        <td>
+                          <span className="ap-cell-p">{fmtDate(p.createdAt)}</span>
+                          {isAdmin && <span className="ap-cell-m">{p.submittedByDisplayName ?? p.submittedBy}</span>}
+                        </td>
+                        {isAdmin && (
+                          <td>
+                            <span className="ap-cell-p">{p.rsmName}</span>
+                            <span className="ap-cell-m">{p.commandoName}</span>
+                          </td>
+                        )}
+                        <td>
+                          <span className="ap-cell-p">{p.dealerName}</span>
+                          <span className="ap-cell-m">{p.location}, {p.state}</span>
+                        </td>
+                        <td>{p.month}</td>
+                        <td>
+                          {p.activities.slice(0, 2).map((a: ActivityResponse, i: number) => (
+                            <span key={i} className="ap-act-chip">{a.activityType}</span>
+                          ))}
+                          {p.activities.length > 2 && (
+                            <span className="ap-act-chip ap-act-chip--more">+{p.activities.length - 2}</span>
+                          )}
+                        </td>
+                        <td className="ap-num ap-bold">{inr(p.totalBudget)}</td>
+                        <td className="ap-num">{p.totalLeadTarget}</td>
+                        <td className="ap-num">{p.totalRetailTarget}</td>
+                        <td className="ap-num">{inr(p.cac)}</td>
+                        <td className="ap-num">{inr(p.cpl)}</td>
+                        {/* Media files column — thumbnail chips in table */}
+                        <td onClick={(e) => e.stopPropagation()} style={{ minWidth: 80 }}>
+                          {mc > 0 ? (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                              {p.activities.flatMap((a) => collectMedia(a)).slice(0, 4).map((m) => (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  onClick={() => openDrawer(p)}
+                                  title={m.name}
+                                  style={{
+                                    border: "1px solid #e2e8f0", borderRadius: 4, padding: 0,
+                                    background: "transparent", cursor: "pointer", overflow: "hidden",
+                                    display: "flex", alignItems: "center", justifyContent: "center",
+                                    width: 26, height: 26,
+                                  }}
+                                >
+                                  {isImage(m.type) ? (
+                                    <img src={m.url} alt={m.name} style={{ width: 26, height: 26, objectFit: "cover", display: "block" }} />
+                                  ) : (
+                                    <span style={{ fontSize: 14 }}>{mediaIcon(m.type)}</span>
+                                  )}
+                                </button>
+                              ))}
+                              {mc > 4 && (
+                                <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center", marginLeft: 2 }}>
+                                  +{mc - 4}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span style={{ color: "#cbd5e1", fontSize: 11 }}>—</span>
+                          )}
+                        </td>
+                        <td>
+                          <span className={statusClass(p.status)}>
+                            {p.status === "NeedsRevision" ? "Needs revision" : p.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -527,62 +739,57 @@ export default function ApproverDashboard() {
         <div className="ap-overlay" onClick={closeDrawer}>
           <div className="ap-drawer" onClick={(e) => e.stopPropagation()}>
 
-            {/* Drawer header */}
+            {/* Topbar */}
             <div className="ap-drawer-topbar">
               <div className="ap-drawer-topbar-left">
                 <span className={`ap-drawer-status-pill ap-pill-${selected.status.toLowerCase()}`}>
                   {selected.status === "NeedsRevision" ? "Needs revision"
-                   : selected.status === "Pending"     ? "Pending review"
-                   : selected.status}
+                   : selected.status === "Pending" ? "Pending review" : selected.status}
                 </span>
                 {isEditing
                   ? <input className="ap-dtitle-input" value={editData.dealerName}
                       onChange={(e) => setF("dealerName", e.target.value)} placeholder="Dealer name" />
-                  : <h2 className="ap-drawer-title">{selected.dealerName}</h2>
-                }
+                  : <h2 className="ap-drawer-title">{selected.dealerName}</h2>}
                 <p className="ap-drawer-sub">
                   {isEditing
                     ? <span className="ap-loc-row">
                         <input className="ap-sm-input" value={editData.location}
-                          onChange={(e) => setF("location", e.target.value)}
-                          placeholder="City" style={{ width: 110 }} />
+                          onChange={(e) => setF("location", e.target.value)} placeholder="City" style={{ width: 110 }} />
                         <span className="ap-loc-sep">,</span>
                         <input className="ap-sm-input" value={editData.state}
-                          onChange={(e) => setF("state", e.target.value)}
-                          placeholder="State" style={{ width: 120 }} />
+                          onChange={(e) => setF("state", e.target.value)} placeholder="State" style={{ width: 120 }} />
                       </span>
-                    : <>{selected.location}, {selected.state} · {selected.month} · <strong>{selected.submittedByDisplayName ?? selected.submittedBy}</strong> · {fmtDate(selected.createdAt)}</>
-                  }
+                    : <>
+                        {selected.location}, {selected.state} · {selected.month} ·{" "}
+                        <strong>{selected.submittedByDisplayName ?? selected.submittedBy}</strong> · {fmtDate(selected.createdAt)}
+                        {selected.checkedByEmail && (
+                          <span style={{ marginLeft: 8, fontSize: 11, color: "#166534", background: "#f0fdf4", padding: "1px 6px", borderRadius: 4 }}>
+                            ✓ Forwarded by {selected.checkedByEmail}
+                          </span>
+                        )}
+                      </>}
                 </p>
               </div>
               <div className="ap-drawer-topbar-right">
                 {isAdmin && selected.status === "Pending" && !isEditing && (
-                  <button className="ap-edit-trigger-btn" onClick={() => setIsEditing(true)}>
-                    ✏ Edit
-                  </button>
+                  <button className="ap-edit-trigger-btn" onClick={() => setIsEditing(true)}>✏ Edit</button>
                 )}
                 {isEditing && (
                   <button className="ap-cancel-edit-btn"
-                    onClick={() => { setEditData(toEditable(selected)); setIsEditing(false); }}>
-                    ✕ Cancel
-                  </button>
+                    onClick={() => { setEditData(toEditable(selected)); setIsEditing(false); }}>✕ Cancel</button>
                 )}
                 <button className="ap-close-btn" onClick={closeDrawer}>✕</button>
               </div>
             </div>
 
             {isEditing && (
-              <div className="ap-edit-banner">
-                ✏ Edit mode — modify fields below, then save before deciding.
-              </div>
+              <div className="ap-edit-banner">✏ Edit mode — modify fields below, then save before deciding.</div>
             )}
 
-            {/* Revision note banner for RSM */}
             {!isAdmin && selected.status === "NeedsRevision" && selected.approverNote && (
               <div className="ap-revision-banner">
                 <strong>Revision requested:</strong> {selected.approverNote}
-                <button className="ap-goto-edit-btn"
-                  onClick={() => navigate(`/rsm-form?edit=${selected.id}`)}>
+                <button className="ap-goto-edit-btn" onClick={() => navigate(`/rsm-form?edit=${selected.id}`)}>
                   ✏ Edit &amp; resubmit →
                 </button>
               </div>
@@ -590,36 +797,33 @@ export default function ApproverDashboard() {
 
             <div className="ap-drawer-body">
 
-              {/* Meta grid row 1 */}
+              {/* Meta grid 1 */}
               <div className="ap-meta-grid-4">
                 {([
-                  { key: "rsmName",      label: "RSM / TSM",  input: "text"   as const, opts: [] as string[] },
-                  { key: "commandoName", label: "Commando",    input: "text"   as const, opts: [] as string[] },
-                  { key: "type",         label: "Type",        input: "select" as const, opts: LOC_TYPES },
-                  { key: "eligibility",  label: "Eligibility", input: "select" as const, opts: ELIGIBILITY },
+                  { key: "rsmName",      label: "RSM / TSM",   input: "text"   as const, opts: [] as string[] },
+                  { key: "commandoName", label: "Commando",     input: "text"   as const, opts: [] as string[] },
+                  { key: "type",         label: "Type",         input: "select" as const, opts: LOC_TYPES },
+                  { key: "eligibility",  label: "Eligibility",  input: "select" as const, opts: ELIGIBILITY },
                 ]).map(({ key, label, input, opts }) => (
                   <div key={key} className="ap-meta-cell">
                     <span className="ap-meta-lbl">{label}</span>
                     {isAdmin && isEditing ? (
                       input === "select"
-                        ? <select className="ap-field-select"
-                            value={(editData as any)[key]}
+                        ? <select className="ap-field-select" value={(editData as any)[key]}
                             onChange={(e) => setF(key as any, e.target.value)}>
                             {opts.map((o) => <option key={o} value={o}>{o}</option>)}
                           </select>
-                        : <input className="ap-field-input"
-                            value={(editData as any)[key]}
+                        : <input className="ap-field-input" value={(editData as any)[key]}
                             onChange={(e) => setF(key as any, e.target.value)} />
-                    ) : (
-                      key === "eligibility"
+                    ) : key === "eligibility"
                         ? <span className={`ap-elig ${eligClass((selected as any)[key])}`}>{(selected as any)[key]}</span>
                         : <span className="ap-meta-val">{(selected as any)[key] || "—"}</span>
-                    )}
+                    }
                   </div>
                 ))}
               </div>
 
-              {/* Meta grid row 2 */}
+              {/* Meta grid 2 */}
               <div className="ap-meta-grid-3">
                 {([
                   { key: "dealerName", label: "Dealer name", input: "text"   as const, opts: [] as string[] },
@@ -630,22 +834,17 @@ export default function ApproverDashboard() {
                     <span className="ap-meta-lbl">{label}</span>
                     {isAdmin && isEditing ? (
                       input === "select"
-                        ? <select className="ap-field-select"
-                            value={(editData as any)[key]}
+                        ? <select className="ap-field-select" value={(editData as any)[key]}
                             onChange={(e) => setF(key as any, e.target.value)}>
                             {opts.map((o) => <option key={o} value={o}>{o}</option>)}
                           </select>
-                        : <input className="ap-field-input"
-                            value={(editData as any)[key]}
+                        : <input className="ap-field-input" value={(editData as any)[key]}
                             onChange={(e) => setF(key as any, e.target.value)} />
-                    ) : (
-                      <span className="ap-meta-val">{(selected as any)[key] || "—"}</span>
-                    )}
+                    ) : <span className="ap-meta-val">{(selected as any)[key] || "—"}</span>}
                   </div>
                 ))}
               </div>
 
-              {/* Vendor row (display only — edit happens via RSM form) */}
               {(selected.vendorName || isEditing) && (
                 <div className="ap-meta-grid-3" style={{ marginTop: 0 }}>
                   <div className="ap-meta-cell">
@@ -655,13 +854,11 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* Remarks */}
               {isAdmin && isEditing ? (
                 <div className="ap-remarks-edit">
                   <span className="ap-meta-lbl">RSM remarks</span>
                   <textarea className="ap-field-textarea" rows={2}
-                    value={editData.remarks}
-                    onChange={(e) => setF("remarks", e.target.value)} />
+                    value={editData.remarks} onChange={(e) => setF("remarks", e.target.value)} />
                 </div>
               ) : selected.remarks ? (
                 <div className="ap-remarks">
@@ -673,9 +870,7 @@ export default function ApproverDashboard() {
               {/* Activities table */}
               <div className="ap-section-header">
                 <span className="ap-sec-head">Activities</span>
-                {isAdmin && isEditing && (
-                  <button className="ap-add-row-btn" onClick={addRow}>+ Add row</button>
-                )}
+                {isAdmin && isEditing && <button className="ap-add-row-btn" onClick={addRow}>+ Add row</button>}
               </div>
 
               <div className="ap-itbl-wrap">
@@ -691,6 +886,7 @@ export default function ApproverDashboard() {
                         <th className="ap-num" style={{ width: 100 }}>Budget (₹)</th>
                         <th className="ap-num" style={{ width: 100 }}>Add. Budget (₹)</th>
                         <th className="ap-num" style={{ width: 100 }}>Total (₹)</th>
+                        {!isEditing && <th style={{ width: 200 }}>Media files</th>}
                         {isAdmin && isEditing && <th style={{ width: 32 }}></th>}
                       </tr>
                     </thead>
@@ -700,8 +896,7 @@ export default function ApproverDashboard() {
                           <tr key={i} className={i % 2 === 0 ? "ap-erow-even" : "ap-erow-odd"}>
                             <td className="ap-td-num" style={{ color: "var(--color-text-tertiary)" }}>{i + 1}</td>
                             <td className="ap-td">
-                              <select className="ap-cell-select"
-                                value={(a as EditActivity).activityType}
+                              <select className="ap-cell-select" value={(a as EditActivity).activityType}
                                 onChange={(e) => setAF(i, "activityType", e.target.value)}>
                                 <option value="">Select…</option>
                                 {ACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -743,12 +938,12 @@ export default function ApproverDashboard() {
                               {inr(num((a as EditActivity).budget) + num((a as EditActivity).additionalBudget))}
                             </td>
                             <td className="ap-td" style={{ textAlign: "center" }}>
-                              <button className="ap-rm-btn"
-                                onClick={() => removeRow(i)}
+                              <button className="ap-rm-btn" onClick={() => removeRow(i)}
                                 disabled={editData.activities.length === 1}>×</button>
                             </td>
                           </tr>
                         ) : (
+                          // ── VIEW MODE — activity row with media strip inline ──
                           <tr key={i}>
                             <td className="ap-td-num" style={{ color: "var(--color-text-tertiary)" }}>{i + 1}</td>
                             <td className="ap-td ap-bold">{(a as ActivityResponse).activityType}</td>
@@ -764,6 +959,10 @@ export default function ApproverDashboard() {
                             <td className="ap-td-num ap-bold">
                               {inr((a as ActivityResponse).budget + (a as ActivityResponse).additionalBudget)}
                             </td>
+                            {/* ── Media column — inline thumbnail strip ── */}
+                            <td className="ap-td" style={{ verticalAlign: "top", paddingTop: 8 }}>
+                              <ActivityMediaStrip activity={a as ActivityResponse} />
+                            </td>
                           </tr>
                         )
                       )}
@@ -772,157 +971,132 @@ export default function ApproverDashboard() {
                 </div>
               </div>
 
-              {/* Totals */}
-              <div className="ap-summary">
-                <div className="ap-sum-cell">
-                  <span className="ap-sum-lbl">Lead target</span>
-                  <span className="ap-sum-val">
-                    {isEditing ? Math.round(editTotals.totalLeadTarget) : selected.totalLeadTarget}
-                  </span>
-                </div>
-                <div className="ap-sum-cell">
-                  <span className="ap-sum-lbl">Retail target</span>
-                  <span className="ap-sum-val">
-                    {isEditing ? Math.round(editTotals.totalRetailTarget) : selected.totalRetailTarget}
-                  </span>
-                </div>
-                <div className="ap-sum-cell">
-                  <span className="ap-sum-lbl">Total budget</span>
-                  <span className="ap-sum-val ap-navy">
-                    {inr(isEditing ? editTotals.totalBudget : selected.totalBudget)}
-                  </span>
-                </div>
-                <div className="ap-sum-cell">
-                  <span className="ap-sum-lbl">CAC (auto)</span>
-                  <span className="ap-sum-val ap-amber">
-                    {inr(isEditing ? editTotals.cac : selected.cac)}
-                  </span>
-                </div>
-                <div className="ap-sum-cell ap-sum-last">
-                  <span className="ap-sum-lbl">CPL (auto)</span>
-                  <span className="ap-sum-val ap-amber">
-                    {inr(isEditing ? editTotals.cpl : selected.cpl)}
-                  </span>
-                </div>
-              </div>
-
-              {selected.cacWarning && (
-                <div className="ap-cac-warning">
-                  ⚠ {selected.cacWarning}
+              {/* ── Media gallery per activity (expanded cards, view mode only) ── */}
+              {!isEditing && selected.activities.some((a) => collectMedia(a).length > 0) && (
+                <div style={{ marginTop: 16 }}>
+                  <p className="ap-sec-head" style={{ marginBottom: 10 }}>Activity Media Gallery</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    {selected.activities.map((a, i) => {
+                      const mc = collectMedia(a).length;
+                      if (mc === 0) return null;
+                      return (
+                        <div
+                          key={a.id}
+                          style={{
+                            background: "var(--color-background-secondary)",
+                            border: "1px solid var(--color-border-tertiary)",
+                            borderRadius: 8, padding: "12px 14px",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                            <span style={{ background: "#0a2540", color: "#fff", borderRadius: 4,
+                              padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>
+                              {i + 1}
+                            </span>
+                            <span style={{ fontWeight: 600, fontSize: 13, color: "#0a2540" }}>
+                              {a.activityType}
+                            </span>
+                            <span style={{ fontSize: 11, color: "#6b7280", marginLeft: "auto" }}>
+                              {mc} file{mc !== 1 ? "s" : ""}
+                            </span>
+                          </div>
+                          <DrawerActivityMedia activity={a} activityIndex={i} />
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
 
-              {/* ══ POST-APPROVAL ACTUALS PANEL ══ */}
+              {/* Summary */}
+              <div className="ap-summary">
+                <div className="ap-sum-cell">
+                  <span className="ap-sum-lbl">Lead target</span>
+                  <span className="ap-sum-val">{isEditing ? Math.round(editTotals.totalLeadTarget) : selected.totalLeadTarget}</span>
+                </div>
+                <div className="ap-sum-cell">
+                  <span className="ap-sum-lbl">Retail target</span>
+                  <span className="ap-sum-val">{isEditing ? Math.round(editTotals.totalRetailTarget) : selected.totalRetailTarget}</span>
+                </div>
+                <div className="ap-sum-cell">
+                  <span className="ap-sum-lbl">Total budget</span>
+                  <span className="ap-sum-val ap-navy">{inr(isEditing ? editTotals.totalBudget : selected.totalBudget)}</span>
+                </div>
+                <div className="ap-sum-cell">
+                  <span className="ap-sum-lbl">CAC (auto)</span>
+                  <span className="ap-sum-val ap-amber">{inr(isEditing ? editTotals.cac : selected.cac)}</span>
+                </div>
+                <div className="ap-sum-cell ap-sum-last">
+                  <span className="ap-sum-lbl">CPL (auto)</span>
+                  <span className="ap-sum-val ap-amber">{inr(isEditing ? editTotals.cpl : selected.cpl)}</span>
+                </div>
+              </div>
+
+              {selected.cacWarning && <div className="ap-cac-warning">⚠ {selected.cacWarning}</div>}
+
+              {/* ══ POST-APPROVAL ACTUALS ══ */}
               {selected.status === "Approved" && (
                 <div className="ap-actuals-box">
                   <div className="ap-section-header" style={{ marginBottom: 14 }}>
                     <span className="ap-sec-head">Post-Activity Actuals</span>
                     <span className="ap-actuals-badge">Approved ✓</span>
                   </div>
-                  <p className="ap-actuals-hint">
-                    Enter actual dates and upload proof/media for each activity.
-                  </p>
-
+                  <p className="ap-actuals-hint">Enter actual dates and upload proof/media for each activity.</p>
                   <div className="ap-actuals-list">
                     {selected.activities.map((a, i) => {
                       const d = actualsData[a.id];
                       if (!d) return null;
                       return (
                         <div key={a.id} className="ap-actual-row">
-
-                          {/* Activity label */}
                           <div className="ap-actual-label">
                             <span className="ap-actual-num">{i + 1}</span>
                             <span className="ap-actual-type">{a.activityType}</span>
-                            <span className="ap-actual-planned">
-                              Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}
-                            </span>
+                            <span className="ap-actual-planned">Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
                           </div>
-
                           <div className="ap-actual-fields">
-
-                            {/* Actual Start Date */}
                             <div className="ap-actual-field">
                               <label className="ap-actual-flbl">Actual Start Date</label>
-                              <input type="date" className="ap-actual-input"
-                                value={d.actualStartDate}
+                              <input type="date" className="ap-actual-input" value={d.actualStartDate}
                                 onChange={(e) => setActualField(a.id, "actualStartDate", e.target.value)} />
                             </div>
-
-                            {/* Actual End Date */}
                             <div className="ap-actual-field">
                               <label className="ap-actual-flbl">Actual End Date</label>
-                              <input type="date" className="ap-actual-input"
-                                value={d.actualEndDate}
+                              <input type="date" className="ap-actual-input" value={d.actualEndDate}
                                 min={d.actualStartDate || undefined}
                                 onChange={(e) => setActualField(a.id, "actualEndDate", e.target.value)} />
                             </div>
-
-                            {/* Media upload */}
                             <div className="ap-actual-field ap-actual-field--media">
-                              <label className="ap-actual-flbl">Proof / Media</label>
-
+                              <label className="ap-actual-flbl">Upload Proof / Media</label>
                               {d.mediaFileName ? (
                                 <div className="ap-media-uploaded">
                                   <span className="ap-media-icon">
-                                    {d.mediaFileType?.startsWith("image") ? "🖼" :
-                                     d.mediaFileType?.includes("pdf")     ? "📄" :
-                                     d.mediaFileType?.includes("video")   ? "🎬" : "📎"}
+                                    {d.mediaFileType?.startsWith("image") ? "🖼" : d.mediaFileType?.includes("pdf") ? "📄" : "🎬"}
                                   </span>
-                                  <span className="ap-media-name" title={d.mediaFileName}>
-                                    {d.mediaFileName}
-                                  </span>
+                                  <span className="ap-media-name" title={d.mediaFileName}>{d.mediaFileName}</span>
                                   {d.mediaFileUrl && (
-                                    <a href={d.mediaFileUrl} target="_blank"
-                                      rel="noreferrer" className="ap-media-view">
-                                      View
-                                    </a>
+                                    <a href={resolveUrl(d.mediaFileUrl)} target="_blank" rel="noreferrer" className="ap-media-view">View</a>
                                   )}
-                                  <label className="ap-media-replace"
-                                    htmlFor={`media-${a.id}`}>
+                                  <label className="ap-media-replace" htmlFor={`media-${a.id}`}>
                                     Replace
-                                    <input
-                                      id={`media-${a.id}`}
-                                      ref={(el) => { fileInputRefs.current[a.id] = el; }}
-                                      type="file"
-                                      accept="image/*,.pdf,.mp4,.mov,.avi"
-                                      style={{ display: "none" }}
-                                      onChange={(e) => {
-                                        const f = e.target.files?.[0];
-                                        if (f) handleMediaSelect(a.id, f);
-                                        e.target.value = "";
-                                      }} />
+                                    <input id={`media-${a.id}`} ref={(el) => { fileInputRefs.current[a.id] = el; }}
+                                      type="file" accept="image/*,.pdf,.mp4,.mov,.avi" style={{ display: "none" }}
+                                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleMediaSelect(a.id, f); e.target.value = ""; }} />
                                   </label>
                                 </div>
                               ) : (
-                                <label
-                                  className={`ap-media-upload-btn ${d.uploading ? "ap-media-upload-btn--loading" : ""}`}
+                                <label className={`ap-media-upload-btn ${d.uploading ? "ap-media-upload-btn--loading" : ""}`}
                                   htmlFor={`media-${a.id}`}>
-                                  {d.uploading ? (
-                                    <span className="ap-media-uploading">
-                                      <span className="ap-spin-sm" /> Uploading…
-                                    </span>
-                                  ) : (
-                                    <span>📎 Upload file</span>
-                                  )}
-                                  <input
-                                    id={`media-${a.id}`}
-                                    ref={(el) => { fileInputRefs.current[a.id] = el; }}
-                                    type="file"
-                                    accept="image/*,.pdf,.mp4,.mov,.avi"
-                                    style={{ display: "none" }}
+                                  {d.uploading
+                                    ? <span className="ap-media-uploading"><span className="ap-spin-sm" /> Uploading…</span>
+                                    : <span>📎 Upload file</span>}
+                                  <input id={`media-${a.id}`} ref={(el) => { fileInputRefs.current[a.id] = el; }}
+                                    type="file" accept="image/*,.pdf,.mp4,.mov,.avi" style={{ display: "none" }}
                                     disabled={d.uploading}
-                                    onChange={(e) => {
-                                      const f = e.target.files?.[0];
-                                      if (f) handleMediaSelect(a.id, f);
-                                      e.target.value = "";
-                                    }} />
+                                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handleMediaSelect(a.id, f); e.target.value = ""; }} />
                                 </label>
                               )}
                             </div>
                           </div>
-
-                          {/* Show existing actual dates if saved */}
                           {(a.actualStartDate || a.actualEndDate) && (
                             <div className="ap-actual-saved">
                               <span className="ap-actual-saved-lbl">Last saved:</span>
@@ -933,12 +1107,8 @@ export default function ApproverDashboard() {
                       );
                     })}
                   </div>
-
-                  {/* Save actuals button */}
                   <div className="ap-actuals-footer">
-                    <button className="ap-save-actuals-btn"
-                      onClick={saveActuals}
-                      disabled={actualsLoading}>
+                    <button className="ap-save-actuals-btn" onClick={saveActuals} disabled={actualsLoading}>
                       {actualsLoading ? "Saving…" : "💾 Save Actuals"}
                     </button>
                   </div>
@@ -948,40 +1118,59 @@ export default function ApproverDashboard() {
               {/* ══ ADMIN DECISION PANEL ══ */}
               {isAdmin && selected.status === "Pending" && !isEditing && (
                 <div className="ap-action-box">
-                  <p className="ap-sec-head" style={{ marginBottom: 10 }}>Decision</p>
+                  <p className="ap-sec-head" style={{ marginBottom: 12 }}>Actions</p>
 
+                  {/* Forward to Vijay */}
+                  <div style={{ marginBottom: 20 }}>
+                    <p style={{ fontSize: 13, color: "#6b7280", margin: "0 0 8px" }}>
+                      Once reviewed, forward to <strong>Vijay Maurya</strong> for final approval:
+                    </p>
+                    {selected.checkedByEmail && (
+                      <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 6,
+                        padding: "10px 14px", fontSize: 13, color: "#166534", marginBottom: 8 }}>
+                        ✓ Already forwarded by {selected.checkedByEmail}
+                        {selected.checkedAt && ` on ${fmtDate(selected.checkedAt)}`}
+                      </div>
+                    )}
+                    <button
+                      style={{ background: "#1e3a5f", color: "#fff", border: "none", padding: "10px 20px",
+                        borderRadius: 8, fontWeight: 600, fontSize: 14,
+                        cursor: forwardLoading ? "not-allowed" : "pointer", opacity: forwardLoading ? 0.7 : 1 }}
+                      disabled={forwardLoading} onClick={handleForward}>
+                      {forwardLoading ? "Forwarding…" : "📤 Forward to Final Approver"}
+                    </button>
+                  </div>
+
+                  <hr style={{ margin: "4px 0 16px", border: "none", borderTop: "1px solid #e2e8f0" }} />
+
+                  {/* Final decision */}
+                  <p style={{ fontSize: 13, color: "#6b7280", margin: "0 0 8px" }}>
+                    Final decision (approve or reject):
+                  </p>
                   <textarea className="ap-note-input" rows={3}
-                    placeholder="Add a note for the RSM (optional)…"
+                    placeholder="Add a note for Mayank & RSM (optional)…"
                     value={note} onChange={(e) => setNote(e.target.value)} />
-
                   <div className="ap-btn-row">
-                    <button className="ap-approve-btn"
-                      disabled={actionLoading} onClick={() => decide("Approved")}>
+                    <button className="ap-approve-btn" disabled={actionLoading} onClick={() => decide("Approved")}>
                       {actionLoading ? "Processing…" : "✓  Approve"}
                     </button>
-                    <button className="ap-reject-btn"
-                      disabled={actionLoading} onClick={() => decide("Rejected")}>
+                    <button className="ap-reject-btn" disabled={actionLoading} onClick={() => decide("Rejected")}>
                       {actionLoading ? "Processing…" : "✕  Reject"}
                     </button>
                   </div>
-
                   <div className="ap-sendback-row">
-                    <button className="ap-sendback-trigger"
-                      onClick={() => setShowSendBack((v) => !v)}>
+                    <button className="ap-sendback-trigger" onClick={() => setShowSendBack((v) => !v)}>
                       ↩ Send back for revision
                     </button>
                   </div>
-
                   {showSendBack && (
                     <div className="ap-sendback-box">
                       <p className="ap-sendback-label">Explain what needs to be revised:</p>
                       <textarea className="ap-note-input" rows={3}
-                        placeholder="e.g. Please increase target for Road Show activity…"
-                        value={sendBackNote}
-                        onChange={(e) => setSendBackNote(e.target.value)} />
+                        placeholder="e.g. Please increase target for Road Show…"
+                        value={sendBackNote} onChange={(e) => setSendBackNote(e.target.value)} />
                       <div className="ap-btn-row">
-                        <button className="ap-sendback-btn"
-                          disabled={actionLoading} onClick={handleSendBack}>
+                        <button className="ap-sendback-btn" disabled={actionLoading} onClick={handleSendBack}>
                           {actionLoading ? "Sending…" : "↩ Send for revision"}
                         </button>
                         <button className="ap-discard-btn"
@@ -994,6 +1183,49 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
+              {/* ══ NOTIFY DEALER ══ */}
+              {isAdmin && selected.status === "Approved" && (
+                <div className="ap-action-box" style={{ marginTop: 16 }}>
+                  <p className="ap-sec-head" style={{ marginBottom: 8 }}>Notify Dealer</p>
+                  {selected.dealerNotified ? (
+                    <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0",
+                      borderRadius: 6, padding: "10px 14px", fontSize: 13, color: "#166534" }}>
+                      ✓ Dealer has been notified
+                      {selected.dealerEmail && <span style={{ color: "#6b7280" }}> ({selected.dealerEmail})</span>}
+                    </div>
+                  ) : showNotifyDealer ? (
+                    <div>
+                      <p style={{ fontSize: 13, color: "#6b7280", margin: "0 0 8px" }}>
+                        Enter the dealer's email to send the approved activity plan:
+                      </p>
+                      <input type="email" className="ap-field-input"
+                        style={{ width: "100%", marginBottom: 10 }}
+                        placeholder="dealer@example.com"
+                        value={dealerEmailInput}
+                        onChange={(e) => setDealerEmailInput(e.target.value)} />
+                      <div className="ap-btn-row">
+                        <button className="ap-approve-btn"
+                          disabled={notifyLoading || !dealerEmailInput.trim()}
+                          onClick={handleNotifyDealer}>
+                          {notifyLoading ? "Sending…" : "📧 Send to Dealer"}
+                        </button>
+                        <button className="ap-discard-btn"
+                          onClick={() => { setShowNotifyDealer(false); setDealerEmailInput(""); }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      style={{ background: "#0a2540", color: "#fff", border: "none", padding: "10px 20px",
+                        borderRadius: 8, fontWeight: 600, fontSize: 14, cursor: "pointer" }}
+                      onClick={() => setShowNotifyDealer(true)}>
+                      📧 Notify Dealer
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* ══ RSM VIEW — decision result ══ */}
               {!isAdmin && selected.status !== "Pending" && (
                 <div className={`ap-decision-banner ${
@@ -1001,9 +1233,7 @@ export default function ApproverDashboard() {
                   : selected.status === "Rejected"    ? "ap-decision-rejected"
                   : "ap-decision-revision"}`}>
                   <div className="ap-decision-head">
-                    <strong>
-                      {selected.status === "NeedsRevision" ? "Revision requested" : selected.status}
-                    </strong>
+                    <strong>{selected.status === "NeedsRevision" ? "Revision requested" : selected.status}</strong>
                     {selected.decidedAt && (
                       <span className="ap-decision-date">
                         {fmtDate(selected.decidedAt)}
@@ -1011,12 +1241,9 @@ export default function ApproverDashboard() {
                       </span>
                     )}
                   </div>
-                  {selected.approverNote && (
-                    <p className="ap-decision-note">{selected.approverNote}</p>
-                  )}
+                  {selected.approverNote && <p className="ap-decision-note">{selected.approverNote}</p>}
                   {selected.status === "NeedsRevision" && (
-                    <button className="ap-goto-edit-btn"
-                      onClick={() => navigate(`/rsm-form?edit=${selected.id}`)}>
+                    <button className="ap-goto-edit-btn" onClick={() => navigate(`/rsm-form?edit=${selected.id}`)}>
                       ✏ Edit &amp; resubmit →
                     </button>
                   )}
@@ -1036,22 +1263,18 @@ export default function ApproverDashboard() {
                       </span>
                     )}
                   </div>
-                  {selected.approverNote && (
-                    <p className="ap-decision-note">{selected.approverNote}</p>
-                  )}
+                  {selected.approverNote && <p className="ap-decision-note">{selected.approverNote}</p>}
                 </div>
               )}
 
             </div>
 
-            {/* Sticky save footer (edit mode) */}
+            {/* Sticky save footer */}
             {isAdmin && isEditing && (
               <div className="ap-save-footer">
                 <span className="ap-save-footer-hint">Unsaved changes</span>
                 <button className="ap-discard-btn"
-                  onClick={() => { setEditData(toEditable(selected)); setIsEditing(false); }}>
-                  Discard
-                </button>
+                  onClick={() => { setEditData(toEditable(selected)); setIsEditing(false); }}>Discard</button>
                 <button className="ap-save-btn" onClick={saveEdits} disabled={saveLoading}>
                   {saveLoading ? "Saving…" : "💾 Save changes"}
                 </button>
@@ -1071,7 +1294,6 @@ export default function ApproverDashboard() {
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
 function StatCard({ label, value, color }: { label: string; value: string | number; color: string }) {
   return (
     <div className="ap-stat">

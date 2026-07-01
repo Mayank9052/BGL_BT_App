@@ -6,5 +6,6 @@ public record UpdateActivityActualsDto(
     string? ActualEndDate,
     string? MediaFileUrl,
     string? MediaFileName,
-    string? MediaFileType
+    string? MediaFileType,
+    List<MediaFileDto>? MediaFiles
 );
