@@ -37,8 +37,10 @@ interface SummaryStats {
   totalBudget:    number;
   approvedBudget: number;
   pendingBudget:  number;
-  totalTarget:    number;
+  totalRetailTarget: number;
+  totalLeadTarget:   number;
   avgCac:         number;
+  avgCpl:         number;
   stateCount:     number;
   dealerCount:    number;
 }
@@ -47,6 +49,7 @@ function computeStats(proposals: ProposalResponse[]): SummaryStats {
   const approved = proposals.filter((p) => p.status === "Approved");
   const pending  = proposals.filter((p) => p.status === "Pending");
   const cacList  = proposals.filter((p) => p.cac > 0).map((p) => p.cac);
+  const cplList  = proposals.filter((p) => p.cpl > 0).map((p) => p.cpl);
   return {
     totalProposals: proposals.length,
     pendingCount:   pending.length,
@@ -55,8 +58,10 @@ function computeStats(proposals: ProposalResponse[]): SummaryStats {
     totalBudget:    proposals.reduce((s, p) => s + p.totalBudget, 0),
     approvedBudget: approved.reduce((s, p) => s + p.totalBudget, 0),
     pendingBudget:  pending.reduce((s, p)  => s + p.totalBudget, 0),
-    totalTarget:    proposals.reduce((s, p) => s + p.totalTarget, 0),
+    totalRetailTarget: proposals.reduce((s, p) => s + p.totalRetailTarget, 0),
+    totalLeadTarget:   proposals.reduce((s, p) => s + p.totalLeadTarget, 0),
     avgCac:         cacList.length > 0 ? cacList.reduce((a, b) => a + b, 0) / cacList.length : 0,
+    avgCpl:         cplList.length > 0 ? cplList.reduce((a, b) => a + b, 0) / cplList.length : 0,
     stateCount:     new Set(proposals.map((p) => p.state)).size,
     dealerCount:    new Set(proposals.map((p) => p.dealerName)).size,
   };
@@ -121,18 +126,18 @@ export default function DashboardPage() {
   // ── State-wise breakdown (with search) ────────────────────────────────────
   const stateBreakdown = useMemo(() => {
     interface StateRow {
-      oldDealers: Set<string>; oldTarget: number; oldBudget: number;
-      newDealers: Set<string>; newTarget: number; newBudget: number;
-      nonDealers: Set<string>; nonTarget: number; nonBudget: number;
+      oldDealers: Set<string>; oldRetail: number; oldLead: number; oldBudget: number;
+      newDealers: Set<string>; newRetail: number; newLead: number; newBudget: number;
+      nonDealers: Set<string>; nonRetail: number; nonLead: number; nonBudget: number;
       pending: number; approved: number; rejected: number;
       remarks: string;
     }
     const map: Record<string, StateRow> = {};
     const ensure = (state: string) => {
       if (!map[state]) map[state] = {
-        oldDealers: new Set(), oldTarget: 0, oldBudget: 0,
-        newDealers: new Set(), newTarget: 0, newBudget: 0,
-        nonDealers: new Set(), nonTarget: 0, nonBudget: 0,
+        oldDealers: new Set(), oldRetail: 0, oldLead: 0, oldBudget: 0,
+        newDealers: new Set(), newRetail: 0, newLead: 0, newBudget: 0,
+        nonDealers: new Set(), nonRetail: 0, nonLead: 0, nonBudget: 0,
         pending: 0, approved: 0, rejected: 0, remarks: "",
       };
     };
@@ -143,11 +148,20 @@ export default function DashboardPage() {
       const ty = (p.type ?? "").toLowerCase();
       const el = (p.eligibility ?? "").toLowerCase();
       if (el.includes("not") || el.includes("non")) {
-        r.nonDealers.add(p.dealerName); r.nonTarget += p.totalTarget; r.nonBudget += p.totalBudget;
+        r.nonDealers.add(p.dealerName);
+        r.nonRetail += p.totalRetailTarget;
+        r.nonLead   += p.totalLeadTarget;
+        r.nonBudget += p.totalBudget;
       } else if (ty === "new") {
-        r.newDealers.add(p.dealerName); r.newTarget += p.totalTarget; r.newBudget += p.totalBudget;
+        r.newDealers.add(p.dealerName);
+        r.newRetail += p.totalRetailTarget;
+        r.newLead   += p.totalLeadTarget;
+        r.newBudget += p.totalBudget;
       } else {
-        r.oldDealers.add(p.dealerName); r.oldTarget += p.totalTarget; r.oldBudget += p.totalBudget;
+        r.oldDealers.add(p.dealerName);
+        r.oldRetail += p.totalRetailTarget;
+        r.oldLead   += p.totalLeadTarget;
+        r.oldBudget += p.totalBudget;
       }
       if (p.status === "Pending")  r.pending++;
       if (p.status === "Approved") r.approved++;
@@ -158,17 +172,19 @@ export default function DashboardPage() {
     const rows = Object.entries(map).map(([state, d]) => {
       const totalDealers = d.oldDealers.size + d.newDealers.size + d.nonDealers.size;
       const totalBudget  = d.oldBudget + d.newBudget;
-      const totalRetail  = d.oldTarget + d.newTarget + d.nonTarget;
+      const totalRetail  = d.oldRetail + d.newRetail + d.nonRetail;
+      const totalLead    = d.oldLead + d.newLead + d.nonLead;
       return {
         state,
-        oldRetail: d.oldTarget,  oldCount: d.oldDealers.size, oldBudget: d.oldBudget,
-        oldCac: d.oldTarget > 0 ? d.oldBudget / d.oldTarget : 0,
-        newRetail: d.newTarget,  newCount: d.newDealers.size, newBudget: d.newBudget,
-        newCac: d.newTarget > 0 ? d.newBudget / d.newTarget : 0,
-        nonRetail: d.nonTarget,  nonCount: d.nonDealers.size, nonBudget: d.nonBudget,
-        nonCac: d.nonTarget > 0 ? d.nonBudget / d.nonTarget : 0,
-        totalDealers, totalBudget, totalRetail,
+        oldRetail: d.oldRetail,  oldCount: d.oldDealers.size, oldBudget: d.oldBudget,
+        oldCac: d.oldRetail > 0 ? d.oldBudget / d.oldRetail : 0,
+        newRetail: d.newRetail,  newCount: d.newDealers.size, newBudget: d.newBudget,
+        newCac: d.newRetail > 0 ? d.newBudget / d.newRetail : 0,
+        nonRetail: d.nonRetail,  nonCount: d.nonDealers.size, nonBudget: d.nonBudget,
+        nonCac: d.nonRetail > 0 ? d.nonBudget / d.nonRetail : 0,
+        totalDealers, totalBudget, totalRetail, totalLead,
         overallCac: totalRetail > 0 ? totalBudget / totalRetail : 0,
+        overallCpl: totalLead   > 0 ? totalBudget / totalLead   : 0,
         pending: d.pending, approved: d.approved, rejected: d.rejected,
         remarks: d.remarks,
       };
@@ -194,6 +210,7 @@ export default function DashboardPage() {
       totalDealers: stateBreakdown.reduce((s, r) => s + r.totalDealers, 0),
       totalBudget:  stateBreakdown.reduce((s, r) => s + r.totalBudget,  0),
       totalRetail:  stateBreakdown.reduce((s, r) => s + r.totalRetail,  0),
+      totalLead:    stateBreakdown.reduce((s, r) => s + r.totalLead,    0),
     };
   }, [stateBreakdown]);
 
@@ -208,7 +225,7 @@ export default function DashboardPage() {
     const map: Record<string, {
       state: string; dealerName: string; monthTarget: number;
       eligibleOldBudget: number; eligibleNewBudget: number; nonBudget: number;
-      retailTarget: number; activities: number;
+      retailTarget: number; leadTarget: number; activities: number;
       eligibility: string; type: string;
       pending: number; approved: number; rejected: number;
     }> = {};
@@ -218,15 +235,16 @@ export default function DashboardPage() {
       if (!map[key]) map[key] = {
         state: p.state, dealerName: p.dealerName,
         monthTarget: 0, eligibleOldBudget: 0, eligibleNewBudget: 0, nonBudget: 0,
-        retailTarget: 0, activities: 0,
+        retailTarget: 0, leadTarget: 0, activities: 0,
         eligibility: p.eligibility ?? "", type: p.type ?? "",
         pending: 0, approved: 0, rejected: 0,
       };
       const d  = map[key];
       const ty = (p.type ?? "").toLowerCase();
       const el = (p.eligibility ?? "").toLowerCase();
-      d.monthTarget  += p.totalTarget;
-      d.retailTarget += p.totalTarget;
+      d.monthTarget  += p.totalRetailTarget;
+      d.retailTarget += p.totalRetailTarget;
+      d.leadTarget   += p.totalLeadTarget;
       d.activities   += p.activities.length;
       if (el.includes("not") || el.includes("non")) d.nonBudget         += p.totalBudget;
       else if (ty === "new")                         d.eligibleNewBudget += p.totalBudget;
@@ -333,13 +351,18 @@ export default function DashboardPage() {
               onClick={() => handleKpiClick("Approved")} />
             <KpiCard icon="❌" label="Rejected"
               value={String(stats.rejectedCount)}
-              sub={`${Math.round(stats.totalTarget).toLocaleString("en-IN")} total units`}
+              sub={`${Math.round(stats.totalRetailTarget).toLocaleString("en-IN")} total units`}
               accent="red" active={activeFilter === "Rejected"}
               onClick={() => handleKpiClick("Rejected")} />
             <KpiCard icon="💰" label="Total Budget"
               value={inrCompact(stats.totalBudget)}
               sub={`Avg CAC ₹${Math.round(stats.avgCac).toLocaleString("en-IN")}`}
               accent="purple"
+              onClick={() => clearAllFilters()} />
+            <KpiCard icon="📊" label="Avg CPL"
+              value={`₹${Math.round(stats.avgCpl).toLocaleString("en-IN")}`}
+              sub={`${stats.totalLeadTarget.toLocaleString("en-IN")} total leads`}
+              accent="blue"
               onClick={() => clearAllFilters()} />
           </div>
 
@@ -448,7 +471,7 @@ export default function DashboardPage() {
                       <th className="dash-th dash-th--group dash-th--old" colSpan={4}>Eligible Old Dealer</th>
                       <th className="dash-th dash-th--group dash-th--new" colSpan={4}>Eligible New Dealer</th>
                       <th className="dash-th dash-th--group dash-th--non" colSpan={4}>Non Eligible Dealer</th>
-                      <th className="dash-th dash-th--group dash-th--tot" colSpan={4}>Totals</th>
+                      <th className="dash-th dash-th--group dash-th--tot" colSpan={5}>Totals</th>
                       <th className="dash-th dash-th--group" colSpan={3}>Status</th>
                       <th className="dash-th" rowSpan={2}>Remarks</th>
                     </tr>
@@ -469,6 +492,7 @@ export default function DashboardPage() {
                       <th className="dash-th dash-th--tot dash-th--right">Total Budget (₹)</th>
                       <th className="dash-th dash-th--tot dash-th--right">Total Retail</th>
                       <th className="dash-th dash-th--tot dash-th--right">Overall CAC</th>
+                      <th className="dash-th dash-th--tot dash-th--right">Overall CPL</th>
                       <th className="dash-th dash-th--right" style={{ background:"#f59e0b22", color:"#92400e" }}>Pending</th>
                       <th className="dash-th dash-th--right" style={{ background:"#16a34a22", color:"#14532d" }}>Approved</th>
                       <th className="dash-th dash-th--right" style={{ background:"#dc262622", color:"#7f1d1d" }}>Rejected</th>
@@ -495,6 +519,9 @@ export default function DashboardPage() {
                         <td className="dash-td dash-td--right dash-td--bold">{Math.round(row.totalRetail).toLocaleString("en-IN")}</td>
                         <td className="dash-td dash-td--right dash-td--mono dash-td--bold">
                           {row.overallCac > 0 ? `₹${Math.round(row.overallCac).toLocaleString("en-IN")}` : <Dash />}
+                        </td>
+                        <td className="dash-td dash-td--right dash-td--mono dash-td--bold">
+                          {row.overallCpl > 0 ? `₹${Math.round(row.overallCpl).toLocaleString("en-IN")}` : <Dash />}
                         </td>
                         <td className="dash-td dash-td--right">
                           {row.pending  > 0 ? <span className="dash-badge dash-badge--pending">{row.pending}</span>   : <span className="dash-muted">—</span>}
@@ -536,6 +563,9 @@ export default function DashboardPage() {
                         <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.totalRetail.toLocaleString("en-IN")}</td>
                         <td className="dash-td dash-td--right dash-td--grand dash-td--mono">
                           {stateGrandTotal.totalRetail > 0 ? `₹${Math.round(stateGrandTotal.totalBudget / stateGrandTotal.totalRetail).toLocaleString("en-IN")}` : "—"}
+                        </td>
+                        <td className="dash-td dash-td--right dash-td--grand dash-td--mono">
+                          {stateGrandTotal.totalLead > 0 ? `₹${Math.round(stateGrandTotal.totalBudget / stateGrandTotal.totalLead).toLocaleString("en-IN")}` : "—"}
                         </td>
                         <td className="dash-td" colSpan={4} />
                       </tr>
@@ -594,6 +624,7 @@ export default function DashboardPage() {
                       <th className="dash-th">BTL Category</th>
                       <th className="dash-th dash-th--right">Activities</th>
                       <th className="dash-th dash-th--right">Retail Target</th>
+                      <th className="dash-th dash-th--right">Lead Target</th>
                       <th className="dash-th dash-th--right">Budget for BTL (₹)</th>
                       <th className="dash-th dash-th--right">Pending</th>
                       <th className="dash-th dash-th--right">Approved</th>
@@ -626,6 +657,7 @@ export default function DashboardPage() {
                           <td className="dash-td dash-td--category">{cat}</td>
                           <td className="dash-td dash-td--right">{row.activities}</td>
                           <td className="dash-td dash-td--right">{Math.round(row.retailTarget).toLocaleString("en-IN")}</td>
+                          <td className="dash-td dash-td--right">{Math.round(row.leadTarget).toLocaleString("en-IN")}</td>
                           <td className="dash-td dash-td--right dash-td--mono">
                             {btlBudget > 0 ? inr(btlBudget) : <Dash />}
                           </td>

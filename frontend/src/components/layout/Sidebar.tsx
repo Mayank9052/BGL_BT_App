@@ -4,14 +4,15 @@ import { useEffect } from "react";
 import "./Sidebar.css";
 
 interface SidebarProps {
-  isAdmin:      boolean;
-  collapsed:    boolean;
-  mobileOpen:   boolean;
-  onToggle:     () => void;
+  isAdmin:       boolean;
+  isReportsUser: boolean;   // ← new — true only for oat@bgauss.com
+  collapsed:     boolean;
+  mobileOpen:    boolean;
+  onToggle:      () => void;
   onMobileClose: () => void;
-  onLogout:     () => void;
-  userName?:    string;
-  userRole?:    string;
+  onLogout:      () => void;
+  userName?:     string;
+  userRole?:     string;
   pendingCount?: number;
 }
 
@@ -22,22 +23,19 @@ const NAV_ITEMS = [
 ];
 
 const ADMIN_ITEMS = [
-  { to: "/admin/users",      label: "Manage Users & Activity",    icon: "ti-users"      },
-  // { to: "/admin/activities", label: "Activity Types",  icon: "ti-list-check" },
+  { to: "/admin/users", label: "Manage Users & Activity", icon: "ti-users" },
 ];
 
 export default function Sidebar({
-  isAdmin, collapsed, mobileOpen, onToggle, onMobileClose, onLogout,
+  isAdmin, isReportsUser, collapsed, mobileOpen, onToggle, onMobileClose, onLogout,
   userName, userRole, pendingCount,
 }: SidebarProps) {
   const location = useLocation();
 
-  // Auto-close mobile sidebar on route change
   useEffect(() => {
     onMobileClose();
   }, [location.pathname]);
 
-  // Close on ESC key
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape" && mobileOpen) onMobileClose();
@@ -46,7 +44,6 @@ export default function Sidebar({
     return () => document.removeEventListener("keydown", handler);
   }, [mobileOpen]);
 
-  // Prevent body scroll when mobile sidebar is open
   useEffect(() => {
     if (mobileOpen) {
       document.body.style.overflow = "hidden";
@@ -65,7 +62,6 @@ export default function Sidebar({
 
   return (
     <>
-      {/* Mobile overlay */}
       {mobileOpen && (
         <div className="sb-overlay" onClick={onMobileClose} aria-hidden="true" />
       )}
@@ -76,26 +72,22 @@ export default function Sidebar({
         mobileOpen ? "sb--mobile-open" : "",
       ].filter(Boolean).join(" ")}>
 
-        {/* Desktop collapse toggle */}
         <button className="sb-toggle sb-toggle--desktop"
           onClick={onToggle}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
           <i className={collapsed ? "ti ti-chevron-right" : "ti ti-chevron-left"} />
         </button>
 
-        {/* Mobile close button */}
         <button className="sb-toggle sb-toggle--mobile"
           onClick={onMobileClose} aria-label="Close menu">
           <i className="ti ti-x" />
         </button>
 
-        {/* Brand */}
         <div className="sb-brand">
           <img src="/BGauss_Logo.png" alt="BGauss" className="sb-logo" />
           {!collapsed && <span className="sb-brand-name">BGauss</span>}
         </div>
 
-        {/* Nav */}
         <nav className="sb-nav" role="navigation">
           {!collapsed && <span className="sb-section-lbl">Main</span>}
 
@@ -114,6 +106,19 @@ export default function Sidebar({
             </NavLink>
           ))}
 
+          {/* Reports — visible only to oat@bgauss.com */}
+          {isReportsUser && (
+            <>
+              <div className="sb-divider" />
+              {!collapsed && <span className="sb-section-lbl">Reports</span>}
+              <NavLink to="/reports" className={linkClass}
+                title={collapsed ? "Reports" : undefined}>
+                <i className="ti ti-file-report" aria-hidden="true" />
+                {!collapsed && <span className="sb-link-label">Download Reports</span>}
+              </NavLink>
+            </>
+          )}
+
           {isAdmin && (
             <>
               <div className="sb-divider" />
@@ -129,7 +134,6 @@ export default function Sidebar({
           )}
         </nav>
 
-        {/* Footer */}
         <div className="sb-footer">
           <div className="sb-divider" />
           <div className="sb-user-card" title={collapsed ? (userName ?? "") : undefined}>

@@ -8,6 +8,7 @@ import Navbar from "./Navbar";
 import "./AppLayout.css";
 
 const SIDEBAR_KEY = "bgauss_sidebar_collapsed";
+const AUTHORIZED_REPORTS_EMAIL = "oat@bgauss.com";
 
 export default function AppLayout() {
   const { instance } = useMsal();
@@ -41,6 +42,7 @@ export default function AppLayout() {
   };
 
   const isAdmin = user?.role === "Admin" || user?.role === "Manager";
+  const isReportsUser = user?.email?.toLowerCase() === AUTHORIZED_REPORTS_EMAIL;
 
   return (
     <div className={[
@@ -51,6 +53,7 @@ export default function AppLayout() {
 
       <Sidebar
         isAdmin={isAdmin}
+        isReportsUser={isReportsUser}
         collapsed={collapsed}
         mobileOpen={mobileOpen}
         onToggle={() => setCollapsed((c) => !c)}

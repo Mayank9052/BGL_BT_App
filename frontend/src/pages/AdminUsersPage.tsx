@@ -7,6 +7,13 @@ import {
   toggleActivityType,
   type ActivityType,
 } from "../services/activityService";
+import {
+  fetchDealerUsers,
+  createDealerUser,
+  toggleDealerActive,
+  adminResetDealerPassword,
+  type DealerAccount,
+} from "../services/dealerAuthService";
 import type { UserProfile } from "../types/user";
 import "./AdminUsersPage.css";
 
@@ -52,9 +59,28 @@ export default function AdminUsersPage() {
   const [actError,      setActError]      = useState<string | null>(null);
   const [actSuccess,    setActSuccess]    = useState<string | null>(null);
 
-  const [tab, setTab] = useState<"users" | "activities">("users");
+  // ── Dealer accounts state ───────────────────────────────────────────────────
+  const [dealers,        setDealers]        = useState<DealerAccount[]>([]);
+  const [dealersLoading,  setDealersLoading] = useState(true);
+  const [dealerError,    setDealerError]    = useState<string | null>(null);
+  const [dealerSuccess,  setDealerSuccess]  = useState<string | null>(null);
+  const [dealerSaving,   setDealerSaving]   = useState(false);
+  const [showDealerForm, setShowDealerForm] = useState(false);
+  const [dealerForm, setDealerForm] = useState({
+    email: "", password: "", displayName: "", dealerCode: "", dealerName: "", phoneNumber: "",
+  });
 
-  useEffect(() => { loadUsers(); loadActivities(); }, []);
+  // ── Reset password modal state ──────────────────────────────────────────────
+  const [resetTargetId,   setResetTargetId]   = useState<number | null>(null);
+  const [resetTargetName, setResetTargetName] = useState("");
+  const [resetPassword,   setResetPassword]   = useState("");
+  const [resetConfirm,    setResetConfirm]    = useState("");
+  const [resetSaving,     setResetSaving]     = useState(false);
+  const [resetError,      setResetError]      = useState<string | null>(null);
+
+  const [tab, setTab] = useState<"users" | "activities" | "dealers">("users");
+
+  useEffect(() => { loadUsers(); loadActivities(); loadDealers(); }, []);
 
   const loadUsers = async () => {
     setLoading(true); setError(null);
@@ -68,6 +94,13 @@ export default function AdminUsersPage() {
     try { setActivityTypes(await fetchAllActivityTypes(instance)); }
     catch { /* silent */ }
     finally { setActLoading(false); }
+  };
+
+  const loadDealers = async () => {
+    setDealersLoading(true); setDealerError(null);
+    try { setDealers(await fetchDealerUsers(instance)); }
+    catch (e) { setDealerError(e instanceof Error ? e.message : "Failed to load dealer accounts."); }
+    finally { setDealersLoading(false); }
   };
 
   const startEdit = (u: UserProfile) => {
@@ -121,11 +154,114 @@ export default function AdminUsersPage() {
     }
   };
 
+  // ── Dealer account handlers ─────────────────────────────────────────────────
+  const handleDealerFormChange = (key: keyof typeof dealerForm, value: string) => {
+    setDealerForm((f) => ({ ...f, [key]: value }));
+  };
+
+  const resetDealerForm = () => {
+    setDealerForm({ email: "", password: "", displayName: "", dealerCode: "", dealerName: "", phoneNumber: "" });
+    setShowDealerForm(false);
+  };
+
+  const handleCreateDealer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDealerError(null); setDealerSuccess(null);
+
+    if (!dealerForm.email.trim() || !dealerForm.password.trim() || !dealerForm.displayName.trim()) {
+      setDealerError("Email, password, and display name are required.");
+      return;
+    }
+    if (dealerForm.password.length < 8) {
+      setDealerError("Password must be at least 8 characters.");
+      return;
+    }
+
+    setDealerSaving(true);
+    try {
+      const created = await createDealerUser(
+        {
+          email: dealerForm.email.trim(),
+          password: dealerForm.password,
+          displayName: dealerForm.displayName.trim(),
+          dealerCode: dealerForm.dealerCode.trim(),
+          dealerName: dealerForm.dealerName.trim(),
+          phoneNumber: dealerForm.phoneNumber.trim() || undefined,
+        },
+        instance,
+      );
+      setDealers((prev) => [...prev, created as DealerAccount]);
+      setDealerSuccess(`Dealer account "${created.displayName}" created successfully.`);
+      resetDealerForm();
+      setTimeout(() => setDealerSuccess(null), 4000);
+    } catch (e) {
+      setDealerError(e instanceof Error ? e.message : "Failed to create dealer account.");
+    } finally {
+      setDealerSaving(false);
+    }
+  };
+
+  const handleToggleDealer = async (id: number) => {
+    try {
+      const result = await toggleDealerActive(id, instance);
+      setDealers((prev) => prev.map((d) => d.id === id ? { ...d, isActive: result.isActive } : d));
+    } catch (e) {
+      setDealerError(e instanceof Error ? e.message : "Failed to update dealer status.");
+    }
+  };
+
+  // ── Reset password handlers ─────────────────────────────────────────────────
+  const openResetModal = (id: number, name: string) => {
+    setResetTargetId(id);
+    setResetTargetName(name);
+    setResetPassword("");
+    setResetConfirm("");
+    setResetError(null);
+  };
+
+  const closeResetModal = () => {
+    setResetTargetId(null);
+    setResetTargetName("");
+    setResetPassword("");
+    setResetConfirm("");
+    setResetError(null);
+  };
+
+  const handleResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResetError(null);
+
+    if (resetPassword.length < 8) {
+      setResetError("Password must be at least 8 characters.");
+      return;
+    }
+    if (resetPassword !== resetConfirm) {
+      setResetError("Passwords do not match.");
+      return;
+    }
+    if (resetTargetId === null) return;
+
+    setResetSaving(true);
+    try {
+      await adminResetDealerPassword(resetTargetId, resetPassword, instance);
+      setDealerSuccess(`Password reset successfully for ${resetTargetName}.`);
+      setTimeout(() => setDealerSuccess(null), 4000);
+      closeResetModal();
+    } catch (e) {
+      setResetError(e instanceof Error ? e.message : "Failed to reset password.");
+    } finally {
+      setResetSaving(false);
+    }
+  };
+
+  const fmtDate = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+
   return (
     <div className="admin-users-page">
       <div className="admin-users-head">
         <h1>Admin Settings</h1>
-        <p>Manage users and activity types for the BTL proposal system.</p>
+        <p>Manage users, dealer accounts, and activity types for the BTL proposal system.</p>
       </div>
 
       {/* Tabs */}
@@ -133,6 +269,10 @@ export default function AdminUsersPage() {
         <button className={`admin-tab ${tab === "users" ? "admin-tab--active" : ""}`}
           onClick={() => setTab("users")}>
           👥 Users
+        </button>
+        <button className={`admin-tab ${tab === "dealers" ? "admin-tab--active" : ""}`}
+          onClick={() => setTab("dealers")}>
+          🏪 Dealer Accounts
         </button>
         <button className={`admin-tab ${tab === "activities" ? "admin-tab--active" : ""}`}
           onClick={() => setTab("activities")}>
@@ -257,7 +397,131 @@ export default function AdminUsersPage() {
         </>
       )}
 
-      {/* ── TAB 2 — Activity Types ── */}
+      {/* ── TAB 2 — Dealer Accounts ── */}
+      {tab === "dealers" && (
+        <div className="admin-act-section">
+          {dealerError   && <div className="admin-error">{dealerError}</div>}
+          {dealerSuccess && <div className="admin-success">{dealerSuccess}</div>}
+
+          <div className="admin-dealer-toolbar">
+            <button className="admin-save-btn" onClick={() => setShowDealerForm((v) => !v)}>
+              {showDealerForm ? "✕ Cancel" : "+ Create Dealer Login"}
+            </button>
+          </div>
+
+          {showDealerForm && (
+            <form className="admin-dealer-form" onSubmit={handleCreateDealer}>
+              <div className="admin-dealer-form-grid">
+                <div className="admin-dealer-field">
+                  <label>Email *</label>
+                  <input className="admin-input" type="email" required
+                    placeholder="dealer@example.com"
+                    value={dealerForm.email}
+                    onChange={(e) => handleDealerFormChange("email", e.target.value)} />
+                </div>
+                <div className="admin-dealer-field">
+                  <label>Password *</label>
+                  <input className="admin-input" type="password" required minLength={8}
+                    placeholder="Min. 8 characters"
+                    value={dealerForm.password}
+                    onChange={(e) => handleDealerFormChange("password", e.target.value)} />
+                </div>
+                <div className="admin-dealer-field">
+                  <label>Display Name *</label>
+                  <input className="admin-input" required
+                    placeholder="Contact person name"
+                    value={dealerForm.displayName}
+                    onChange={(e) => handleDealerFormChange("displayName", e.target.value)} />
+                </div>
+                <div className="admin-dealer-field">
+                  <label>Dealer Code</label>
+                  <input className="admin-input"
+                    placeholder="e.g. D00123"
+                    value={dealerForm.dealerCode}
+                    onChange={(e) => handleDealerFormChange("dealerCode", e.target.value)} />
+                </div>
+                <div className="admin-dealer-field">
+                  <label>Dealer Name</label>
+                  <input className="admin-input"
+                    placeholder="Dealership business name"
+                    value={dealerForm.dealerName}
+                    onChange={(e) => handleDealerFormChange("dealerName", e.target.value)} />
+                </div>
+                <div className="admin-dealer-field">
+                  <label>Phone</label>
+                  <input className="admin-input" maxLength={10}
+                    placeholder="10-digit mobile"
+                    value={dealerForm.phoneNumber}
+                    onChange={(e) => handleDealerFormChange("phoneNumber", e.target.value.replace(/\D/g, ""))} />
+                </div>
+              </div>
+              <div className="admin-dealer-form-actions">
+                <button className="admin-save-btn" type="submit" disabled={dealerSaving}>
+                  {dealerSaving ? "Creating…" : "Create Account"}
+                </button>
+                <button className="admin-cancel-btn" type="button" onClick={resetDealerForm}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
+          <div className="admin-users-table-wrap">
+            <table className="admin-users-table">
+              <thead>
+                <tr>
+                  <th>Name</th><th>Email</th><th>Dealer Code</th>
+                  <th>Dealer Name</th><th>Phone</th><th>Last Login</th>
+                  <th>Active</th><th style={{ width: 190 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {dealersLoading ? (
+                  <TableSkeleton rows={5} cols={8} />
+                ) : dealers.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="admin-empty-cell">
+                      No dealer accounts yet. Create one above.
+                    </td>
+                  </tr>
+                ) : (
+                  dealers.map((d) => (
+                    <tr key={d.id}>
+                      <td><span className="admin-user-name">{d.displayName}</span></td>
+                      <td className="admin-readonly">{d.email}</td>
+                      <td className="admin-cell-text">{d.dealerCode ?? "—"}</td>
+                      <td className="admin-cell-text">{d.dealerName ?? "—"}</td>
+                      <td className="admin-cell-text">{d.phoneNumber ?? "—"}</td>
+                      <td className="admin-readonly">{fmtDate(d.lastLoginAt)}</td>
+                      <td>
+                        <span className={`admin-status-pill ${d.isActive ? "admin-status-pill--active" : "admin-status-pill--inactive"}`}>
+                          <span className="admin-status-dot" />
+                          {d.isActive ? "Active" : "Inactive"}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="admin-row-actions">
+                          <button
+                            className={d.isActive ? "admin-cancel-btn" : "admin-save-btn"}
+                            onClick={() => handleToggleDealer(d.id)}>
+                            {d.isActive ? "Deactivate" : "Activate"}
+                          </button>
+                          <button className="admin-reset-btn"
+                            onClick={() => openResetModal(d.id, d.displayName)}>
+                            🔑 Reset
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── TAB 3 — Activity Types ── */}
       {tab === "activities" && (
         <div className="admin-act-section">
           {actError   && <div className="admin-error">{actError}</div>}
@@ -318,6 +582,46 @@ export default function AdminUsersPage() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Reset Password Modal ── */}
+      {resetTargetId !== null && (
+        <div className="admin-modal-overlay" onClick={closeResetModal}>
+          <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="admin-modal-head">
+              <h3>Reset Password</h3>
+              <button className="admin-modal-close" onClick={closeResetModal}>✕</button>
+            </div>
+            <p className="admin-modal-sub">
+              Set a new password for <strong>{resetTargetName}</strong>.
+            </p>
+            <form onSubmit={handleResetSubmit} className="admin-modal-form">
+              {resetError && <div className="admin-error">{resetError}</div>}
+              <div className="admin-dealer-field">
+                <label>New Password</label>
+                <input className="admin-input" type="password" required minLength={8}
+                  placeholder="Min. 8 characters"
+                  value={resetPassword}
+                  onChange={(e) => setResetPassword(e.target.value)} />
+              </div>
+              <div className="admin-dealer-field">
+                <label>Confirm Password</label>
+                <input className="admin-input" type="password" required minLength={8}
+                  placeholder="Re-enter password"
+                  value={resetConfirm}
+                  onChange={(e) => setResetConfirm(e.target.value)} />
+              </div>
+              <div className="admin-modal-actions">
+                <button className="admin-save-btn" type="submit" disabled={resetSaving}>
+                  {resetSaving ? "Resetting…" : "Reset Password"}
+                </button>
+                <button className="admin-cancel-btn" type="button" onClick={closeResetModal}>
+                  Cancel
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
