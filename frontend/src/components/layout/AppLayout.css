@@ -1,71 +1,54 @@
-/* frontend\src\components\layout\AppLayout.css */
-/* ─── App Layout ─────────────────────────────────────────────────────────── */
+/* ─── AppLayout.css ──────────────────────────────────────────────────────── */
+
+/* Root layout — sidebar + body side by side */
 .app-layout {
   display: flex;
   min-height: 100vh;
   background: #f1f5f9;
 }
 
-/* ─── Body (right of sidebar) ────────────────────────────────────────────── */
+/* ── Body (right of sidebar) ────────────────────────────────────────────── */
 .app-layout-body {
   flex: 1;
+  min-width: 0;               /* ← critical: prevents content blowing past flex parent */
   display: flex;
   flex-direction: column;
-  min-width: 0;
-  /* Smooth transition when sidebar collapses */
   transition: margin-left 0.22s ease;
+  overflow: hidden;
 }
 
-/* ─── Content area ───────────────────────────────────────────────────────── */
+/* ── Main content area ──────────────────────────────────────────────────── */
 .app-layout-content {
   flex: 1;
-  padding: 24px 28px;
-  min-width: 0;
+  overflow-y: auto;
   overflow-x: hidden;
+  padding: 0;
 }
 
-/* ──────────────────────────────────────────────────────
-   RESPONSIVE — Tablet (≤ 1024px)
-────────────────────────────────────────────────────── */
-@media (max-width: 1024px) {
-  .app-layout-content {
-    padding: 20px 20px;
+/* ══════════════════════════════════════════════════════
+   Desktop — sidebar width sync with Sidebar.tsx widths:
+   expanded = 240px, collapsed = 68px
+══════════════════════════════════════════════════════ */
+@media (min-width: 769px) {
+  /* Sidebar sits in the flex row normally */
+  .app-layout .sb {
+    position: relative;       /* NOT fixed on desktop */
+    flex-shrink: 0;
   }
 }
 
-/* ──────────────────────────────────────────────────────
-   RESPONSIVE — Mobile (≤ 768px)
-   Sidebar becomes a fixed overlay drawer.
-   The body takes full width.
-────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════
+   Mobile (≤ 768px) — sidebar is fixed, body takes full width
+══════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
   .app-layout {
-    /* Body takes full width — sidebar is fixed overlay */
-    flex-direction: column;
+    display: block;           /* stack layout — body always full width */
   }
 
   .app-layout-body {
     width: 100%;
     margin-left: 0 !important;
-    transition: none;
   }
 
-  .app-layout-content {
-    padding: 14px 14px 48px;
-  }
-
-  /* Prevent content scroll when mobile sidebar is open */
-  .app-layout--mobile-open .app-layout-body {
-    overflow: hidden;
-    max-height: 100vh;
-  }
-}
-
-/* ──────────────────────────────────────────────────────
-   RESPONSIVE — Small mobile (≤ 480px)
-────────────────────────────────────────────────────── */
-@media (max-width: 480px) {
-  .app-layout-content {
-    padding: 10px 10px 40px;
-  }
+  /* Sidebar is fixed/absolute (handled in Sidebar.css already) */
 }

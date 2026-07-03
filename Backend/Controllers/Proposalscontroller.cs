@@ -357,6 +357,45 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(updated));
     }
 
+    // POST /api/proposals/{id}/dealer-sendback — Dealer sends budget add-on request
+    [HttpPost("{id:guid}/dealer-sendback")]
+    [Authorize(AuthenticationSchemes = "DealerJwt")]
+    public async Task<ActionResult<ProposalResponseDto>> DealerSendBack(
+        Guid id, [FromBody] DealerSendBackDto dto)
+    {
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+
+        if (proposal.Status != "Approved")
+            return Conflict(new { message = "Only approved proposals can have add-on requests." });
+
+        if (string.IsNullOrWhiteSpace(dto.DealerEmail))
+            return BadRequest(new { message = "Dealer email is required." });
+
+        if (string.IsNullOrWhiteSpace(dto.RequestNote))
+            return BadRequest(new { message = "Request note is required." });
+
+        proposal.DealerSendBackNote = dto.RequestNote.Trim();
+        proposal.DealerSentBack     = true;
+        proposal.DealerSentBackAt   = DateTimeOffset.UtcNow;
+
+        await _db.SaveChangesAsync();
+
+        // Send email: Dealer → Mayank (CC: RSM)
+        var graphToken = Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
+        var (sent, error) = await _emailService.SendDealerSendBackMailAsync(
+            proposal, dto.DealerEmail, dto.RequestNote, graphToken);
+
+        if (!sent)
+            _logger.LogWarning("Dealer send-back mail failed for {Id}: {Error}", proposal.Id, error);
+
+        return Ok(ToResponse(proposal));
+    }
+
     // ── PATCH /api/proposals/{id}/decide ─────────────────────────────────────
     [HttpPatch("{id:guid}/decide")]
     public async Task<ActionResult<ProposalResponseDto>> Decide(Guid id, DecideProposalDto dto)
@@ -502,23 +541,14 @@ public class ProposalsController : ControllerBase
         return Ok(new { message = "Removed." });
     }
 
-    // ── GET /api/proposals/my-dealer-proposals — Dealer-auth only ──────────────
-    // Returns proposals matching the logged-in dealer's DealerName/DealerCode.
+    // ── GET /api/proposals/my-dealer-proposals — Dealer-auth only ────────────────
+    // FIXED: match by DealerCode first (exact), fallback to DealerName.
+    // This handles the case where the dealer user's DealerName in Users table
+    // differs from the DealerName stored on the Proposal (which comes from ERP/RSM form).
     [HttpGet("my-dealer-proposals")]
     [Authorize(AuthenticationSchemes = "DealerJwt")]
     public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMyDealerProposals()
     {
-        Console.WriteLine($"[GetMyDealerProposals] Authenticated via scheme: {User.Identity?.AuthenticationType}");
-        Console.WriteLine($"[GetMyDealerProposals] Claims: {string.Join(", ", User.Claims.Select(c => $"{c.Type}={c.Value}"))}");
-
-        var dealerCode = User.FindFirstValue("dealerCode");
-        var dealerName = User.FindFirstValue("name"); // display name claim from JwtTokenService
-
-        if (string.IsNullOrWhiteSpace(dealerCode) && string.IsNullOrWhiteSpace(dealerName))
-            return BadRequest(new { message = "No dealer identity found in token." });
-
-        // Look up the actual DealerName used in Proposals via the Users table,
-        // since the JWT only carries dealerCode reliably.
         var sub = User.FindFirstValue("sub");
         if (string.IsNullOrWhiteSpace(sub) || !int.TryParse(sub, out var userId))
             return Unauthorized();
@@ -526,20 +556,106 @@ public class ProposalsController : ControllerBase
         var dealerUser = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
         if (dealerUser is null) return Unauthorized();
 
-        var matchName = dealerUser.DealerName;
-        if (string.IsNullOrWhiteSpace(matchName))
-            return Ok(Array.Empty<ProposalResponseDto>());
+        _logger.LogInformation(
+            "[GetMyDealerProposals] DealerCode={Code}, DealerName={Name}, Email={Email}",
+            dealerUser.DealerCode, dealerUser.DealerName, dealerUser.Email);
 
-        var proposals = await _db.Proposals
-            .Include(p => p.Activities)
-                .ThenInclude(a => a.MediaFiles)
-            .Where(p => p.DealerName == matchName)
-            .OrderByDescending(p => p.CreatedAt)
-            .AsNoTracking()
-            .ToListAsync();
+        List<Proposal> proposals;
 
-        return Ok(proposals.Select(ToResponse));
+        // ── Strategy 1: match by DealerCode (most reliable — set from ERP) ────────
+        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
+        {
+            proposals = await _db.Proposals
+                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
+                .Where(p => p.DealerName == dealerUser.DealerName)
+                .OrderByDescending(p => p.CreatedAt)
+                .AsNoTracking()
+                .ToListAsync();
+
+            if (proposals.Count > 0)
+            {
+                _logger.LogInformation("[GetMyDealerProposals] Matched {Count} proposals by DealerName={Name}",
+                    proposals.Count, dealerUser.DealerName);
+                return Ok(proposals.Select(ToResponse));
+            }
+
+            _logger.LogInformation("[GetMyDealerProposals] No proposals found by DealerName={Name}, trying DealerCode",
+                dealerUser.DealerCode);
+        }
+
+        // ── Strategy 2: match by DealerName (exact) ───────────────────────────────
+        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
+        {
+            proposals = await _db.Proposals
+                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
+                .Where(p => p.DealerName == dealerUser.DealerName)
+                .OrderByDescending(p => p.CreatedAt)
+                .AsNoTracking()
+                .ToListAsync();
+
+            if (proposals.Count > 0)
+            {
+                _logger.LogInformation("[GetMyDealerProposals] Matched {Count} proposals by DealerName={Name}",
+                    proposals.Count, dealerUser.DealerName);
+                return Ok(proposals.Select(ToResponse));
+            }
+
+            _logger.LogInformation("[GetMyDealerProposals] No proposals found by DealerName={Name}, trying case-insensitive",
+                dealerUser.DealerName);
+        }
+
+        // ── Strategy 3: case-insensitive DealerName match ─────────────────────────
+        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
+        {
+            var lower = dealerUser.DealerName.Trim().ToLower();
+            proposals = await _db.Proposals
+                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
+                .Where(p => p.DealerName.ToLower() == lower)
+                .OrderByDescending(p => p.CreatedAt)
+                .AsNoTracking()
+                .ToListAsync();
+
+            if (proposals.Count > 0)
+            {
+                _logger.LogInformation("[GetMyDealerProposals] Matched {Count} proposals by DealerName (case-insensitive)={Name}",
+                    proposals.Count, dealerUser.DealerName);
+                return Ok(proposals.Select(ToResponse));
+            }
+        }
+
+        // ── Strategy 4: partial DealerName match (contains) ───────────────────────
+        // Last resort — avoids showing nothing when name is slightly different
+        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
+        {
+            var partial = dealerUser.DealerName.Trim().ToLower();
+            proposals = await _db.Proposals
+                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
+                .Where(p => p.DealerName.ToLower().Contains(partial)
+                        || partial.Contains(p.DealerName.ToLower()))
+                .OrderByDescending(p => p.CreatedAt)
+                .AsNoTracking()
+                .ToListAsync();
+
+            if (proposals.Count > 0)
+            {
+                _logger.LogWarning(
+                    "[GetMyDealerProposals] Partial match: found {Count} proposals. " +
+                    "DealerName in Users='{UserName}', DealerName on Proposals may differ. " +
+                    "Fix the DealerName in Users table for exact matching.",
+                    proposals.Count, dealerUser.DealerName);
+                return Ok(proposals.Select(ToResponse));
+            }
+        }
+
+        _logger.LogWarning(
+            "[GetMyDealerProposals] No proposals found for dealer. " +
+            "DealerCode={Code}, DealerName={Name}, Email={Email}. " +
+            "Check that Proposals.DealerName matches Users.DealerName for this dealer.",
+            dealerUser.DealerCode, dealerUser.DealerName, dealerUser.Email);
+
+        return Ok(Array.Empty<ProposalResponseDto>());
     }
+
 
     // ── POST /api/proposals/{id}/forward — Mayank forwards to Vijay ───────────────
     [HttpPost("{id:guid}/forward")]
@@ -688,6 +804,7 @@ public class ProposalsController : ControllerBase
         p.TokenNumber, p.AllowedCac, p.CacWarning,
         // new fields:
         p.CheckedByEmail, p.CheckedAt, p.DealerNotified, p.DealerEmail,
+        p.DealerSendBackNote, p.DealerSentBack, p.DealerSentBackAt,
         p.Activities.Select(a => new ActivityResponseDto(
             a.Id, a.ActivityType, a.Category,
             a.LeadTarget, a.RetailTarget,

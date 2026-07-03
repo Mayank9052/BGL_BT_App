@@ -35,7 +35,7 @@ export default function DealerNavbar({ dealer, onMenuClick, onLogout }: DealerNa
 
         <div className="app-navbar-brand">
           <img src="/BGauss_Logo.png" alt="BGauss" className="app-navbar-logo" />
-          <span className="app-navbar-brand-text">BGauss Portal</span>
+          <span className="app-navbar-brand-text">BTL Portal</span>
         </div>
       </div>
 

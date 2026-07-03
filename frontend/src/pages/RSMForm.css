@@ -11,6 +11,37 @@
   color: #0a2540;
 }
 
+/* BGauss total cell — blue accent */
+.rsm-total-cell--bgauss {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+.rsm-total-value--bgauss {
+  color: #1e40af;
+  font-weight: 700;
+}
+
+/* ── Add these to RSMForm.css ─────────────────────────────────────────────── */
+
+/* BGauss total cell — blue accent */
+.rsm-total-cell--bgauss {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+.rsm-total-value--bgauss {
+  color: #1e40af;
+  font-weight: 700;
+}
+
+/* ── Add these to ApproverDashboard.css ──────────────────────────────────── */
+
+/* Selected row highlight for bulk approve */
+.ap-row--selected {
+  background: #f0fdf4 !important;
+  outline: 2px solid #16a34a;
+  outline-offset: -2px;
+}
+
 /* ─── Excel import alert — unknown activity types ────────────────────────── */
 .rsm-xlsx-alert {
   background: #fef9c3;

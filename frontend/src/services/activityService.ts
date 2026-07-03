@@ -1,10 +1,12 @@
+// src/services/activityService.ts
 import { IPublicClientApplication } from "@azure/msal-browser";
 import { apiRequest, API_BASE_URL } from "../authConfig";
 
 export interface ActivityType {
-  id: number;
+  id:           number;
   activityName: string;
-  isActive: boolean;
+  activityType: "ATL" | "BTL";
+  isActive:     boolean;
 }
 
 async function getToken(instance: IPublicClientApplication): Promise<string> {
@@ -14,6 +16,7 @@ async function getToken(instance: IPublicClientApplication): Promise<string> {
   return result.accessToken;
 }
 
+/** Active activity types for RSM form dropdown */
 export async function fetchActivityTypes(
   instance: IPublicClientApplication
 ): Promise<ActivityType[]> {
@@ -25,6 +28,7 @@ export async function fetchActivityTypes(
   return res.json();
 }
 
+/** All activity types including inactive — admin view */
 export async function fetchAllActivityTypes(
   instance: IPublicClientApplication
 ): Promise<ActivityType[]> {
@@ -36,33 +40,36 @@ export async function fetchAllActivityTypes(
   return res.json();
 }
 
+/** Create a new activity type — requires activityType: "ATL" | "BTL" */
 export async function createActivityType(
-  name: string,
+  activityName: string,
+  activityType: "ATL" | "BTL",
   instance: IPublicClientApplication
 ): Promise<ActivityType> {
   const token = await getToken(instance);
   const res = await fetch(`${API_BASE_URL}/api/activity-types`, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ activityName: name }),
+    body:    JSON.stringify({ activityName, activityType }),
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Failed to create activity type (${res.status})`);
+    const err = await res.json().catch(() => ({})) as any;
+    throw new Error(err.message ?? `Failed to create activity type (${res.status})`);
   }
   return res.json();
 }
 
+/** Toggle active/inactive */
 export async function toggleActivityType(
   id: number,
   isActive: boolean,
   instance: IPublicClientApplication
 ): Promise<ActivityType> {
   const token = await getToken(instance);
-  const res = await fetch(`${API_BASE_URL}/api/activity-types/${id}`, {
-    method: "PATCH",
+  const res = await fetch(`${API_BASE_URL}/api/activity-types/${id}/toggle`, {
+    method:  "PATCH",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ isActive }),
+    body:    JSON.stringify({ isActive }),
   });
   if (!res.ok) throw new Error(`Failed to update activity type (${res.status})`);
   return res.json();

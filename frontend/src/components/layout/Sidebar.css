@@ -1,4 +1,4 @@
-/* ─── Sidebar ────────────────────────────────────────────────────────────── */
+/* ─── frontend\src\components\layout\Sidebar.css Sidebar ────────────────────────────────────────────────────────────── */
 .sb {
   width: 240px;
   flex-shrink: 0;
@@ -10,7 +10,9 @@
   position: relative;
   transition: width 0.22s ease;
   overflow: hidden;
-  min-height: 100vh;
+  /* ↓ change these two lines */
+  min-height: 100%;        /* stretch with flex parent, not just viewport */
+  align-self: stretch;     /* fill full height of the flex row */
   z-index: 300;
 }
 
@@ -313,6 +315,56 @@
     width: 260px !important;
     padding: 16px 12px;
   }
+
+  /* Hover highlight on collapsed sidebar — shows it's clickable */
+.sb--col:hover {
+  background: #111f33;
+}
+
+/* Small expand hint icon shown in collapsed state */
+.sb-expand-hint {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 0 0 10px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  color: #4d6070;
+  font-size: 14px;
+}
+
+.sb--col:hover .sb-expand-hint {
+  opacity: 1;
+}
+
+/* Subtle pulse animation on the expand hint to guide users */
+.sb--col:hover .sb-expand-hint i {
+  animation: sb-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes sb-pulse {
+  0%, 100% { transform: translateX(0);   opacity: 0.5; }
+  50%       { transform: translateX(3px); opacity: 1;   }
+}
+
+  /* Collapsed sidebar nav links — show a faint hover glow to hint clickability */
+  .sb--col .sb-link:hover {
+    background: rgba(255,255,255,0.09);
+    box-shadow: inset 2px 0 0 #16a34a;
+  }
+
+  /* Cursor changes to indicate the whole sidebar is clickable when collapsed */
+  .sb--col {
+    cursor: pointer;
+  }
+
+  /* But the individual links/buttons still get their own cursor */
+  .sb--col .sb-link,
+  .sb--col .sb-logout,
+  .sb--col .sb-toggle {
+    cursor: pointer;
+  }
+
 
   /* Show sidebar when mobileOpen */
   .sb--mobile-open {

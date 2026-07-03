@@ -69,6 +69,11 @@ export interface ProposalResponse {
   activities:             ActivityResponse[];
 }
 
+export interface DealerSendBackPayload {
+  dealerEmail: string;
+  requestNote: string;
+}
+
 interface ActivityPayload {
   activityType:     string;
   category:         string | null;
@@ -238,6 +243,27 @@ export async function fetchMyProposals(
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw new Error(`Failed to load your proposals (${res.status})`);
+  return res.json();
+}
+
+/** Dealer sends a budget add-on request back to Mayank */
+export async function dealerSendBack(
+  id: string,
+  payload: DealerSendBackPayload,
+): Promise<ProposalResponse> {
+  const token = getDealerToken();
+  if (!token) throw new Error("Not signed in as a dealer.");
+
+  const res = await fetch(`${API_BASE_URL}/api/proposals/${id}/dealer-sendback`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization:  `Bearer ${token}`,
+      // Dealer JWT route — no Graph token needed for this action
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
   return res.json();
 }
 

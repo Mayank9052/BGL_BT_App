@@ -68,6 +68,12 @@ public class EmailService : IEmailService
             subject: BuildSubject("Resubmitted for Review", p),
             body:    BuildResubmissionBody(p));
     }
+    public Task<(bool Sent, string? Error)> SendDealerSendBackMailAsync(
+        Proposal p, string dealerEmail, string requestNote, string graphToken)
+    {
+        _logger.LogWarning("SendDealerSendBackMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
+        return Task.FromResult<(bool, string?)>((false, "SMTP not supported for dealer send-back. Use Graph."));
+    }
 
     // ── Step 4: Dealer notification — SMTP not supported ─────────────────────
     public Task<(bool Sent, string? Error)> SendDealerNotificationMailAsync(
