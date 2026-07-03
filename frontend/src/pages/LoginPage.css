@@ -1,35 +1,5 @@
-/* frontend\src\pages\LoginPage.css */
+/* frontend/src/pages/LoginPage.css */
 
-.login-forgot-link {
-  font-size: 0.78rem; color: #0078d4; text-decoration: none;
-  align-self: flex-end; margin-top: 2px;
-}
-.login-forgot-link:hover { text-decoration: underline; }
-.login-mode-toggle {
-  display: flex; gap: 6px; margin-bottom: 1.4rem;
-  background: #f1f5f9; border-radius: 8px; padding: 3px;
-}
-.login-mode-btn {
-  flex: 1; padding: 7px 0; border: none; background: none;
-  font-size: 0.85rem; font-weight: 600; color: #64748b;
-  border-radius: 6px; cursor: pointer; font-family: inherit;
-  transition: background 0.15s, color 0.15s;
-}
-.login-mode-btn--active { background: #fff; color: #0a2540; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-.login-dealer-form { display: flex; flex-direction: column; gap: 12px; }
-.login-dealer-field { display: flex; flex-direction: column; gap: 4px; }
-.login-dealer-field label { font-size: 0.78rem; font-weight: 600; color: #374151; }
-.login-dealer-field input {
-  border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 0.7rem 0.9rem;
-  font-size: 0.9rem; outline: none; font-family: inherit; transition: border-color 0.15s;
-}
-.login-dealer-field input:focus { border-color: #0078d4; }
-.btn-dealer { background: #166534; box-shadow: 0 2px 8px rgba(22,101,52,0.25); }
-.btn-dealer:hover:not(:disabled) { background: #14532d; box-shadow: 0 4px 14px rgba(22,101,52,0.35); }
-.login-dealer-error {
-  background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
-  border-radius: 7px; padding: 8px 12px; font-size: 0.8rem;
-}
 /* ─── Root ───────────────────────────────────────────────────────────────── */
 .login-root {
   display: flex;
@@ -59,19 +29,30 @@
   position: relative; z-index: 1; max-width: 420px; width: 100%;
 }
 
-/* Logo row */
+/* ── Logo on left (navy) panel — white version, no box ── */
 .login-logo {
-  display: flex; align-items: center; gap: 12px; margin-bottom: 2rem;
+  display: flex;
+  align-items: center;
+  margin-bottom: 2.5rem;
 }
 .login-logo-img {
-  height: 40px; width: auto; object-fit: contain;
-  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.2));
+  width: 300px;
+  max-width: 85%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+  /* transparent PNG on dark bg — no background, no border, no box */
+  background: transparent;
+  border: none;
+  padding: 0;
+  /* subtle drop shadow so white text pops on the gradient */
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,0.25));
 }
 .login-logo-text {
   font-size: 1.4rem; font-weight: 700; color: #fff; letter-spacing: -0.3px;
 }
 
-/* Headline */
+/* ── Headline + sub (hidden when logo replaces them) ── */
 .login-brand-headline {
   font-size: clamp(1.8rem, 3vw, 2.8rem);
   font-weight: 800; color: #fff; line-height: 1.15;
@@ -84,20 +65,43 @@
 
 /* Scooty image */
 .login-scooty-wrap {
-  margin-top: 2rem; display: flex; justify-content: center;
+  margin-top: 2.5rem; display: flex; justify-content: center;
 }
 .login-scooty-img {
-  width: 100%; max-width: 320px; height: auto; object-fit: contain;
+  width: 100%; max-width: 340px; height: auto; object-fit: contain;
   filter: drop-shadow(0 6px 20px rgba(0,0,0,0.3));
 }
 
 /* ─── Right card panel ───────────────────────────────────────────────────── */
 .login-card-panel {
-  flex: 0 0 420px;
-  display: flex; align-items: center; justify-content: center;
-  padding: 2rem;
+  flex: 0 0 440px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 2rem;
   background: #f8fafc;
 }
+
+/* Logo above card on right panel — navy/transparent version */
+.login-card-logo-top {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 18px;
+  width: 100%;
+  max-width: 380px;
+}
+.login-card-logo-img {
+  width: 210px;
+  max-width: 65%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
 .login-card {
   background: #ffffff;
   border-radius: 16px;
@@ -114,6 +118,22 @@
   margin: 0 0 0.35rem; letter-spacing: -0.3px;
 }
 .login-card-desc { color: #64748b; font-size: 0.88rem; margin: 0; }
+
+/* Mode toggle */
+.login-mode-toggle {
+  display: flex; gap: 6px; margin-bottom: 1.4rem;
+  background: #f1f5f9; border-radius: 8px; padding: 3px;
+}
+.login-mode-btn {
+  flex: 1; padding: 7px 0; border: none; background: none;
+  font-size: 0.85rem; font-weight: 600; color: #64748b;
+  border-radius: 6px; cursor: pointer; font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+.login-mode-btn--active {
+  background: #fff; color: #0a2540;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
 
 /* Microsoft button */
 .btn-microsoft {
@@ -148,12 +168,37 @@
   margin: 0; line-height: 1.5;
 }
 
+/* Dealer form */
+.login-dealer-form { display: flex; flex-direction: column; gap: 12px; }
+.login-dealer-field { display: flex; flex-direction: column; gap: 4px; }
+.login-dealer-field label { font-size: 0.78rem; font-weight: 600; color: #374151; }
+.login-dealer-field input {
+  border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 0.7rem 0.9rem;
+  font-size: 0.9rem; outline: none; font-family: inherit; transition: border-color 0.15s;
+}
+.login-dealer-field input:focus { border-color: #0078d4; }
+
+.login-forgot-link {
+  font-size: 0.78rem; color: #0078d4; text-decoration: none;
+  align-self: flex-end; margin-top: 2px;
+}
+.login-forgot-link:hover { text-decoration: underline; }
+
+.btn-dealer { background: #166534; box-shadow: 0 2px 8px rgba(22,101,52,0.25); }
+.btn-dealer:hover:not(:disabled) { background: #14532d; box-shadow: 0 4px 14px rgba(22,101,52,0.35); }
+
+.login-dealer-error {
+  background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+  border-radius: 7px; padding: 8px 12px; font-size: 0.8rem;
+}
+
 /* ══════════════════════════════════════════════════════
    RESPONSIVE — Tablet (≤ 960px)
 ══════════════════════════════════════════════════════ */
 @media (max-width: 960px) {
-  .login-card-panel { flex: 0 0 360px; }
+  .login-card-panel { flex: 0 0 380px; }
   .login-brand      { padding: 2.5rem; }
+  .login-logo-img   { width: 260px; }
 }
 
 /* ══════════════════════════════════════════════════════
@@ -174,9 +219,9 @@
     padding: 2rem 1.5rem 5rem;
     min-height: 260px;
   }
-
   .login-brand-inner  { max-width: 100%; }
-  .login-logo         { margin-bottom: 1.25rem; }
+  .login-logo         { margin-bottom: 1rem; }
+  .login-logo-img     { width: 220px; }
   .login-brand-headline { font-size: 1.9rem; }
   .login-brand-sub    { font-size: 0.88rem; margin-bottom: 0; }
 
@@ -187,14 +232,12 @@
     margin: 0;
     justify-content: flex-end;
   }
-  .login-scooty-img {
-    max-width: 200px;
-    opacity: 0.85;
-  }
+  .login-scooty-img { max-width: 200px; opacity: 0.85; }
 
   /* Card panel slides up over brand */
   .login-card-panel {
     flex: 1;
+    flex-direction: column;
     background: #f8fafc;
     border-radius: 24px 24px 0 0;
     margin-top: -28px;
@@ -205,7 +248,6 @@
     align-items: center;
     justify-content: flex-start;
   }
-
   /* Pull handle */
   .login-card-panel::before {
     content: '';
@@ -213,13 +255,11 @@
     width: 36px; height: 4px;
     background: #cbd5e1;
     border-radius: 2px;
-    margin: 0 auto 20px;
+    margin: 0 auto 16px;
   }
-
-  .login-card {
-    max-width: 100%;
-    box-shadow: 0 2px 16px rgba(0,0,0,0.07);
-  }
+  .login-card-logo-top { margin-bottom: 14px; }
+  .login-card-logo-img { width: 180px; }
+  .login-card { max-width: 100%; box-shadow: 0 2px 16px rgba(0,0,0,0.07); }
 }
 
 /* ══════════════════════════════════════════════════════
@@ -227,20 +267,24 @@
 ══════════════════════════════════════════════════════ */
 @media (max-width: 480px) {
   .login-brand          { padding: 1.5rem 1.25rem 4.5rem; min-height: 230px; }
+  .login-logo-img       { width: 190px; }
   .login-brand-headline { font-size: 1.65rem; }
   .login-brand-sub      { font-size: 0.83rem; }
   .login-scooty-img     { max-width: 160px; }
   .login-card           { padding: 1.75rem 1.5rem; }
   .login-card-title     { font-size: 1.4rem; }
+  .login-card-logo-img  { width: 160px; }
 }
 
 /* ══════════════════════════════════════════════════════
    RESPONSIVE — Very small (≤ 360px)
 ══════════════════════════════════════════════════════ */
 @media (max-width: 360px) {
+  .login-logo-img       { width: 170px; }
   .login-brand-headline { font-size: 1.45rem; }
   .login-scooty-img     { max-width: 130px; }
   .login-card           { padding: 1.5rem 1.25rem; }
   .login-card-title     { font-size: 1.25rem; }
   .btn-microsoft        { font-size: 0.88rem; padding: 0.75rem 1rem; }
+  .login-card-logo-img  { width: 140px; }
 }

@@ -75,12 +75,12 @@ export default function Sidebar({
 
         {/* ── Toggle button — stop propagation so clicking it doesn't
              double-trigger the parent wrapper's expand handler ── */}
-        <button
+        {/* <button
           className="sb-toggle sb-toggle--desktop"
           onClick={(e) => { e.stopPropagation(); onToggle(); }}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
           <i className={collapsed ? "ti ti-chevron-right" : "ti ti-chevron-left"} />
-        </button>
+        </button> */}
 
         <button className="sb-toggle sb-toggle--mobile"
           onClick={onMobileClose} aria-label="Close menu">
@@ -90,7 +90,7 @@ export default function Sidebar({
         {/* Brand */}
         <div className="sb-brand">
           <img src="/BGauss_Logo.png" alt="BGauss" className="sb-logo" />
-          {!collapsed && <span className="sb-brand-name">BTL</span>}
+          {!collapsed && <span className="sb-brand-name"></span>}
         </div>
 
         {/* Collapsed-state expand hint (small tooltip arrow) */}

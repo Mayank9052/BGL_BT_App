@@ -41,8 +41,8 @@ export default function Navbar({ user, onMenuClick, onBrandClick }: NavbarProps)
 
         {/* Brand */}
         <button className="app-navbar-brand" onClick={onBrandClick}>
-          <img src="/BGauss_Logo.png" alt="BGauss" className="app-navbar-logo" />
-          <span className="app-navbar-brand-text">BTL Portal</span>
+          <img src="/login/BGauss_Logo_transparent.png" alt="BGauss" className="app-navbar-logo" />
+          <span className="app-navbar-brand-text"></span>
         </button>
       </div>
 

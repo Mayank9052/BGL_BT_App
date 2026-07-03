@@ -32,8 +32,6 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
     setDealerLoading(true);
     try {
       await dealerLogin(email, password);
-      // Tell App.tsx that the dealer session in localStorage just changed —
-      // this triggers the state update that switches the rendered route tree.
       onDealerLogin?.();
       navigate("/dealer-dashboard", { replace: true });
     } catch (err) {
@@ -48,16 +46,14 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
       {/* Left panel – brand */}
       <div className="login-brand">
         <div className="login-brand-inner">
+          {/* Logo — white version on dark navy background, no background box */}
           <div className="login-logo">
-            <img src="/BGauss_Logo.png" alt="BGauss" className="login-logo-img" />
-            <span className="login-logo-text">BGauss</span>
+            <img
+              src="/BGauss_Logo.png"
+              alt="BGauss — Powered by BG IT — Below The Line"
+              className="login-logo-img"
+            />
           </div>
-          <h1 className="login-brand-headline">
-            Below The Line (BTL)
-          </h1>
-          <p className="login-brand-sub">
-            The internal operations portal for BGauss Auto.
-          </p>
           <div className="login-scooty-wrap">
             <img src="/login/Bg0-scooty.png" alt="BGauss scooter" className="login-scooty-img" />
           </div>
@@ -66,13 +62,21 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
 
       {/* Right panel – login card */}
       <div className="login-card-panel">
+        {/* Card logo — navy version (transparent bg) on white card */}
+        <div className="login-card-logo-top">
+          <img
+            src="/login/BGauss_Logo_transparent.png"
+            alt="BGauss"
+            className="login-card-logo-img"
+          />
+        </div>
         <div className="login-card">
           <div className="login-card-header">
             <h2 className="login-card-title">Welcome back</h2>
             <p className="login-card-desc">
               {mode === "staff"
-                ? <>Sign in with your <strong>bgauss.com</strong> Microsoft account</>
-                : <>Sign in with your dealer email and password</>}
+                ? <><span>Sign in with your </span><strong>bgauss.com</strong><span> Microsoft account</span></>
+                : <span>Sign in with your dealer email and password</span>}
             </p>
           </div>
 
@@ -85,7 +89,7 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
             <button
               className={`login-mode-btn ${mode === "dealer" ? "login-mode-btn--active" : ""}`}
               onClick={() => setMode("dealer")} type="button">
-              Dealer/Vender
+              Dealer / Vendor
             </button>
           </div>
 

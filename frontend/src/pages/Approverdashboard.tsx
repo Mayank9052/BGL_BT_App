@@ -524,13 +524,25 @@ export default function ApproverDashboard() {
         {!loading&&!fetchError&&(
           <>
             <div className={`ap-stats ap-stats--${isAdmin?"admin":"user"}`}>
-              <StatCard label="Total"          value={stats.total}     color="navy"/>
-              <StatCard label="Pending review" value={stats.pending}   color="amber"/>
-              <StatCard label="Approved"       value={stats.approved}  color="green"/>
-              <StatCard label="Rejected"       value={stats.rejected}  color="red"/>
+              <StatCard label="Total"          value={stats.total}     color="navy"
+                active={filterStatus==="All"}
+                onClick={()=>setFilterStatus("All")}/>
+              <StatCard label="Pending review" value={stats.pending}   color="amber"
+                active={filterStatus==="Pending"}
+                onClick={()=>setFilterStatus("Pending")}/>
+              <StatCard label="Approved"       value={stats.approved}  color="green"
+                active={filterStatus==="Approved"}
+                onClick={()=>setFilterStatus("Approved")}/>
+              <StatCard label="Rejected"       value={stats.rejected}  color="red"
+                active={filterStatus==="Rejected"}
+                onClick={()=>setFilterStatus("Rejected")}/>
               {isAdmin
-                ?<StatCard label="Approved budget" value={inr(stats.totalBudget)} color="navy"/>
-                :<StatCard label="Needs revision"  value={stats.needsRevision}    color="orange"/>}
+                ?<StatCard label="Approved budget" value={inr(stats.totalBudget)} color="navy"
+                    active={filterStatus==="Approved"}
+                    onClick={()=>setFilterStatus("Approved")}/>
+                :<StatCard label="Needs revision"  value={stats.needsRevision}    color="orange"
+                    active={filterStatus==="NeedsRevision"}
+                    onClick={()=>setFilterStatus("NeedsRevision")}/>}
             </div>
 
             <div className="ap-filters">
@@ -1498,11 +1510,20 @@ export default function ApproverDashboard() {
   );
 }
 
-function StatCard({ label, value, color }: { label:string; value:string|number; color:string }) {
+function StatCard({ label, value, color, onClick, active }: {
+  label:string; value:string|number; color:string;
+  onClick?:()=>void; active?:boolean;
+}) {
   return (
-    <div className="ap-stat">
+    <div
+      className={`ap-stat${onClick ? " ap-stat--clickable" : ""}${active ? " ap-stat--active" : ""}`}
+      onClick={onClick}
+      title={onClick ? `Filter by: ${label}` : undefined}
+      style={{ cursor: onClick ? "pointer" : "default" }}
+    >
       <span className={`ap-stat-val ap-${color}`}>{value}</span>
       <span className="ap-stat-lbl">{label}</span>
+      {active && <span className="ap-stat-active-dot"/>}
     </div>
   );
 }
