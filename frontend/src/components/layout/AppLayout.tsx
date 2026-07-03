@@ -1,6 +1,6 @@
 // src/components/layout/AppLayout.tsx
 import { useEffect, useState } from "react";
-import { Outlet, useNavigate } from "react-router-dom";
+import { Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useMsal } from "@azure/msal-react";
 import { useAuthStore } from "../../store/authStore";
 import Sidebar from "./Sidebar";
@@ -14,6 +14,7 @@ export default function AppLayout() {
   const { instance } = useMsal();
   const { user }     = useAuthStore();
   const navigate     = useNavigate();
+  const location     = useLocation();
 
   // Desktop: persisted collapsed state
   const [collapsed, setCollapsed] = useState(
@@ -28,7 +29,15 @@ export default function AppLayout() {
     localStorage.setItem(SIDEBAR_KEY, String(collapsed));
   }, [collapsed]);
 
-  // Close mobile sidebar on window resize to desktop
+  // Auto-collapse sidebar on every route change
+  useEffect(() => {
+    setCollapsed(true);
+    localStorage.setItem(SIDEBAR_KEY, "true");
+    // Also close mobile drawer on navigation
+    setMobileOpen(false);
+  }, [location.pathname]);
+
+  // Close mobile sidebar on resize to desktop
   useEffect(() => {
     const handler = () => {
       if (window.innerWidth > 768) setMobileOpen(false);
@@ -41,27 +50,40 @@ export default function AppLayout() {
     instance.logoutRedirect({ postLogoutRedirectUri: "/" }).catch(console.error);
   };
 
-  const isAdmin = user?.role === "Admin" || user?.role === "Manager";
+  const isAdmin       = user?.role === "Admin" || user?.role === "Manager";
   const isReportsUser = user?.email?.toLowerCase() === AUTHORIZED_REPORTS_EMAIL;
+
+  // Click anywhere on the collapsed sidebar to expand it
+  const handleSidebarClick = () => {
+    if (collapsed) {
+      setCollapsed(false);
+    }
+  };
 
   return (
     <div className={[
       "app-layout",
-      collapsed  ? "app-layout--collapsed"    : "",
-      mobileOpen ? "app-layout--mobile-open"  : "",
+      collapsed   ? "app-layout--collapsed"   : "",
+      mobileOpen  ? "app-layout--mobile-open" : "",
     ].filter(Boolean).join(" ")}>
 
-      <Sidebar
-        isAdmin={isAdmin}
-        isReportsUser={isReportsUser}
-        collapsed={collapsed}
-        mobileOpen={mobileOpen}
-        onToggle={() => setCollapsed((c) => !c)}
-        onMobileClose={() => setMobileOpen(false)}
-        onLogout={handleLogout}
-        userName={user?.displayName}
-        userRole={user?.role}
-      />
+      {/* Wrapper div catches clicks on collapsed sidebar to expand it */}
+      <div
+        onClick={handleSidebarClick}
+        style={{ cursor: collapsed ? "pointer" : "default" }}
+      >
+        <Sidebar
+          isAdmin={isAdmin}
+          isReportsUser={isReportsUser}
+          collapsed={collapsed}
+          mobileOpen={mobileOpen}
+          onToggle={() => setCollapsed((c) => !c)}
+          onMobileClose={() => setMobileOpen(false)}
+          onLogout={handleLogout}
+          userName={user?.displayName}
+          userRole={user?.role}
+        />
+      </div>
 
       <div className="app-layout-body">
         <Navbar

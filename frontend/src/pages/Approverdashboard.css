@@ -22,7 +22,11 @@
   color: #92400e;
   margin: 12px 0;
 }
-
+.ap-row--selected {
+  background: #f0fdf4 !important;
+  outline: 2px solid #16a34a;
+  outline-offset: -2px;
+}
 /* ─── Page header ────────────────────────────────────────────────────────── */
 .ap-page-header {
   display: flex; justify-content: space-between;

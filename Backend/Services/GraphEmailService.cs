@@ -70,6 +70,48 @@ public class GraphEmailService : IEmailService
             BuildDealerNotificationBody(p));
     }
 
+    public Task<(bool Sent, string? Error)> SendDealerSendBackMailAsync(
+        Proposal p, string dealerEmail, string requestNote, string graphToken)
+    {
+        // Dealer sends budget add-on request → Mayank  (CC: RSM)
+        return SendAsync(graphToken,
+            to:      _settings.ApproverEmail,
+            cc:      p.SubmittedBy,
+            subject: BuildSubject("Budget Add-On Request from Dealer", p),
+            body:    BuildDealerSendBackBody(p, dealerEmail, requestNote));
+    }
+
+    private string BuildDealerSendBackBody(Proposal p, string dealerEmail, string requestNote)
+    {
+        return Shell("#92400e", "Dealer Budget Add-On Request", p.TokenNumber ?? "",
+            $"""
+            <p style="margin:0 0 12px;font-size:13px;">Hi Mayank,<br/>
+              The dealer <strong>{p.DealerName}</strong> has reviewed the approved activity plan
+              and is requesting a budget addition. Details below.</p>
+
+            <div style="background:#fef9c3;border-left:3px solid #f59e0b;border-radius:4px;
+                        padding:10px 14px;margin-bottom:12px;font-size:13px;">
+              <strong>Dealer's Request:</strong><br/>
+              <span style="color:#78350f;white-space:pre-wrap;">{requestNote}</span>
+            </div>
+
+            {BuildProposalInfoTable(p)}
+            {BuildActivityTable(p)}
+
+            <div style="background:#fef2f2;border-left:3px solid #dc2626;border-radius:4px;
+                        padding:6px 10px;margin-bottom:10px;font-size:12px;color:#991b1b;">
+              <strong>Action Required</strong> — Please review this request and coordinate with the dealer
+              ({dealerEmail}) and RSM ({p.RsmName}, {p.SubmittedBy}).
+            </div>
+
+            <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">
+              Dealer contact: <strong>{p.DealerName}</strong>
+              (<a href="mailto:{dealerEmail}" style="color:#1e3a5f;">{dealerEmail}</a>)<br/>
+              RSM contact: {p.RsmName} ({p.SubmittedBy})
+            </p>
+            """);
+    }
+
     // ── Core send ─────────────────────────────────────────────────────────────
 
     private async Task<(bool Sent, string? Error)> SendAsync(

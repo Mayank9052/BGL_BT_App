@@ -12,6 +12,7 @@ public record UpdateProposalDto(
     string        Month,
     string        Eligibility,
     string        Remarks,
+    decimal  BGaussShare,  
     List<ActivityDto> Activities,
     decimal       TotalBudget,
     int           TotalLeadTarget,

@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace BGL_BT_App.Backend.Models;
 
@@ -19,7 +20,9 @@ public class ProposalActivity
     public DateOnly? EndDate         { get; set; }
     public decimal Budget            { get; set; }
     public decimal AdditionalBudget  { get; set; }   // was Incentive
-    public decimal BGaussShare       { get; set; } = 100m; // percentage
+
+    [JsonPropertyName("bgaussShare")]
+    public decimal  BGaussShare       { get; init; } = 100m;
     [MaxLength(1000)] public string? Remarks { get; set; }
 
     // Vendor

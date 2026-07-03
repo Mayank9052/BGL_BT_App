@@ -85,7 +85,7 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
             <button
               className={`login-mode-btn ${mode === "dealer" ? "login-mode-btn--active" : ""}`}
               onClick={() => setMode("dealer")} type="button">
-              Dealer
+              Dealer/Vender
             </button>
           </div>
 
