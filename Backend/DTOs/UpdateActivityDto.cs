@@ -1,11 +1,11 @@
 namespace BGL_BT_App.Backend.DTOs;
 
-public class CreateActivityDto
+public class UpdateActivityDto
 {
     public string  ActivityType     { get; set; } = string.Empty;
     public string? Category         { get; set; }
-    public string? Subcategory      { get; set; }   // ← FIXED (was missing)
-    public int     Qty              { get; set; } = 1; // ← FIXED (was missing)
+    public string? Subcategory      { get; set; }   // ← FIXED
+    public int     Qty              { get; set; } = 1; // ← FIXED
     public decimal? SalesPercent    { get; set; }   // ← NEW
 
     public int     LeadTarget       { get; set; }

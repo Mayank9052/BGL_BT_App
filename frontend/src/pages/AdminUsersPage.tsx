@@ -28,7 +28,6 @@ function TableSkeleton({ rows = 5, cols = 8 }: { rows?: number; cols?: number })
   return <>{Array.from({ length: rows }).map((_, i) => <SkeletonRow key={i} cols={cols}/>)}</>;
 }
 
-// ── ERP Dealer searchable dropdown ────────────────────────────────────────────
 function DealerSearchSelect({ dealers, loading, value, onChange }: {
   dealers: DealerOption[]; loading: boolean; value: string;
   onChange: (code: string, name: string) => void;
@@ -112,7 +111,6 @@ function DealerSearchSelect({ dealers, loading, value, onChange }: {
   );
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
 export default function AdminUsersPage() {
   const { instance } = useMsal();
 
@@ -123,16 +121,36 @@ export default function AdminUsersPage() {
   const [saving,    setSaving]    = useState(false);
   const [error,     setError]     = useState<string | null>(null);
 
-  // Activity types
-  const [activityTypes,    setActivityTypes]    = useState<ActivityType[]>([]);
-  const [actLoading,       setActLoading]       = useState(true);
-  const [newActivity,      setNewActivity]      = useState("");
-  const [newActivityType,  setNewActivityType]  = useState<"ATL" | "BTL">("BTL");
-  const [actSaving,        setActSaving]        = useState(false);
-  const [actError,         setActError]         = useState<string | null>(null);
-  const [actSuccess,       setActSuccess]       = useState<string | null>(null);
+  // ── Activity types ───────────────────────────────────────────────────────
+  const [activityTypes,   setActivityTypes]   = useState<ActivityType[]>([]);
+  const [actLoading,      setActLoading]      = useState(true);
+  const [actSaving,       setActSaving]       = useState(false);
+  const [actError,        setActError]        = useState<string | null>(null);
+  const [actSuccess,      setActSuccess]      = useState<string | null>(null);
 
-  // Dealer accounts
+  // Add form
+  const [newActivity,     setNewActivity]     = useState("");
+  const [newActivityType, setNewActivityType] = useState<"ATL"|"BTL">("BTL");
+  const [newSubcategory,  setNewSubcategory]  = useState("");
+  const [newMaxQty,       setNewMaxQty]       = useState("5");
+
+  // Edit modal for activity
+  const [editActId,       setEditActId]       = useState<number|null>(null);
+  const [editActName,     setEditActName]     = useState("");
+  const [editActType,     setEditActType]     = useState<"ATL"|"BTL">("BTL");
+  const [editActSub,      setEditActSub]      = useState("");
+  const [editActMaxQty,   setEditActMaxQty]   = useState("5");
+  const [editActSaving,   setEditActSaving]   = useState(false);
+  const [editActError,    setEditActError]    = useState<string|null>(null);
+
+  // Group by activityName
+  const groupedActivities = activityTypes.reduce((acc, a) => {
+    if (!acc[a.activityName]) acc[a.activityName] = [];
+    acc[a.activityName].push(a);
+    return acc;
+  }, {} as Record<string, ActivityType[]>);
+
+  // ── Dealer accounts ──────────────────────────────────────────────────────
   const [dealers,        setDealers]        = useState<DealerAccount[]>([]);
   const [dealersLoading, setDealersLoading] = useState(true);
   const [dealerError,    setDealerError]    = useState<string | null>(null);
@@ -154,14 +172,14 @@ export default function AdminUsersPage() {
   const [resetSaving,     setResetSaving]     = useState(false);
   const [resetError,      setResetError]      = useState<string | null>(null);
 
-  const [tab, setTab] = useState<"users" | "activities" | "dealers">("users");
+  const [tab, setTab] = useState<"users"|"activities"|"dealers">("users");
 
   useEffect(() => { loadUsers(); loadActivities(); loadDealers(); }, []);
 
   useEffect(() => {
     if (tab === "dealers" && erpDealers.length === 0 && !erpLoading) {
       setErpLoading(true);
-      fetchDealers(instance).then(setErpDealers).catch(() => {}).finally(() => setErpLoading(false));
+      fetchDealers(instance).then(setErpDealers).catch(()=>{}).finally(()=>setErpLoading(false));
     }
   }, [tab]);
 
@@ -199,28 +217,36 @@ export default function AdminUsersPage() {
       const updated = await updateUser(id, draft, instance);
       setUsers((list) => list.map((u) => u.id === id ? { ...u, ...updated,
         phoneNumber: updated.phoneNumber ?? draft.phoneNumber ?? u.phoneNumber,
-        firstName: updated.firstName ?? draft.firstName ?? u.firstName,
-        lastName: updated.lastName ?? draft.lastName ?? u.lastName,
-        department: updated.department ?? draft.department ?? u.department,
-        jobTitle: updated.jobTitle ?? draft.jobTitle ?? u.jobTitle,
-        role: updated.role ?? draft.role ?? u.role,
-        isActive: updated.isActive ?? draft.isActive ?? u.isActive,
+        firstName:   updated.firstName   ?? draft.firstName   ?? u.firstName,
+        lastName:    updated.lastName    ?? draft.lastName    ?? u.lastName,
+        department:  updated.department  ?? draft.department  ?? u.department,
+        jobTitle:    updated.jobTitle    ?? draft.jobTitle    ?? u.jobTitle,
+        role:        updated.role        ?? draft.role        ?? u.role,
+        isActive:    updated.isActive    ?? draft.isActive    ?? u.isActive,
       } : u));
       cancelEdit();
     } catch (e) { setError(e instanceof Error ? e.message : "Failed to update user."); }
     finally { setSaving(false); }
   };
 
+  // ── Add activity ─────────────────────────────────────────────────────────
   const handleAddActivity = async () => {
-    if (!newActivity.trim()) return;
+    if (!newActivity.trim()) { setActError("Activity name is required."); return; }
+    if (!newSubcategory.trim()) { setActError("Subcategory is required."); return; }
+    const maxQtyNum = parseInt(newMaxQty, 10);
+    if (isNaN(maxQtyNum) || maxQtyNum < 1 || maxQtyNum > 100) {
+      setActError("Max QTY must be 1–100."); return;
+    }
     setActSaving(true); setActError(null); setActSuccess(null);
     try {
-      const created = await createActivityType(newActivity.trim(), newActivityType, instance);
+      const created = await createActivityType(
+        newActivity.trim(), newActivityType, instance, newSubcategory.trim(), maxQtyNum,
+      );
       setActivityTypes((prev) => [...prev, created]);
-      setNewActivity(""); setNewActivityType("BTL");
-      setActSuccess(`"${created.activityName}" (${created.activityType}) added successfully.`);
+      setNewSubcategory(""); setNewMaxQty("5");
+      setActSuccess(`"${created.activityName} → ${created.subcategory}" added.`);
       setTimeout(() => setActSuccess(null), 3000);
-    } catch (e) { setActError(e instanceof Error ? e.message : "Failed to add activity type."); }
+    } catch (e) { setActError(e instanceof Error ? e.message : "Failed to add."); }
     finally { setActSaving(false); }
   };
 
@@ -231,17 +257,75 @@ export default function AdminUsersPage() {
     } catch (e) { setActError(e instanceof Error ? e.message : "Failed to update."); }
   };
 
+  // ── Edit activity modal ───────────────────────────────────────────────────
+  const openEditActivity = (a: ActivityType) => {
+    setEditActId(a.id);
+    setEditActName(a.activityName);
+    setEditActType(a.activityType);
+    setEditActSub(a.subcategory ?? "");
+    setEditActMaxQty(String(a.maxQty ?? 5));
+    setEditActError(null);
+  };
+  const closeEditActivity = () => {
+    setEditActId(null); setEditActError(null);
+  };
+
+  // We use createActivityType as an "upsert" isn't available — instead
+  // we toggle off the old one and create a new one. Simpler: we just
+  // directly PATCH the activity via toggleActivityType fields.
+  // Since backend doesn't have a full PUT for activity, we'll do the best
+  // we can: update isActive + show what would change.
+  // REAL solution: add PUT /api/activity-types/{id} on backend.
+  // For now we call a helper that POSTs a new one if name/sub changed,
+  // or just toggles if only isActive changed.
+  const handleSaveEditActivity = async () => {
+    if (!editActName.trim()) { setEditActError("Activity name is required."); return; }
+    if (!editActSub.trim())  { setEditActError("Subcategory is required."); return; }
+    const maxQtyNum = parseInt(editActMaxQty, 10);
+    if (isNaN(maxQtyNum) || maxQtyNum < 1 || maxQtyNum > 100) {
+      setEditActError("Max QTY must be 1–100."); return;
+    }
+    if (editActId === null) return;
+    setEditActSaving(true); setEditActError(null);
+    try {
+      const original = activityTypes.find(a => a.id === editActId);
+      if (!original) throw new Error("Activity not found.");
+
+      const nameChanged = editActName.trim() !== original.activityName
+        || editActType !== original.activityType
+        || editActSub.trim() !== (original.subcategory ?? "")
+        || maxQtyNum !== (original.maxQty ?? 5);
+
+      if (nameChanged) {
+        // Deactivate old + create new
+        await toggleActivityType(editActId, false, instance);
+        const created = await createActivityType(
+          editActName.trim(), editActType, instance, editActSub.trim(), maxQtyNum,
+        );
+        setActivityTypes((prev) => [
+          ...prev.map((a) => a.id === editActId ? { ...a, isActive: false } : a),
+          created,
+        ]);
+        setActSuccess(`Updated: "${created.activityName} → ${created.subcategory}"`);
+      } else {
+        // Nothing changed except possibly isActive — no-op
+        setActSuccess("No changes detected.");
+      }
+      setTimeout(() => setActSuccess(null), 3000);
+      closeEditActivity();
+    } catch (e) { setEditActError(e instanceof Error ? e.message : "Failed to save."); }
+    finally { setEditActSaving(false); }
+  };
+
+  // ── Dealer handlers ───────────────────────────────────────────────────────
   const handleErpDealerSelect = (code: string, name: string) =>
     setDealerForm((f) => ({ ...f, dealerCode: code, dealerName: name }));
-
   const handleDealerFormChange = (key: keyof typeof dealerForm, value: string) =>
     setDealerForm((f) => ({ ...f, [key]: value }));
-
   const resetDealerForm = () => {
     setDealerForm({ email:"", password:"", displayName:"", dealerCode:"", dealerName:"", phoneNumber:"" });
     setShowDealerForm(false);
   };
-
   const handleCreateDealer = async (e: React.FormEvent) => {
     e.preventDefault(); setDealerError(null); setDealerSuccess(null);
     if (!dealerForm.email.trim() || !dealerForm.password.trim() || !dealerForm.displayName.trim()) {
@@ -262,14 +346,12 @@ export default function AdminUsersPage() {
     } catch (e) { setDealerError(e instanceof Error ? e.message : "Failed to create dealer account."); }
     finally { setDealerSaving(false); }
   };
-
   const handleToggleDealer = async (id: number) => {
     try {
       const result = await toggleDealerActive(id, instance);
       setDealers((prev) => prev.map((d) => d.id === id ? { ...d, isActive: result.isActive } : d));
     } catch (e) { setDealerError(e instanceof Error ? e.message : "Failed to update dealer status."); }
   };
-
   const openResetModal = (id: number, name: string) => {
     setResetTargetId(id); setResetTargetName(name);
     setResetPassword(""); setResetConfirm(""); setResetError(null);
@@ -278,7 +360,6 @@ export default function AdminUsersPage() {
     setResetTargetId(null); setResetTargetName("");
     setResetPassword(""); setResetConfirm(""); setResetError(null);
   };
-
   const handleResetSubmit = async (e: React.FormEvent) => {
     e.preventDefault(); setResetError(null);
     if (resetPassword.length < 8) { setResetError("Password must be at least 8 characters."); return; }
@@ -313,7 +394,9 @@ export default function AdminUsersPage() {
           onClick={() => setTab("activities")}>📋 Activity Types</button>
       </div>
 
-      {/* ── TAB 1: Users ── */}
+      {/* ══════════════════════════════════════════════════════
+          TAB 1 — Users
+      ══════════════════════════════════════════════════════ */}
       {tab === "users" && (
         <>
           {error && <div className="admin-error">{error}</div>}
@@ -385,29 +468,23 @@ export default function AdminUsersPage() {
         </>
       )}
 
-      {/* ── TAB 2: Dealer Accounts ── */}
+      {/* ══════════════════════════════════════════════════════
+          TAB 2 — Dealer Accounts
+      ══════════════════════════════════════════════════════ */}
       {tab === "dealers" && (
         <div className="admin-act-section">
           {dealerError   && <div className="admin-error">{dealerError}</div>}
           {dealerSuccess && <div className="admin-success">{dealerSuccess}</div>}
-
           <div className="admin-dealer-toolbar">
             <button className="admin-save-btn" onClick={() => setShowDealerForm((v) => !v)}>
               {showDealerForm ? "✕ Cancel" : "+ Create Dealer Login"}
             </button>
           </div>
-
           {showDealerForm && (
             <form className="admin-dealer-form" onSubmit={handleCreateDealer}>
               <div className="admin-dealer-form-grid">
-                {/* Dealer Name — ERP dropdown spanning full row */}
                 <div className="admin-dealer-field" style={{ gridColumn: "1 / -1" }}>
-                  <label>
-                    Dealer Name
-                    <span style={{ marginLeft:6,fontSize:11,color:"#6b7280",fontWeight:400 }}>
-                      (select from ERP — auto-fills Dealer Code)
-                    </span>
-                  </label>
+                  <label>Dealer Name <span style={{ marginLeft:6,fontSize:11,color:"#6b7280",fontWeight:400 }}>(select from ERP — auto-fills Dealer Code)</span></label>
                   <DealerSearchSelect dealers={erpDealers} loading={erpLoading}
                     value={dealerForm.dealerCode} onChange={handleErpDealerSelect}/>
                   {!erpLoading && erpDealers.length === 0 && (
@@ -417,7 +494,6 @@ export default function AdminUsersPage() {
                       onChange={(e) => handleDealerFormChange("dealerName", e.target.value)}/>
                   )}
                 </div>
-                {/* Dealer Code — auto-filled, editable */}
                 <div className="admin-dealer-field">
                   <label>Dealer Code <span style={{ fontSize:11,color:"#6b7280",fontWeight:400 }}>(auto-filled)</span></label>
                   <div style={{ position:"relative" }}>
@@ -431,28 +507,22 @@ export default function AdminUsersPage() {
                     )}
                   </div>
                 </div>
-                {/* Display Name */}
                 <div className="admin-dealer-field">
                   <label>Display Name *</label>
                   <input className="admin-input" required placeholder="Contact person name"
-                    value={dealerForm.displayName}
-                    onChange={(e) => handleDealerFormChange("displayName", e.target.value)}/>
+                    value={dealerForm.displayName} onChange={(e) => handleDealerFormChange("displayName", e.target.value)}/>
                 </div>
-                {/* Email */}
                 <div className="admin-dealer-field">
                   <label>Email *</label>
                   <input className="admin-input" type="email" required placeholder="dealer@example.com"
-                    value={dealerForm.email}
-                    onChange={(e) => handleDealerFormChange("email", e.target.value)}/>
+                    value={dealerForm.email} onChange={(e) => handleDealerFormChange("email", e.target.value)}/>
                 </div>
-                {/* Password */}
                 <div className="admin-dealer-field">
                   <label>Password *</label>
                   <input className="admin-input" type="password" required minLength={8}
                     placeholder="Min. 8 characters" value={dealerForm.password}
                     onChange={(e) => handleDealerFormChange("password", e.target.value)}/>
                 </div>
-                {/* Phone */}
                 <div className="admin-dealer-field">
                   <label>Phone</label>
                   <input className="admin-input" maxLength={10} placeholder="10-digit mobile"
@@ -476,7 +546,6 @@ export default function AdminUsersPage() {
               </div>
             </form>
           )}
-
           <div className="admin-users-table-wrap">
             <table className="admin-users-table">
               <thead>
@@ -517,85 +586,271 @@ export default function AdminUsersPage() {
         </div>
       )}
 
-      {/* ── TAB 3: Activity Types ── */}
+      {/* ══════════════════════════════════════════════════════
+          TAB 3 — Activity Types
+      ══════════════════════════════════════════════════════ */}
       {tab === "activities" && (
         <div className="admin-act-section">
           {actError   && <div className="admin-error">{actError}</div>}
           {actSuccess && <div className="admin-success">{actSuccess}</div>}
 
-          {/* Add row */}
-          <div className="admin-act-add-row">
-            <input className="admin-input admin-act-input"
-              placeholder="New activity name (e.g. Road Show)…"
-              value={newActivity}
-              onChange={(e) => setNewActivity(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleAddActivity()}/>
-            {/* ATL / BTL selector */}
-            <select className="admin-input" style={{ width: 90, flexShrink: 0 }}
-              value={newActivityType}
-              onChange={(e) => setNewActivityType(e.target.value as "ATL"|"BTL")}>
-              <option value="BTL">BTL</option>
-              <option value="ATL">ATL</option>
-            </select>
-            <button className="admin-save-btn"
-              onClick={handleAddActivity}
-              disabled={actSaving || !newActivity.trim()}>
-              {actSaving ? "Adding…" : "+ Add"}
-            </button>
+          {/* ── Add form — ALL IN ONE ROW ── */}
+          <div style={{ background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,
+            padding:"14px 16px",marginBottom:20 }}>
+            <p style={{ fontSize:12,fontWeight:700,color:"#0a2540",margin:"0 0 10px" }}>
+              + Add Activity
+            </p>
+            {/* Single flex row: Name | Type | Subcategory | MaxQty | Add */}
+            <div style={{ display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end" }}>
+
+              {/* Activity Name */}
+              <div style={{ display:"flex",flexDirection:"column",gap:3,flex:"2 1 180px" }}>
+                <label style={{ fontSize:10,fontWeight:700,color:"#6b7280",
+                  textTransform:"uppercase",letterSpacing:"0.05em" }}>Activity Name *</label>
+                <input className="admin-input"
+                  placeholder="e.g. Digital, Gift…"
+                  value={newActivity}
+                  onChange={(e) => setNewActivity(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddActivity()}
+                  style={{ height:36 }}/>
+              </div>
+
+              {/* ATL/BTL */}
+              <div style={{ display:"flex",flexDirection:"column",gap:3,flex:"0 0 88px" }}>
+                <label style={{ fontSize:10,fontWeight:700,color:"#6b7280",
+                  textTransform:"uppercase",letterSpacing:"0.05em" }}>Type *</label>
+                <select className="admin-input"
+                  value={newActivityType}
+                  onChange={(e) => setNewActivityType(e.target.value as "ATL"|"BTL")}
+                  style={{ height:36 }}>
+                  <option value="ATL">ATL</option>
+                  <option value="BTL">BTL</option>
+                </select>
+              </div>
+
+              {/* Subcategory */}
+              <div style={{ display:"flex",flexDirection:"column",gap:3,flex:"2 1 180px" }}>
+                <label style={{ fontSize:10,fontWeight:700,color:"#6b7280",
+                  textTransform:"uppercase",letterSpacing:"0.05em" }}>Subcategory *</label>
+                <input className="admin-input"
+                  placeholder="e.g. Facebook, LED TV…"
+                  value={newSubcategory}
+                  onChange={(e) => setNewSubcategory(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddActivity()}
+                  style={{ height:36 }}/>
+              </div>
+
+              {/* Max QTY */}
+              <div style={{ display:"flex",flexDirection:"column",gap:3,flex:"0 0 88px" }}>
+                <label style={{ fontSize:10,fontWeight:700,color:"#6b7280",
+                  textTransform:"uppercase",letterSpacing:"0.05em" }}>Max QTY *</label>
+                <input className="admin-input" type="number" min={1} max={100}
+                  placeholder="5" value={newMaxQty}
+                  onChange={(e) => setNewMaxQty(e.target.value)}
+                  style={{ height:36 }}/>
+              </div>
+
+              {/* Add button */}
+              <button className="admin-save-btn"
+                onClick={handleAddActivity}
+                disabled={actSaving || !newActivity.trim() || !newSubcategory.trim()}
+                style={{ height:36,flexShrink:0,whiteSpace:"nowrap" }}>
+                {actSaving ? "Adding…" : "+ Add"}
+              </button>
+            </div>
+            <p style={{ fontSize:11,color:"#9ca3af",margin:"8px 0 0" }}>
+              Tip: same activity name + different subcategory = multiple subcategory rows (e.g. Gift → LED TV, Gift → Fan)
+              · <strong>ATL</strong> = Above The Line · <strong>BTL</strong> = Below The Line
+            </p>
           </div>
 
-          <p style={{ fontSize:12,color:"#6b7280",marginBottom:12 }}>
-            <strong>ATL</strong> = Above The Line (Digital, Newspaper, Radio…) ·{" "}
-            <strong>BTL</strong> = Below The Line (Canopy, Mela, Inauguration…)
-          </p>
-
+          {/* ── Activity types table ── */}
           <div className="admin-users-table-wrap">
             <table className="admin-users-table">
               <thead>
                 <tr>
-                  <th style={{ width:48 }}>#</th>
+                  <th style={{ width:44 }}>#</th>
                   <th>Activity Name</th>
-                  <th style={{ width:90 }}>Type</th>
-                  <th>Status</th>
-                  <th style={{ width:110 }}></th>
+                  <th style={{ width:80 }}>Type</th>
+                  <th>Subcategory</th>
+                  <th style={{ width:80,textAlign:"center" }}>Max QTY</th>
+                  <th style={{ width:110 }}>Status</th>
+                  <th style={{ width:160 }}></th>
                 </tr>
               </thead>
               <tbody>
-                {actLoading ? <TableSkeleton rows={5} cols={5}/> :
+                {actLoading ? <TableSkeleton rows={8} cols={7}/> :
                  activityTypes.length === 0 ? (
-                  <tr><td colSpan={5} className="admin-empty-cell">No activity types yet. Add one above.</td></tr>
-                ) : activityTypes.map((a, i) => (
-                  <tr key={a.id}>
-                    <td className="admin-readonly">{i+1}</td>
-                    <td><span className="admin-user-name">{a.activityName}</span></td>
-                    <td>
-                      <span style={{
-                        fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:4,display:"inline-block",
-                        background: a.activityType === "ATL" ? "#eff6ff" : "#f0fdf4",
-                        color: a.activityType === "ATL" ? "#1e40af" : "#166534",
-                        border: `1px solid ${a.activityType === "ATL" ? "#bfdbfe" : "#bbf7d0"}`,
-                      }}>
-                        {a.activityType || "—"}
-                      </span>
-                    </td>
-                    <td><span className={`admin-status-pill ${a.isActive?"admin-status-pill--active":"admin-status-pill--inactive"}`}>
-                      <span className="admin-status-dot"/>{a.isActive?"Active":"Inactive"}
-                    </span></td>
-                    <td>
-                      <button className={a.isActive?"admin-cancel-btn":"admin-save-btn"}
-                        onClick={() => handleToggleActivity(a.id, a.isActive)}>
-                        {a.isActive?"Deactivate":"Activate"}
-                      </button>
+                  <tr>
+                    <td colSpan={7} className="admin-empty-cell">
+                      No activity types yet. Use the form above to add one.
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  Object.entries(groupedActivities)
+                    .sort(([a],[b]) => a.localeCompare(b))
+                    .flatMap(([actName, rows]) =>
+                      rows.map((a, subIdx) => (
+                        <tr key={a.id} style={{
+                          background: subIdx % 2 === 0 ? "#fff" : "#f8fafc",
+                          borderTop: subIdx === 0 ? "2px solid #e2e8f0" : "1px solid #f1f5f9",
+                        }}>
+                          {/* # */}
+                          <td className="admin-readonly" style={{ verticalAlign:"middle" }}>
+                            {subIdx === 0
+                              ? <span>{Object.keys(groupedActivities).sort().indexOf(actName)+1}</span>
+                              : <span style={{ color:"#cbd5e1" }}>↳</span>}
+                          </td>
+
+                          {/* Activity Name */}
+                          <td style={{ verticalAlign:"middle" }}>
+                            {subIdx === 0
+                              ? <span className="admin-user-name">{a.activityName}</span>
+                              : <span style={{ color:"#9ca3af",fontSize:12 }}>{a.activityName}</span>}
+                          </td>
+
+                          {/* Type — show badge on every row */}
+                          <td style={{ verticalAlign:"middle" }}>
+                            <span style={{
+                              fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:4,display:"inline-block",
+                              background: a.activityType==="ATL"?"#eff6ff":"#f0fdf4",
+                              color: a.activityType==="ATL"?"#1e40af":"#166534",
+                              border:`1px solid ${a.activityType==="ATL"?"#bfdbfe":"#bbf7d0"}`,
+                              opacity: subIdx === 0 ? 1 : 0.5,
+                            }}>{a.activityType||"—"}</span>
+                          </td>
+
+                          {/* Subcategory */}
+                          <td>
+                            {a.subcategory
+                              ? <span style={{ fontSize:12,fontWeight:500,color:"#1e3a5f",
+                                  background:"#f1f5f9",border:"1px solid #e2e8f0",
+                                  borderRadius:5,padding:"2px 9px",display:"inline-block" }}>
+                                  {a.subcategory}
+                                </span>
+                              : <span style={{ color:"#cbd5e1",fontSize:12 }}>—</span>}
+                          </td>
+
+                          {/* Max QTY */}
+                          <td style={{ textAlign:"center" }}>
+                            <span style={{ fontSize:12,fontWeight:700,color:"#374151",
+                              background:"#fafafa",border:"1px solid #e2e8f0",
+                              borderRadius:5,padding:"2px 10px",display:"inline-block" }}>
+                              {a.maxQty ?? 5}
+                            </span>
+                          </td>
+
+                          {/* Status */}
+                          <td>
+                            <span className={`admin-status-pill ${a.isActive?"admin-status-pill--active":"admin-status-pill--inactive"}`}>
+                              <span className="admin-status-dot"/>{a.isActive?"Active":"Inactive"}
+                            </span>
+                          </td>
+
+                          {/* Actions: Edit + Toggle */}
+                          <td>
+                            <div className="admin-row-actions">
+                              <button className="admin-edit-btn"
+                                onClick={() => openEditActivity(a)}>
+                                ✏ Edit
+                              </button>
+                              <button className={a.isActive?"admin-cancel-btn":"admin-save-btn"}
+                                onClick={() => handleToggleActivity(a.id, a.isActive)}>
+                                {a.isActive?"Deactivate":"Activate"}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )
+                )}
               </tbody>
             </table>
+          </div>
+
+          {/* Summary */}
+          {!actLoading && activityTypes.length > 0 && (
+            <div style={{ display:"flex",gap:16,marginTop:12,fontSize:12,color:"#6b7280",flexWrap:"wrap" }}>
+              <span><strong style={{ color:"#0a2540" }}>{Object.keys(groupedActivities).length}</strong> activity names</span>
+              <span><strong style={{ color:"#0a2540" }}>{activityTypes.length}</strong> total subcategories</span>
+              <span><strong style={{ color:"#16a34a" }}>{activityTypes.filter(a=>a.isActive).length}</strong> active</span>
+              <span><strong style={{ color:"#6b7280" }}>{activityTypes.filter(a=>!a.isActive).length}</strong> inactive</span>
+              <span><strong style={{ color:"#1e40af" }}>{activityTypes.filter(a=>a.activityType==="ATL").length}</strong> ATL</span>
+              <span><strong style={{ color:"#166534" }}>{activityTypes.filter(a=>a.activityType==="BTL").length}</strong> BTL</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════
+          Edit Activity Modal
+      ══════════════════════════════════════════════════════ */}
+      {editActId !== null && (
+        <div className="admin-modal-overlay" onClick={closeEditActivity}>
+          <div className="admin-modal" onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth:480 }}>
+            <div className="admin-modal-head">
+              <h3>Edit Activity</h3>
+              <button className="admin-modal-close" onClick={closeEditActivity}>✕</button>
+            </div>
+            <p className="admin-modal-sub" style={{ fontSize:12,color:"#6b7280",marginBottom:16 }}>
+              Changes create a new entry (old one deactivated). The name and subcategory combination must be unique.
+            </p>
+            {editActError && <div className="admin-error">{editActError}</div>}
+
+            <div style={{ display:"flex",flexDirection:"column",gap:12 }}>
+              {/* Row 1: Name + Type */}
+              <div style={{ display:"flex",gap:10 }}>
+                <div style={{ flex:2,display:"flex",flexDirection:"column",gap:4 }}>
+                  <label style={{ fontSize:11,fontWeight:600,color:"#374151",
+                    textTransform:"uppercase",letterSpacing:"0.04em" }}>Activity Name *</label>
+                  <input className="admin-input" value={editActName}
+                    onChange={(e) => setEditActName(e.target.value)}
+                    placeholder="e.g. Digital"/>
+                </div>
+                <div style={{ flex:"0 0 90px",display:"flex",flexDirection:"column",gap:4 }}>
+                  <label style={{ fontSize:11,fontWeight:600,color:"#374151",
+                    textTransform:"uppercase",letterSpacing:"0.04em" }}>Type *</label>
+                  <select className="admin-input" value={editActType}
+                    onChange={(e) => setEditActType(e.target.value as "ATL"|"BTL")}>
+                    <option value="ATL">ATL</option>
+                    <option value="BTL">BTL</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Row 2: Subcategory + MaxQty */}
+              <div style={{ display:"flex",gap:10 }}>
+                <div style={{ flex:2,display:"flex",flexDirection:"column",gap:4 }}>
+                  <label style={{ fontSize:11,fontWeight:600,color:"#374151",
+                    textTransform:"uppercase",letterSpacing:"0.04em" }}>Subcategory *</label>
+                  <input className="admin-input" value={editActSub}
+                    onChange={(e) => setEditActSub(e.target.value)}
+                    placeholder="e.g. Facebook"/>
+                </div>
+                <div style={{ flex:"0 0 90px",display:"flex",flexDirection:"column",gap:4 }}>
+                  <label style={{ fontSize:11,fontWeight:600,color:"#374151",
+                    textTransform:"uppercase",letterSpacing:"0.04em" }}>Max QTY *</label>
+                  <input className="admin-input" type="number" min={1} max={100}
+                    value={editActMaxQty} onChange={(e) => setEditActMaxQty(e.target.value)}/>
+                </div>
+              </div>
+            </div>
+
+            <div className="admin-modal-actions" style={{ marginTop:20 }}>
+              <button className="admin-save-btn" disabled={editActSaving}
+                onClick={handleSaveEditActivity}>
+                {editActSaving?"Saving…":"💾 Save Changes"}
+              </button>
+              <button className="admin-cancel-btn" onClick={closeEditActivity}>Cancel</button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Reset Password Modal */}
+      {/* ══════════════════════════════════════════════════════
+          Reset Password Modal
+      ══════════════════════════════════════════════════════ */}
       {resetTargetId !== null && (
         <div className="admin-modal-overlay" onClick={closeResetModal}>
           <div className="admin-modal" onClick={(e) => e.stopPropagation()}>

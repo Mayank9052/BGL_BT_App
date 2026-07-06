@@ -9,7 +9,10 @@ import {
   forwardProposalToApprover, notifyDealer,
   type ActivityResponse, type ActivityMediaResponse, type ProposalResponse,
 } from "../services/proposalService";
-import { fetchActivityTypes, type ActivityType } from "../services/activityService";
+import {
+  fetchActivityTypes, groupActivityTypes,
+  type ActivityType, type ActivityGroup,
+} from "../services/activityService";
 import "./ApproverDashboard.css";
 
 const inr     = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
@@ -38,17 +41,13 @@ const ELIGIBILITY = ["Eligible","Not Eligible","Pending Approval"];
 const LOC_TYPES   = ["Old","New"];
 const BGAUSS_OPTS = ["100","70","50"];
 
-// ── BGauss share read from backend safely ─────────────────────────────────────
-// Backend stores 0/null when not set — treat that as 100%
 const safeBgaussShare = (v: number | null | undefined): string => {
   if (v == null || v === 0) return "100";
-  // Snap to nearest valid option
   if (v <= 50) return "50";
   if (v <= 70) return "70";
   return "100";
 };
 
-// ── Media helpers ─────────────────────────────────────────────────────────────
 function mediaIcon(t: string | null) {
   if (!t) return "📎";
   if (t.startsWith("image/")) return "🖼";
@@ -61,7 +60,7 @@ function isVideo(t: string | null) { return !!t?.startsWith("video/"); }
 
 function collectMedia(a: ActivityResponse) {
   const all: Array<{ id:string; url:string; name:string; type:string|null }> = [];
-  const multiUrls = new Set((a.mediaFiles??[]).map((m) => m.fileUrl));
+  const multiUrls = new Set((a.mediaFiles??[]).map((m: ActivityMediaResponse) => m.fileUrl));
   if (a.mediaFileUrl && !multiUrls.has(a.mediaFileUrl))
     all.push({ id:`legacy-${a.id}`, url:resolveUrl(a.mediaFileUrl), name:a.mediaFileName??"Media file", type:a.mediaFileType??null });
   (a.mediaFiles??[]).forEach((m: ActivityMediaResponse) =>
@@ -127,8 +126,14 @@ function ActivityMediaStrip({ activity }: { activity: ActivityResponse }) {
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface EditMediaFile { id:string; fileUrl:string; fileName:string; fileType:string; }
 interface EditActivity {
-  id?:string; activityType:string; category:string; categoryLocked?:boolean;
-  leadTarget:string; retailTarget:string; startDate:string; endDate:string;
+  id?:string;
+  activityType:string;    // Activity Name e.g. "Digital"
+  category:string;        // ATL | BTL — auto-locked
+  categoryLocked?:boolean;
+  subcategory:string;     // e.g. "Facebook"
+  qty:string;             // "1"–"20"
+  leadTarget:string; salesPercent:string; retailTarget:string; retailLocked:boolean;
+  startDate:string; endDate:string;
   budget:string; additionalBudget:string; bgaussShare:string;
   vendorId:string; remarks:string; mediaFiles:EditMediaFile[];
 }
@@ -152,15 +157,18 @@ function toEditable(p: ProposalResponse): EditableProposal {
     vendorId:String(p.vendorId??""), vendorName:p.vendorName??"",
     activities: p.activities.map((a) => ({
       id:a.id, activityType:a.activityType, category:a.category??"",
-      categoryLocked: false,
-      leadTarget:String(a.leadTarget??0), retailTarget:String(a.retailTarget??0),
+      categoryLocked:false,
+      subcategory:(a as any).subcategory??"",
+      qty:String((a as any).qty??1),
+      leadTarget:String(a.leadTarget??0),
+      salesPercent:String((a as any).salesPercent??a.salesPercent??""),
+      retailTarget:String(a.retailTarget??0),
+      retailLocked:!!((a as any).salesPercent) && parseFloat(String((a as any).salesPercent??0)) > 0,
       startDate:a.startDate?.split("T")[0]??"", endDate:a.endDate?.split("T")[0]??"",
       budget:String(a.budget), additionalBudget:String(a.additionalBudget??0),
-      // FIX: use safeBgaussShare so 0/null from DB shows as "100" not "0"
-      bgaussShare: safeBgaussShare(a.bgaussShare as any),
-      vendorId:String(a.vendorId??""),
-      remarks:a.remarks??"",
-      mediaFiles:(a.mediaFiles??[]).map((m)=>({id:m.id,fileUrl:m.fileUrl,fileName:m.fileName,fileType:m.fileType})),
+      bgaussShare:safeBgaussShare(a.bgaussShare as any),
+      vendorId:String(a.vendorId??""), remarks:a.remarks??"",
+      mediaFiles:(a.mediaFiles??[]).map((m: ActivityMediaResponse)=>({id:m.id,fileUrl:m.fileUrl,fileName:m.fileName,fileType:m.fileType})),
     })),
   };
 }
@@ -196,12 +204,12 @@ export default function ApproverDashboard() {
   const [actualsData,      setActualsData]      = useState<Record<string,ActualEntry>>({});
   const [actualsLoading,   setActualsLoading]   = useState(false);
   const [uploadingMedia,   setUploadingMedia]   = useState<Record<string,boolean>>({});
-  const fileInputRefs  = useRef<Record<string,HTMLInputElement|null>>({});
-  const actualsRefs    = useRef<Record<string,HTMLDivElement|null>>({});
-  const scrollBodyRef  = useRef<HTMLDivElement|null>(null);
-  // Which activity's Post-Activity panel is open (null = none)
+  const scrollBodyRef = useRef<HTMLDivElement|null>(null);
   const [openActualsId, setOpenActualsId] = useState<string|null>(null);
+
+  // Activity master for cascading dropdowns in edit mode
   const [activityMasterList, setActivityMasterList] = useState<ActivityType[]>([]);
+  const [activityGroups,     setActivityGroups]     = useState<ActivityGroup[]>([]);
 
   // Bulk approve
   const [selectedIds,   setSelectedIds]   = useState<Set<string>>(new Set());
@@ -223,7 +231,12 @@ export default function ApproverDashboard() {
   useEffect(()=>{ loadProposals(); },[loadProposals]);
 
   useEffect(() => {
-    fetchActivityTypes(instance).then(setActivityMasterList).catch(()=>{});
+    fetchActivityTypes(instance)
+      .then((types) => {
+        setActivityMasterList(types);
+        setActivityGroups(groupActivityTypes(types));
+      })
+      .catch(()=>{});
   }, [instance]);
 
   useEffect(() => {
@@ -231,8 +244,8 @@ export default function ApproverDashboard() {
     return () => { document.body.style.overflow = ""; };
   }, [selected]);
 
-  const months          = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],[proposals]);
-  const filtered        = useMemo(()=>proposals.filter((p)=>{
+  const months      = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],[proposals]);
+  const filtered    = useMemo(()=>proposals.filter((p)=>{
     if (filterStatus!=="All"&&p.status!==filterStatus) return false;
     if (filterMonth!=="All"&&p.month!==filterMonth) return false;
     if (search){ const q=search.toLowerCase();
@@ -257,8 +270,9 @@ export default function ApproverDashboard() {
     const trt = editData.activities.reduce((s,a)=>s+num(a.retailTarget),0);
     const tbg = editData.activities.reduce((s,a)=>
       s+Math.round((num(a.budget)+num(a.additionalBudget))*(num(a.bgaussShare||"100")/100)),0);
+    // CAC/CPL are BGauss-based: reflect actual BGauss contribution per unit
     return { totalBudget:tb, totalLeadTarget:tlt, totalRetailTarget:trt,
-      cac:trt>0?tb/trt:0, cpl:tlt>0?tb/tlt:0, totalBgauss:tbg };
+      cac:trt>0?tbg/trt:0, cpl:tlt>0?tbg/tlt:0, totalBgauss:tbg };
   },[editData]);
 
   const initActuals = useCallback((p:ProposalResponse)=>{
@@ -329,22 +343,52 @@ export default function ApproverDashboard() {
     setSelected(p); setEditData(toEditable(p)); setIsEditing(false); setShowSendBack(false);
     setNote(p.approverNote??""); setSendBackNote("");
     setShowNotifyDealer(false); setDealerEmailMode("dealer");
-    setDealerEmailInput(p.dealerEmail??""); initActuals(p);
+    setDealerEmailInput(p.dealerEmail??""); initActuals(p); setOpenActualsId(null);
   };
   const closeModal=()=>{
     setSelected(null); setEditData(null); setIsEditing(false); setShowSendBack(false);
-    setShowNotifyDealer(false); setDealerEmailInput(""); setActualsData({});
+    setShowNotifyDealer(false); setDealerEmailInput(""); setActualsData({}); setOpenActualsId(null);
   };
 
   const setF=(key:keyof Omit<EditableProposal,"activities">,v:string)=>
     setEditData((d)=>d?{...d,[key]:v}:d);
   const setAF=(idx:number,key:keyof EditActivity,v:string)=>
     setEditData((d)=>d?{...d,activities:d.activities.map((a,i)=>i===idx?{...a,[key]:v}:a)}:d);
+
   const addRow=()=>setEditData((d)=>d?{...d,activities:[...d.activities,
-    {activityType:"",category:"",leadTarget:"",retailTarget:"",startDate:"",endDate:"",
-     budget:"",additionalBudget:"0",bgaussShare:"100",vendorId:"",remarks:"",mediaFiles:[],categoryLocked:false}]}:d);
+    {activityType:"",category:"",categoryLocked:false,subcategory:"",qty:"1",
+     leadTarget:"",salesPercent:"",retailTarget:"",retailLocked:false,startDate:"",endDate:"",
+     budget:"",additionalBudget:"0",bgaussShare:"100",vendorId:"",remarks:"",mediaFiles:[]}]}:d);
   const removeRow=(idx:number)=>setEditData((d)=>(!d||d.activities.length<=1)?d:
     {...d,activities:d.activities.filter((_,i)=>i!==idx)});
+
+  // ── Cascading: Activity Name change in edit mode ──────────────────────────
+  const handleEditActivityNameChange = (idx: number, activityName: string) => {
+    const group = activityGroups.find(
+      (g) => g.activityName.toLowerCase() === activityName.toLowerCase()
+    );
+    setEditData((d) => d ? {
+      ...d,
+      activities: d.activities.map((a, i) => i === idx ? {
+        ...a,
+        activityType:   activityName,
+        category:       group ? group.activityType : a.category,
+        categoryLocked: !!group,
+        subcategory:    "",   // reset on name change
+        qty:            "1",
+      } : a),
+    } : d);
+  };
+
+  // ── Cascading: Subcategory change → reset qty ─────────────────────────────
+  const handleEditSubcategoryChange = (idx: number, activityName: string, subcategory: string) => {
+    setEditData((d) => d ? {
+      ...d,
+      activities: d.activities.map((a, i) => i === idx ? {
+        ...a, subcategory, qty: "1",
+      } : a),
+    } : d);
+  };
 
   const saveEdits = async ()=>{
     if (!selected||!editData) return;
@@ -357,11 +401,12 @@ export default function ApproverDashboard() {
         vendorId:editData.vendorId?Number(editData.vendorId):null, vendorName:editData.vendorName||null,
         activities:editData.activities.map((a)=>({
           activityType:a.activityType, category:a.category||null,
+          subcategory:a.subcategory||null, qty:num(a.qty)||1,
           leadTarget:num(a.leadTarget), retailTarget:num(a.retailTarget),
           startDate:a.startDate, endDate:a.endDate, budget:num(a.budget),
           additionalBudget:num(a.additionalBudget),
-          // FIX: send as integer, never 0 — default to 100 if empty
           bgaussShare: num(a.bgaussShare) > 0 ? num(a.bgaussShare) : 100,
+          salesPercent: a.salesPercent.trim() ? parseFloat(a.salesPercent) : null,  // ← NEW
           vendorId:a.vendorId?Number(a.vendorId):null, remarks:a.remarks,
           mediaFiles:a.mediaFiles.map((m)=>({fileUrl:m.fileUrl,fileName:m.fileName,fileType:m.fileType})),
         })),
@@ -371,20 +416,13 @@ export default function ApproverDashboard() {
       const updated=await updateProposal(selected.id,payload as any,instance);
       setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
       setSelected(updated);
-      // Merge bgaussShare from our editData into toEditable result
-      // because backend may return 0 if the column mapping is broken
-      const editable = toEditable(updated);
-      editable.activities = editable.activities.map((ea, idx) => ({
+      const editable=toEditable(updated);
+      editable.activities=editable.activities.map((ea,idx)=>({
         ...ea,
-        bgaussShare: (() => {
-          // prefer what we saved (from payload), fallback to what backend returned
-          const sent = payload.activities[idx]?.bgaussShare;
-          const fromServer = safeBgaussShare((updated.activities[idx] as any)?.bgaussShare);
-          // if server returned 0/null, use what we sent
-          const serverVal = (updated.activities[idx] as any)?.bgaussShare;
-          return (serverVal && serverVal > 0)
-            ? fromServer
-            : sent ? String(sent) : "100";
+        bgaussShare:(()=>{
+          const sent=payload.activities[idx]?.bgaussShare;
+          const serverVal=(updated.activities[idx] as any)?.bgaussShare;
+          return (serverVal&&serverVal>0)?safeBgaussShare(serverVal):sent?String(sent):"100";
         })(),
       }));
       setEditData(editable);
@@ -444,28 +482,10 @@ export default function ApproverDashboard() {
     finally { setNotifyLoading(false); }
   };
 
-  // ── Toggle Post-Activity panel for a specific activity ───────────────────
   const toggleActuals = (activityId: string) => {
     setOpenActualsId((prev) => prev === activityId ? null : activityId);
   };
 
-  // ── Activity type auto-fill in edit mode (same as RSMForm) ────────────────
-  const handleEditActivityTypeChange = (idx: number, value: string) => {
-    const master = activityMasterList.find(
-      (t) => t.activityName.toLowerCase() === value.toLowerCase()
-    );
-    setEditData((d) => d ? {
-      ...d,
-      activities: d.activities.map((a, i) => i === idx ? {
-        ...a,
-        activityType:   value,
-        category:       master ? master.activityType : a.category,
-        categoryLocked: !!master,
-      } : a),
-    } : d);
-  };
-
-  // ── Bulk helpers ──────────────────────────────────────────────────────────
   const allPendingSelected  = pendingFiltered.length>0 && pendingFiltered.every((p)=>selectedIds.has(p.id));
   const somePendingSelected = pendingFiltered.some((p)=>selectedIds.has(p.id));
   const toggleSelectAll = () => {
@@ -498,6 +518,9 @@ export default function ApproverDashboard() {
   const calcBgAmt = (budget:number, add:number, share:number|null) =>
     Math.round((budget+add)*((share && share > 0 ? share : 100)/100));
 
+  // ── Unique activity names for edit mode dropdown ──────────────────────────
+  const activityNameOptions = activityGroups.map((g) => g.activityName);
+
   return (
     <div className="ap-page">
       <main className="ap-main">
@@ -525,24 +548,18 @@ export default function ApproverDashboard() {
           <>
             <div className={`ap-stats ap-stats--${isAdmin?"admin":"user"}`}>
               <StatCard label="Total"          value={stats.total}     color="navy"
-                active={filterStatus==="All"}
-                onClick={()=>setFilterStatus("All")}/>
+                active={filterStatus==="All"} onClick={()=>setFilterStatus("All")}/>
               <StatCard label="Pending review" value={stats.pending}   color="amber"
-                active={filterStatus==="Pending"}
-                onClick={()=>setFilterStatus("Pending")}/>
+                active={filterStatus==="Pending"} onClick={()=>setFilterStatus("Pending")}/>
               <StatCard label="Approved"       value={stats.approved}  color="green"
-                active={filterStatus==="Approved"}
-                onClick={()=>setFilterStatus("Approved")}/>
+                active={filterStatus==="Approved"} onClick={()=>setFilterStatus("Approved")}/>
               <StatCard label="Rejected"       value={stats.rejected}  color="red"
-                active={filterStatus==="Rejected"}
-                onClick={()=>setFilterStatus("Rejected")}/>
+                active={filterStatus==="Rejected"} onClick={()=>setFilterStatus("Rejected")}/>
               {isAdmin
                 ?<StatCard label="Approved budget" value={inr(stats.totalBudget)} color="navy"
-                    active={filterStatus==="Approved"}
-                    onClick={()=>setFilterStatus("Approved")}/>
+                    active={filterStatus==="Approved"} onClick={()=>setFilterStatus("Approved")}/>
                 :<StatCard label="Needs revision"  value={stats.needsRevision}    color="orange"
-                    active={filterStatus==="NeedsRevision"}
-                    onClick={()=>setFilterStatus("NeedsRevision")}/>}
+                    active={filterStatus==="NeedsRevision"} onClick={()=>setFilterStatus("NeedsRevision")}/>}
             </div>
 
             <div className="ap-filters">
@@ -559,7 +576,6 @@ export default function ApproverDashboard() {
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
             </div>
 
-            {/* Bulk approve bar */}
             {isAdmin&&selectedIds.size>0&&(
               <div style={{ background:"#0a2540",borderRadius:10,padding:"12px 18px",
                 marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
@@ -602,7 +618,6 @@ export default function ApproverDashboard() {
               </div>
             )}
 
-            {/* Main table */}
             <div className="ap-table-wrap">
               <table className="ap-table">
                 <thead>
@@ -873,28 +888,29 @@ export default function ApproverDashboard() {
                   )}
                 </div>
                 <div style={{ overflowX:"auto" }}>
-                  <table style={{ width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:isEditing?1200:860 }}>
+                  <table style={{ width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:isEditing?1400:960 }}>
                     <thead>
                       <tr style={{ background:"#f8fafc",borderBottom:"2px solid #e2e8f0" }}>
+                        {/* ── Column order: # | Activity Name | Type(ATL/BTL) | Subcategory | QTY | Lead | Retail | Dates | Budget | Add.Budget | BGauss Share | BGauss Amt | Total | [Post-Activity/Media] | [×] ── */}
                         <th style={{ padding:"9px 10px",textAlign:"left",  width:32,  fontSize:11,fontWeight:700,color:"#374151" }}>#</th>
-                        <th style={{ padding:"9px 10px",textAlign:"left",  width:isEditing?175:155, fontSize:11,fontWeight:700,color:"#374151" }}>Activity Name</th>
+                        <th style={{ padding:"9px 10px",textAlign:"left",  width:isEditing?170:160, fontSize:11,fontWeight:700,color:"#374151" }}>Activity Name</th>
                         <th style={{ padding:"9px 10px",textAlign:"left",  width:90,  fontSize:11,fontWeight:700,color:"#374151" }}>Type (ATL/BTL)</th>
-                        <th style={{ padding:"9px 10px",textAlign:"right", width:70,  fontSize:11,fontWeight:700,color:"#374151" }}>Lead</th>
-                        <th style={{ padding:"9px 10px",textAlign:"right", width:70,  fontSize:11,fontWeight:700,color:"#374151" }}>Retail</th>
-                        <th style={{ padding:"9px 10px",textAlign:"left",  width:isEditing?245:170, fontSize:11,fontWeight:700,color:"#374151" }}>Dates</th>
-                        <th style={{ padding:"9px 10px",textAlign:"right", width:110, fontSize:11,fontWeight:700,color:"#374151" }}>Budget (₹)</th>
+                        <th style={{ padding:"9px 10px",textAlign:"left",  width:isEditing?155:145, fontSize:11,fontWeight:700,color:"#374151" }}>Subcategory</th>
+                        <th style={{ padding:"9px 10px",textAlign:"center",width:60,  fontSize:11,fontWeight:700,color:"#374151" }}>QTY</th>
+                        <th style={{ padding:"9px 10px",textAlign:"right", width:68,  fontSize:11,fontWeight:700,color:"#374151" }}>Lead</th>
+                        <th style={{ padding:"9px 10px",textAlign:"center",width:72,  fontSize:11,fontWeight:700,color:"#374151" }}>Sales %<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
+                        <th style={{ padding:"9px 10px",textAlign:"right", width:68,  fontSize:11,fontWeight:700,color:"#374151" }}>Retail</th>
+                        <th style={{ padding:"9px 10px",textAlign:"left",  width:isEditing?250:170, fontSize:11,fontWeight:700,color:"#374151" }}>Dates</th>
+                        <th style={{ padding:"9px 10px",textAlign:"right", width:105, fontSize:11,fontWeight:700,color:"#374151" }}>Budget (₹)</th>
                         <th style={{ padding:"9px 10px",textAlign:"right", width:100, fontSize:11,fontWeight:700,color:"#374151" }}>Add. Budget</th>
-                        <th style={{ padding:"9px 10px",textAlign:"center",width:100, fontSize:11,fontWeight:700,color:"#374151" }}>BGauss Share</th>
-                        <th style={{ padding:"9px 10px",textAlign:"right", width:110, fontSize:11,fontWeight:700,color:"#1e40af" }}>BGauss Amt</th>
-                        <th style={{ padding:"9px 10px",textAlign:"right", width:100, fontSize:11,fontWeight:700,color:"#374151" }}>Total (₹)</th>
-                        {/* NEW: Post-Activity column (view mode only, Approved proposals) */}
+                        <th style={{ padding:"9px 10px",textAlign:"center",width:100, fontSize:11,fontWeight:700,color:"#374151" }}>BGauss%</th>
+                        <th style={{ padding:"9px 10px",textAlign:"right", width:105, fontSize:11,fontWeight:700,color:"#1e40af" }}>BGauss Amt</th>
+                        <th style={{ padding:"9px 10px",textAlign:"right", width:95,  fontSize:11,fontWeight:700,color:"#374151" }}>Total (₹)</th>
                         {!isEditing&&selected.status==="Approved"&&(
-                          <th style={{ padding:"9px 10px",textAlign:"center",width:100,fontSize:11,fontWeight:700,color:"#16a34a" }}>
-                            Post-Activity
-                          </th>
+                          <th style={{ padding:"9px 10px",textAlign:"center",width:100,fontSize:11,fontWeight:700,color:"#16a34a" }}>Post-Activity</th>
                         )}
                         {!isEditing&&selected.status!=="Approved"&&(
-                          <th style={{ padding:"9px 10px",textAlign:"left",width:150,fontSize:11,fontWeight:700,color:"#374151" }}>Media</th>
+                          <th style={{ padding:"9px 10px",textAlign:"left",width:140,fontSize:11,fontWeight:700,color:"#374151" }}>Media</th>
                         )}
                         {isAdmin&&isEditing&&<th style={{ width:36 }}></th>}
                       </tr>
@@ -902,39 +918,36 @@ export default function ApproverDashboard() {
                     <tbody>
                       {(isEditing?editData.activities:selected.activities).map((a,i)=>
                         isAdmin&&isEditing?([
-                          /* ── EDIT ROW ── */
+                          /* ── EDIT ROW — correct column order ── */
                           <tr key={`edit-${i}`} style={{ background:i%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",verticalAlign:"top" }}>
                             <td style={{ padding:"10px 10px",color:"#6b7280",fontSize:11,paddingTop:14 }}>{i+1}</td>
 
-                            {/* Activity Name — auto-fills category */}
+                            {/* 1. Activity Name — datalist from master */}
                             <td style={{ padding:"8px 8px" }}>
                               <input list={`al-${i}`}
                                 style={{ width:"100%",border:"1px solid #d1d5db",borderRadius:6,
                                   padding:"6px 8px",fontSize:12,outline:"none",boxSizing:"border-box" as const }}
                                 value={(a as EditActivity).activityType}
-                                onChange={(e)=>handleEditActivityTypeChange(i,e.target.value)}
-                                placeholder="Select or type activity…"/>
+                                onChange={(e)=>handleEditActivityNameChange(i,e.target.value)}
+                                placeholder="Select activity name…"/>
                               <datalist id={`al-${i}`}>
-                                {activityMasterList.map((t)=><option key={t.id} value={t.activityName}/>)}
+                                {activityNameOptions.map((n)=><option key={n} value={n}/>)}
                               </datalist>
                             </td>
 
-                            {/* Category — auto-locked badge or editable select */}
+                            {/* 2. Type (ATL/BTL) — auto-locked badge or select */}
                             <td style={{ padding:"8px 8px" }}>
-                              {(a as EditActivity).categoryLocked ? (
-                                <div style={{
-                                  display:"flex",alignItems:"center",gap:4,
+                              {(a as EditActivity).categoryLocked?(
+                                <div style={{ display:"flex",alignItems:"center",gap:4,
                                   background:(a as EditActivity).category==="ATL"?"#eff6ff":"#f0fdf4",
                                   border:`1.5px solid ${(a as EditActivity).category==="ATL"?"#bfdbfe":"#bbf7d0"}`,
                                   borderRadius:6,padding:"5px 8px",height:32,fontSize:12,fontWeight:700,
                                   color:(a as EditActivity).category==="ATL"?"#1e40af":"#166534",
-                                  minWidth:62,whiteSpace:"nowrap",
-                                }}>
+                                  minWidth:62,whiteSpace:"nowrap" }}>
                                   <span>{(a as EditActivity).category}</span>
-                                  <span style={{ fontSize:10,color:"#9ca3af",marginLeft:"auto" }}
-                                    title="Auto-filled from Activity Master">🔒</span>
+                                  <span style={{ fontSize:10,color:"#9ca3af",marginLeft:"auto" }} title="Auto-filled from Activity Master">🔒</span>
                                 </div>
-                              ) : (
+                              ):(
                                 <select style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"6px 8px",
                                   fontSize:12,outline:"none",background:"#fff",width:84 }}
                                   value={(a as EditActivity).category}
@@ -946,48 +959,129 @@ export default function ApproverDashboard() {
                               )}
                             </td>
 
-                            <td style={{ padding:"8px 8px",textAlign:"right" }}>
-                              <input type="number" min={0}
-                                style={{ width:60,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }}
-                                value={(a as EditActivity).leadTarget}
-                                onChange={(e)=>setAF(i,"leadTarget",e.target.value)}/>
-                            </td>
-                            <td style={{ padding:"8px 8px",textAlign:"right" }}>
-                              <input type="number" min={0}
-                                style={{ width:60,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }}
-                                value={(a as EditActivity).retailTarget}
-                                onChange={(e)=>setAF(i,"retailTarget",e.target.value)}/>
+                            {/* 3. Subcategory — dropdown filtered by activity name */}
+                            <td style={{ padding:"8px 8px" }}>
+                              {(()=>{
+                                const grp = activityGroups.find(g=>g.activityName.toLowerCase()===(a as EditActivity).activityType.toLowerCase());
+                                const subs = grp?.subcategories ?? [];
+                                return subs.length > 0 ? (
+                                  <select style={{ width:"100%",border:"1px solid #d1d5db",borderRadius:6,
+                                    padding:"5px 6px",fontSize:12,outline:"none",background:"#fff" }}
+                                    value={(a as EditActivity).subcategory}
+                                    onChange={(e)=>handleEditSubcategoryChange(i,(a as EditActivity).activityType,e.target.value)}>
+                                    <option value="">Select subcategory…</option>
+                                    {subs.map((s)=><option key={s.subcategory} value={s.subcategory}>{s.subcategory}</option>)}
+                                  </select>
+                                ) : (
+                                  <input type="text"
+                                    style={{ width:"100%",border:"1px solid #d1d5db",borderRadius:6,
+                                      padding:"5px 6px",fontSize:12,outline:"none",
+                                      background:(a as EditActivity).activityType?"#fff":"#f9fafb" }}
+                                    placeholder={(a as EditActivity).activityType?"Type subcategory…":"Select name first"}
+                                    disabled={!(a as EditActivity).activityType}
+                                    value={(a as EditActivity).subcategory}
+                                    onChange={(e)=>setAF(i,"subcategory",e.target.value)}/>
+                                );
+                              })()}
                             </td>
 
+                            {/* 4. QTY — dropdown 1 to maxQty */}
+                            <td style={{ padding:"8px 8px",textAlign:"center" }}>
+                              {(()=>{
+                                const grp = activityGroups.find(g=>g.activityName.toLowerCase()===(a as EditActivity).activityType.toLowerCase());
+                                const sub = grp?.subcategories.find(s=>s.subcategory===(a as EditActivity).subcategory);
+                                const maxQty = sub?.maxQty ?? 5;
+                                const qtyOpts = Array.from({length:maxQty},(_,k)=>String(k+1));
+                                return (
+                                  <select style={{ width:52,textAlign:"center",border:"1px solid #d1d5db",
+                                    borderRadius:6,padding:"5px 4px",fontSize:12,outline:"none",background:"#fff" }}
+                                    value={(a as EditActivity).qty}
+                                    onChange={(e)=>setAF(i,"qty",e.target.value)}
+                                    disabled={!(a as EditActivity).subcategory && (grp?.subcategories.length??0)>0}>
+                                    {qtyOpts.map((q)=><option key={q} value={q}>{q}</option>)}
+                                  </select>
+                                );
+                              })()}
+                            </td>
+
+                            {/* 5. Lead */}
+                            <td style={{ padding:"8px 8px",textAlign:"right" }}>
+                              <input type="number" min={0}
+                                style={{ width:58,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }}
+                                value={(a as EditActivity).leadTarget}
+                                onChange={(e)=>{
+                                  const lead=e.target.value;
+                                  const pct=(a as EditActivity).salesPercent.trim();
+                                  const retail=pct&&parseFloat(pct)>0?String(Math.round(parseFloat(lead||"0")*parseFloat(pct)/100)):"";
+                                  setEditData((d)=>d?{...d,activities:d.activities.map((act,k)=>k===i?{...act,leadTarget:lead,retailTarget:retail||act.retailTarget,retailLocked:!!(retail)}:act)}:d);
+                                }}/>
+                            </td>
+
+                            {/* 5b. Sales % */}
+                            <td style={{ padding:"8px 8px",textAlign:"center" }}>
+                              <input type="number" min={0} max={100} step="0.1"
+                                style={{ width:58,textAlign:"center",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 4px",fontSize:12,outline:"none" }}
+                                placeholder="e.g. 3"
+                                value={(a as EditActivity).salesPercent}
+                                onChange={(e)=>{
+                                  const pct=e.target.value;
+                                  const lead=(a as EditActivity).leadTarget;
+                                  const retail=pct&&parseFloat(pct)>0&&lead?String(Math.round(parseFloat(lead)*parseFloat(pct)/100)):"";
+                                  setEditData((d)=>d?{...d,activities:d.activities.map((act,k)=>k===i?{...act,salesPercent:pct,retailTarget:retail||act.retailTarget,retailLocked:!!(retail)}:act)}:d);
+                                }}/>
+                            </td>
+
+                            {/* 6. Retail */}
+                            <td style={{ padding:"8px 8px",textAlign:"right" }}>
+                              {(a as EditActivity).retailLocked ? (
+                                <div title="Auto-calculated from Lead × Sales%"
+                                  style={{ display:"flex",alignItems:"center",gap:4,background:"#eff6ff",
+                                    border:"1.5px solid #bfdbfe",borderRadius:6,padding:"4px 6px",
+                                    fontSize:12,fontWeight:600,color:"#1e40af",width:58,height:30,justifyContent:"space-between" }}>
+                                  <span>{(a as EditActivity).retailTarget||"0"}</span>
+                                  <span style={{ fontSize:9,color:"#93c5fd" }}>🔒</span>
+                                </div>
+                              ) : (
+                                <input type="number" min={0}
+                                  style={{ width:58,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }}
+                                  value={(a as EditActivity).retailTarget}
+                                  onChange={(e)=>setAF(i,"retailTarget",e.target.value)}/>
+                              )}
+                            </td>
+
+                            {/* 7. Dates */}
                             <td style={{ padding:"8px 8px" }}>
                               <div style={{ display:"flex",gap:4,alignItems:"center" }}>
                                 <input type="date"
-                                  style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:120 }}
+                                  style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }}
                                   value={(a as EditActivity).startDate}
                                   onChange={(e)=>setAF(i,"startDate",e.target.value)}/>
                                 <span style={{ color:"#6b7280" }}>→</span>
                                 <input type="date"
-                                  style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:120 }}
+                                  style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }}
                                   value={(a as EditActivity).endDate}
                                   min={(a as EditActivity).startDate||undefined}
                                   onChange={(e)=>setAF(i,"endDate",e.target.value)}/>
                               </div>
                             </td>
 
+                            {/* 8. Budget */}
                             <td style={{ padding:"8px 8px",textAlign:"right" }}>
                               <input type="number" min={0}
                                 style={{ width:90,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }}
                                 value={(a as EditActivity).budget}
                                 onChange={(e)=>setAF(i,"budget",e.target.value)}/>
                             </td>
+
+                            {/* 9. Add. Budget */}
                             <td style={{ padding:"8px 8px",textAlign:"right" }}>
                               <input type="number" min={0}
-                                style={{ width:90,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }}
+                                style={{ width:88,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }}
                                 value={(a as EditActivity).additionalBudget}
                                 onChange={(e)=>setAF(i,"additionalBudget",e.target.value)}/>
                             </td>
 
-                            {/* BGauss Share dropdown */}
+                            {/* 10. BGauss Share */}
                             <td style={{ padding:"8px 8px",textAlign:"center" }}>
                               <select style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 8px",
                                 fontSize:12,outline:"none",background:"#fff",width:80 }}
@@ -997,7 +1091,7 @@ export default function ApproverDashboard() {
                               </select>
                             </td>
 
-                            {/* BGauss Amt auto-calc */}
+                            {/* 11. BGauss Amt auto-calc */}
                             <td style={{ padding:"8px 8px",textAlign:"right" }}>
                               <div style={{ fontSize:12,fontWeight:600,color:"#1e40af",
                                 background:"#eff6ff",border:"1px solid #bfdbfe",
@@ -1009,10 +1103,12 @@ export default function ApproverDashboard() {
                               </div>
                             </td>
 
+                            {/* 12. Total */}
                             <td style={{ padding:"8px 8px",textAlign:"right",fontWeight:700,color:"#0a2540",paddingTop:14 }}>
                               {inr(num((a as EditActivity).budget)+num((a as EditActivity).additionalBudget))}
                             </td>
 
+                            {/* Remove button */}
                             <td style={{ padding:"8px 8px",textAlign:"center",paddingTop:14 }}>
                               <button onClick={()=>removeRow(i)} disabled={editData.activities.length===1}
                                 style={{ background:"#fee2e2",border:"none",color:"#991b1b",width:24,height:24,
@@ -1024,7 +1120,7 @@ export default function ApproverDashboard() {
                           /* ── MEDIA SUB-ROW ── */
                           <tr key={`media-${i}`} style={{ background:i%2===0?"#fff":"#f8fafc",borderBottom:"2px solid #f1f5f9" }}>
                             <td></td>
-                            <td colSpan={10} style={{ padding:"0 8px 10px" }}>
+                            {/* <td colSpan={12} style={{ padding:"0 8px 10px" }}>
                               <div style={{ display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
                                 <label style={{ display:"inline-flex",alignItems:"center",gap:5,
                                   background:"#f1f5f9",border:"1px dashed #cbd5e1",borderRadius:6,
@@ -1048,8 +1144,7 @@ export default function ApproverDashboard() {
                                         ?<a href={fu} target="_blank" rel="noopener noreferrer">
                                             <img src={fu} alt={m.fileName} style={{ width:22,height:22,objectFit:"cover",borderRadius:3 }}/>
                                           </a>
-                                        :<a href={fu} target="_blank" rel="noopener noreferrer"
-                                            style={{ fontSize:16 }}>{mediaIcon(m.fileType)}</a>}
+                                        :<a href={fu} target="_blank" rel="noopener noreferrer" style={{ fontSize:16 }}>{mediaIcon(m.fileType)}</a>}
                                       <span style={{ overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:90,color:"#374151",fontSize:10 }}>
                                         {m.fileName}
                                       </span>
@@ -1059,16 +1154,20 @@ export default function ApproverDashboard() {
                                   );
                                 })}
                               </div>
-                            </td>
+                            </td> */}
                             <td></td>
                           </tr>
                         ]):(
-                          /* ── VIEW ROW ── */
+                          /* ── VIEW ROW — same column order ── */
                           <tr key={`view-${i}`} style={{ background:i%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9" }}>
                             <td style={{ padding:"8px 10px",color:"#6b7280",fontSize:11 }}>{i+1}</td>
+
+                            {/* Activity Name */}
                             <td style={{ padding:"8px 10px",fontWeight:600,color:"#0a2540" }}>
                               {(a as ActivityResponse).activityType}
                             </td>
+
+                            {/* Type (ATL/BTL) */}
                             <td style={{ padding:"8px 10px" }}>
                               {(a as ActivityResponse).category?(
                                 <span style={{ fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:4,
@@ -1079,8 +1178,25 @@ export default function ApproverDashboard() {
                                 </span>
                               ):<span style={{ color:"#cbd5e1" }}>—</span>}
                             </td>
+
+                            {/* Subcategory */}
+                            <td style={{ padding:"8px 10px",fontSize:12,color:"#374151" }}>
+                              {(a as any).subcategory||<span style={{ color:"#cbd5e1" }}>—</span>}
+                            </td>
+
+                            {/* QTY */}
+                            <td style={{ padding:"8px 10px",textAlign:"center",fontSize:12,fontWeight:600,color:"#0a2540" }}>
+                              {(a as any).qty??1}
+                            </td>
+
                             <td style={{ padding:"8px 10px",textAlign:"right" }}>{(a as ActivityResponse).leadTarget}</td>
-                            <td style={{ padding:"8px 10px",textAlign:"right" }}>{(a as ActivityResponse).retailTarget}</td>
+                            <td style={{ padding:"8px 10px",textAlign:"center",color:"#374151",fontSize:12 }}>
+                              {(a as any).salesPercent ? `${(a as any).salesPercent}%` : <span style={{ color:"#cbd5e1" }}>—</span>}
+                            </td>
+                            <td style={{ padding:"8px 10px",textAlign:"right" }}>
+                              {(a as ActivityResponse).retailTarget}
+                              {(a as any).retailLocked && <span style={{ marginLeft:3,fontSize:10,color:"#93c5fd" }} title="Auto-calc from Sales%">🔒</span>}
+                            </td>
                             <td style={{ padding:"8px 10px",color:"#475569",fontSize:12 }}>
                               {fmtDate((a as ActivityResponse).startDate)} → {fmtDate((a as ActivityResponse).endDate)}
                             </td>
@@ -1102,20 +1218,14 @@ export default function ApproverDashboard() {
                               {inr((a as ActivityResponse).budget+(a as ActivityResponse).additionalBudget)}
                             </td>
 
-                            {/* NEW: Post-Activity button (Approved only) / Media column (others) */}
                             {selected.status==="Approved" ? (
                               <td style={{ padding:"8px 10px",textAlign:"center" }}>
-                                <button
-                                  onClick={()=>toggleActuals((a as ActivityResponse).id)}
-                                  style={{
-                                    background: openActualsId===(a as ActivityResponse).id ? "#0a2540" : "#16a34a",
-                                    color:"#fff",border:"none",borderRadius:6,
-                                    padding:"5px 12px",fontSize:11,fontWeight:700,
-                                    cursor:"pointer",whiteSpace:"nowrap",
-                                    boxShadow:"0 1px 3px rgba(0,0,0,0.15)",
-                                    display:"flex",alignItems:"center",gap:4,margin:"0 auto",
-                                  }}>
-                                  📋 {openActualsId===(a as ActivityResponse).id ? "Close ▲" : "Post-Activity ▼"}
+                                <button onClick={()=>toggleActuals((a as ActivityResponse).id)}
+                                  style={{ background:openActualsId===(a as ActivityResponse).id?"#0a2540":"#16a34a",
+                                    color:"#fff",border:"none",borderRadius:6,padding:"5px 12px",fontSize:11,fontWeight:700,
+                                    cursor:"pointer",whiteSpace:"nowrap",boxShadow:"0 1px 3px rgba(0,0,0,0.15)",
+                                    display:"flex",alignItems:"center",gap:4,margin:"0 auto" }}>
+                                  📋 {openActualsId===(a as ActivityResponse).id?"Close ▲":"Post-Activity ▼"}
                                 </button>
                               </td>
                             ) : (
@@ -1126,21 +1236,18 @@ export default function ApproverDashboard() {
                           </tr>
                         )
                       )}
-                      {/* ── Inline Post-Activity accordion rows (Approved, view mode) ── */}
+
+                      {/* ── Inline Post-Activity accordion ── */}
                       {!isEditing && selected.status==="Approved" && selected.activities.map((a)=>{
                         const d = actualsData[a.id];
                         if (openActualsId !== a.id || !d) return null;
                         return (
                           <tr key={`actuals-${a.id}`}>
-                            <td colSpan={12} style={{ padding:0,background:"#f0fdf4",borderBottom:"2px solid #bbf7d0" }}>
+                            <td colSpan={14} style={{ padding:0,background:"#f0fdf4",borderBottom:"2px solid #bbf7d0" }}>
                               <div style={{ padding:"16px 20px" }}>
-                                {/* Header */}
                                 <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:14 }}>
-                                  <span style={{ background:"#16a34a",color:"#fff",borderRadius:4,
-                                    padding:"1px 7px",fontSize:11,fontWeight:700 }}>📋</span>
-                                  <span style={{ fontWeight:700,fontSize:13,color:"#0a2540" }}>
-                                    Post-Activity — {a.activityType}
-                                  </span>
+                                  <span style={{ background:"#16a34a",color:"#fff",borderRadius:4,padding:"1px 7px",fontSize:11,fontWeight:700 }}>📋</span>
+                                  <span style={{ fontWeight:700,fontSize:13,color:"#0a2540" }}>Post-Activity — {a.activityType}</span>
                                   {a.category&&(
                                     <span style={{ fontSize:10,fontWeight:700,padding:"1px 7px",borderRadius:3,
                                       background:a.category==="ATL"?"#eff6ff":"#dcfce7",
@@ -1150,57 +1257,27 @@ export default function ApproverDashboard() {
                                     Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}
                                   </span>
                                 </div>
-
-                                {/* Fields */}
                                 <div style={{ display:"flex",gap:16,flexWrap:"wrap",alignItems:"flex-start",marginBottom:14 }}>
-                                  {/* Actual Start Date */}
                                   <div style={{ display:"flex",flexDirection:"column",gap:4,minWidth:160 }}>
-                                    <label style={{ fontSize:11,fontWeight:600,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em" }}>
-                                      Actual Start Date
-                                    </label>
+                                    <label style={{ fontSize:11,fontWeight:600,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em" }}>Actual Start Date</label>
                                     <input type="date" value={d.actualStartDate}
                                       onChange={(e)=>setActualField(a.id,"actualStartDate",e.target.value)}
-                                      style={{ border:"1px solid #bbf7d0",borderRadius:7,padding:"8px 10px",
-                                        fontSize:13,outline:"none",background:"#fff",
-                                        boxSizing:"border-box" as const }}/>
+                                      style={{ border:"1px solid #bbf7d0",borderRadius:7,padding:"8px 10px",fontSize:13,outline:"none",background:"#fff",boxSizing:"border-box" as const }}/>
                                   </div>
-
-                                  {/* Actual End Date */}
                                   <div style={{ display:"flex",flexDirection:"column",gap:4,minWidth:160 }}>
-                                    <label style={{ fontSize:11,fontWeight:600,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em" }}>
-                                      Actual End Date
-                                    </label>
-                                    <input type="date" value={d.actualEndDate}
-                                      min={d.actualStartDate||undefined}
+                                    <label style={{ fontSize:11,fontWeight:600,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em" }}>Actual End Date</label>
+                                    <input type="date" value={d.actualEndDate} min={d.actualStartDate||undefined}
                                       onChange={(e)=>setActualField(a.id,"actualEndDate",e.target.value)}
-                                      style={{ border:"1px solid #bbf7d0",borderRadius:7,padding:"8px 10px",
-                                        fontSize:13,outline:"none",background:"#fff",
-                                        boxSizing:"border-box" as const }}/>
+                                      style={{ border:"1px solid #bbf7d0",borderRadius:7,padding:"8px 10px",fontSize:13,outline:"none",background:"#fff",boxSizing:"border-box" as const }}/>
                                   </div>
-
-                                  {/* Media upload */}
                                   <div style={{ display:"flex",flexDirection:"column",gap:4,flex:1,minWidth:200 }}>
-                                    <label style={{ fontSize:11,fontWeight:600,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em" }}>
-                                      Upload Proof / Media
-                                    </label>
+                                    <label style={{ fontSize:11,fontWeight:600,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em" }}>Upload Proof / Media</label>
                                     {d.mediaFileName ? (
-                                      <div style={{ display:"flex",alignItems:"center",gap:8,
-                                        background:"#fff",border:"1px solid #bbf7d0",borderRadius:7,padding:"8px 10px" }}>
-                                        <span style={{ fontSize:18 }}>
-                                          {d.mediaFileType?.startsWith("image")?"🖼":d.mediaFileType?.includes("pdf")?"📄":"🎬"}
-                                        </span>
-                                        <span style={{ fontSize:12,color:"#374151",flex:1,
-                                          overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
-                                          {d.mediaFileName}
-                                        </span>
-                                        {d.mediaFileUrl&&(
-                                          <a href={resolveUrl(d.mediaFileUrl)} target="_blank" rel="noreferrer"
-                                            style={{ fontSize:11,color:"#1e40af",fontWeight:600,whiteSpace:"nowrap" }}>
-                                            View ↗
-                                          </a>
-                                        )}
-                                        <label style={{ fontSize:11,color:"#6b7280",cursor:"pointer",
-                                          background:"#f1f5f9",borderRadius:5,padding:"3px 8px",whiteSpace:"nowrap" }}>
+                                      <div style={{ display:"flex",alignItems:"center",gap:8,background:"#fff",border:"1px solid #bbf7d0",borderRadius:7,padding:"8px 10px" }}>
+                                        <span style={{ fontSize:18 }}>{d.mediaFileType?.startsWith("image")?"🖼":d.mediaFileType?.includes("pdf")?"📄":"🎬"}</span>
+                                        <span style={{ fontSize:12,color:"#374151",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{d.mediaFileName}</span>
+                                        {d.mediaFileUrl&&(<a href={resolveUrl(d.mediaFileUrl)} target="_blank" rel="noreferrer" style={{ fontSize:11,color:"#1e40af",fontWeight:600,whiteSpace:"nowrap" }}>View ↗</a>)}
+                                        <label style={{ fontSize:11,color:"#6b7280",cursor:"pointer",background:"#f1f5f9",borderRadius:5,padding:"3px 8px",whiteSpace:"nowrap" }}>
                                           Replace
                                           <input type="file" accept="image/*,.pdf,.mp4,.mov,.avi" style={{ display:"none" }}
                                             onChange={(e)=>{const f=e.target.files?.[0];if(f)handleActualMedia(a.id,f);e.target.value="";}}/>
@@ -1210,9 +1287,7 @@ export default function ApproverDashboard() {
                                       <label style={{ display:"flex",alignItems:"center",justifyContent:"center",gap:6,
                                         background:"#fff",border:"2px dashed #86efac",borderRadius:7,padding:"12px 16px",
                                         cursor:"pointer",fontSize:12,color:"#16a34a",fontWeight:600 }}>
-                                        {d.uploading
-                                          ?<><span className="ap-spin-sm" style={{ marginRight:4 }}/> Uploading…</>
-                                          :<>📎 Upload proof / media file</>}
+                                        {d.uploading?<><span className="ap-spin-sm" style={{ marginRight:4 }}/> Uploading…</>:<>📎 Upload proof / media file</>}
                                         <input type="file" accept="image/*,.pdf,.mp4,.mov,.avi" style={{ display:"none" }}
                                           disabled={d.uploading}
                                           onChange={(e)=>{const f=e.target.files?.[0];if(f)handleActualMedia(a.id,f);e.target.value="";}}/>
@@ -1220,26 +1295,19 @@ export default function ApproverDashboard() {
                                     )}
                                   </div>
                                 </div>
-
-                                {/* Last saved */}
                                 {(a.actualStartDate||a.actualEndDate)&&(
-                                  <div style={{ fontSize:11,color:"#166534",marginBottom:12,
-                                    background:"#dcfce7",borderRadius:5,padding:"4px 10px",display:"inline-block" }}>
+                                  <div style={{ fontSize:11,color:"#166534",marginBottom:12,background:"#dcfce7",borderRadius:5,padding:"4px 10px",display:"inline-block" }}>
                                     ✓ Last saved: {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}
                                   </div>
                                 )}
-
-                                {/* Save button */}
                                 <div style={{ display:"flex",gap:10,alignItems:"center" }}>
                                   <button onClick={saveActuals} disabled={actualsLoading}
-                                    style={{ background:"#16a34a",color:"#fff",border:"none",
-                                      padding:"9px 22px",borderRadius:7,fontWeight:700,fontSize:13,
+                                    style={{ background:"#16a34a",color:"#fff",border:"none",padding:"9px 22px",borderRadius:7,fontWeight:700,fontSize:13,
                                       cursor:actualsLoading?"not-allowed":"pointer",opacity:actualsLoading?0.7:1 }}>
                                     {actualsLoading?"Saving…":"💾 Save Actuals"}
                                   </button>
                                   <button onClick={()=>setOpenActualsId(null)}
-                                    style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",
-                                      padding:"9px 18px",borderRadius:7,fontSize:13,cursor:"pointer" }}>
+                                    style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"9px 18px",borderRadius:7,fontSize:13,cursor:"pointer" }}>
                                     Close
                                   </button>
                                 </div>
@@ -1255,15 +1323,23 @@ export default function ApproverDashboard() {
                 {/* Summary footer */}
                 <div style={{ background:"#0a2540",padding:"10px 16px",display:"flex",gap:20,flexWrap:"wrap" }}>
                   {[
-                    {label:"Lead",        value:isEditing?Math.round(editTotals.totalLeadTarget):selected.totalLeadTarget},
-                    {label:"Retail",      value:isEditing?Math.round(editTotals.totalRetailTarget):selected.totalRetailTarget},
-                    {label:"Total budget",value:inr(isEditing?editTotals.totalBudget:selected.totalBudget), hi:true},
+                    {label:"Lead",         value:isEditing?Math.round(editTotals.totalLeadTarget):selected.totalLeadTarget},
+                    {label:"Retail",       value:isEditing?Math.round(editTotals.totalRetailTarget):selected.totalRetailTarget},
+                    {label:"Total budget", value:inr(isEditing?editTotals.totalBudget:selected.totalBudget), hi:true},
                     {label:"BGauss budget",value:inr(isEditing
                       ?editTotals.totalBgauss
                       :selected.activities.reduce((s,a)=>s+calcBgAmt(a.budget,a.additionalBudget,a.bgaussShare),0)
                     ), blue:true},
-                    {label:"CAC",         value:inr(isEditing?editTotals.cac:selected.cac)},
-                    {label:"CPL",         value:inr(isEditing?editTotals.cpl:selected.cpl)},
+                    {label:"CAC", value:inr(isEditing?editTotals.cac
+                      :(selected.totalRetailTarget>0
+                        ?selected.activities.reduce((s,a)=>s+calcBgAmt(a.budget,a.additionalBudget,a.bgaussShare),0)/selected.totalRetailTarget
+                        :0)
+                    ), blue:true},
+                    {label:"CPL", value:inr(isEditing?editTotals.cpl
+                      :(selected.totalLeadTarget>0
+                        ?selected.activities.reduce((s,a)=>s+calcBgAmt(a.budget,a.additionalBudget,a.bgaussShare),0)/selected.totalLeadTarget
+                        :0)
+                    ), blue:true},
                   ].map(({label,value,hi,blue})=>(
                     <div key={label}>
                       <div style={{ fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.05em" }}>{label}</div>
@@ -1273,33 +1349,42 @@ export default function ApproverDashboard() {
                 </div>
               </div>
 
-              {selected.cacWarning&&(
-                <div style={{ background:"#fefce8",border:"1px solid #fde68a",borderLeft:"3px solid #f59e0b",
-                  borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:13,color:"#92400e" }}>
-                  ⚠ {selected.cacWarning}
-                </div>
-              )}
-
-              {/* Post-Activity actuals now open inline per-row via 📋 Post-Activity button in the table above */}
+              {(()=>{
+                // Compute live BGauss CAC warning for the approver panel
+                const bgAmt = isEditing
+                  ? editTotals.totalBgauss
+                  : selected.activities.reduce((s,a)=>s+calcBgAmt(a.budget,a.additionalBudget,a.bgaussShare),0);
+                const retail = isEditing ? editTotals.totalRetailTarget : selected.totalRetailTarget;
+                const liveCAC = retail > 0 ? bgAmt / retail : 0;
+                const allowedCac = selected.allowedCac ?? 4000;
+                const showWarn = liveCAC > allowedCac && retail > 0;
+                return showWarn ? (
+                  <div style={{ background:"#fef2f2",border:"1px solid #fecaca",borderLeft:"3px solid #ef4444",
+                    borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:13,color:"#991b1b",fontWeight:500 }}>
+                    ⚠ CAC ₹{Math.round(liveCAC).toLocaleString("en-IN")} exceeds allowed ₹{allowedCac.toLocaleString("en-IN")}/vehicle for {selected.type} dealer.
+                    <span style={{ fontWeight:400,marginLeft:6 }}>Deviation approval required.</span>
+                  </div>
+                ) : selected.cacWarning ? (
+                  <div style={{ background:"#fefce8",border:"1px solid #fde68a",borderLeft:"3px solid #f59e0b",
+                    borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:13,color:"#92400e" }}>
+                    ⚠ {selected.cacWarning}
+                  </div>
+                ) : null;
+              })()}
 
               {/* Admin decision panel */}
               {isAdmin&&selected.status==="Pending"&&!isEditing&&(
                 <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"20px",marginBottom:20 }}>
                   <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:16 }}>Actions</p>
                   <div style={{ marginBottom:20,paddingBottom:20,borderBottom:"1px solid #e2e8f0" }}>
-                    <p style={{ fontSize:13,color:"#6b7280",margin:"0 0 10px" }}>
-                      Forward to <strong>Vijay Maurya</strong> for final approval:
-                    </p>
+                    <p style={{ fontSize:13,color:"#6b7280",margin:"0 0 10px" }}>Forward to <strong>Vijay Maurya</strong> for final approval:</p>
                     {selected.checkedByEmail&&(
-                      <div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,
-                        padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:10 }}>
-                        ✓ Already forwarded by {selected.checkedByEmail}
-                        {selected.checkedAt&&` on ${fmtDate(selected.checkedAt)}`}
+                      <div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:10 }}>
+                        ✓ Already forwarded by {selected.checkedByEmail}{selected.checkedAt&&` on ${fmtDate(selected.checkedAt)}`}
                       </div>
                     )}
                     <button onClick={handleForward} disabled={forwardLoading}
-                      style={{ background:"#1e3a5f",color:"#fff",border:"none",padding:"10px 22px",
-                        borderRadius:8,fontWeight:600,fontSize:14,
+                      style={{ background:"#1e3a5f",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,
                         cursor:forwardLoading?"not-allowed":"pointer",opacity:forwardLoading?0.7:1 }}>
                       {forwardLoading?"Forwarding…":"📤 Forward to Final Approver"}
                     </button>
@@ -1315,9 +1400,7 @@ export default function ApproverDashboard() {
                       {actionLoading?"Processing…":"✕  Reject"}</button>
                   </div>
                   <div className="ap-sendback-row">
-                    <button className="ap-sendback-trigger" onClick={()=>setShowSendBack((v)=>!v)}>
-                      ↩ Send back for revision
-                    </button>
+                    <button className="ap-sendback-trigger" onClick={()=>setShowSendBack((v)=>!v)}>↩ Send back for revision</button>
                   </div>
                   {showSendBack&&(
                     <div className="ap-sendback-box">
@@ -1328,8 +1411,7 @@ export default function ApproverDashboard() {
                       <div className="ap-btn-row">
                         <button className="ap-sendback-btn" disabled={actionLoading} onClick={handleSendBack}>
                           {actionLoading?"Sending…":"↩ Send for revision"}</button>
-                        <button className="ap-discard-btn"
-                          onClick={()=>{setShowSendBack(false);setSendBackNote("");}}>Cancel</button>
+                        <button className="ap-discard-btn" onClick={()=>{setShowSendBack(false);setSendBackNote("");}}>Cancel</button>
                       </div>
                     </div>
                   )}
@@ -1342,10 +1424,8 @@ export default function ApproverDashboard() {
                   <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:8 }}>Notify Dealer</p>
                   <p style={{ fontSize:12,color:"#6b7280",margin:"0 0 14px" }}>Send the approved activity plan to the dealer.</p>
                   {selected.dealerNotified&&(
-                    <div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,
-                      padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:12 }}>
-                      ✓ Dealer notified
-                      {selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}
+                    <div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:12 }}>
+                      ✓ Dealer notified{selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}
                     </div>
                   )}
                   {!showNotifyDealer?(
@@ -1353,8 +1433,7 @@ export default function ApproverDashboard() {
                       setShowNotifyDealer(true);
                       if(selected.dealerEmail){setDealerEmailMode("dealer");setDealerEmailInput(selected.dealerEmail);}
                       else{setDealerEmailMode("custom");setDealerEmailInput("");}
-                    }} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",
-                        borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }}>
+                    }} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }}>
                       {selected.dealerNotified?"📧 Send Again":"📧 Notify Dealer"}
                     </button>
                   ):(
@@ -1402,23 +1481,18 @@ export default function ApproverDashboard() {
                         </label>
                         <input type="email" value={dealerEmailInput} onChange={(e)=>setDealerEmailInput(e.target.value)}
                           placeholder="recipient@example.com"
-                          style={{ width:"100%",padding:"9px 12px",borderRadius:7,border:"1px solid #d1d5db",
-                            fontSize:13,boxSizing:"border-box" as const }}/>
-                        <p style={{ fontSize:11,color:"#9ca3af",marginTop:4 }}>
-                          CC: Mayank Maheshwari + RSM ({selected.submittedBy})
-                        </p>
+                          style={{ width:"100%",padding:"9px 12px",borderRadius:7,border:"1px solid #d1d5db",fontSize:13,boxSizing:"border-box" as const }}/>
+                        <p style={{ fontSize:11,color:"#9ca3af",marginTop:4 }}>CC: Mayank Maheshwari + RSM ({selected.submittedBy})</p>
                       </div>
                       <div style={{ display:"flex",gap:10 }}>
                         <button onClick={handleNotifyDealer} disabled={notifyLoading||!dealerEmailInput.trim()}
-                          style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,
-                            fontWeight:600,fontSize:14,
+                          style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,
                             cursor:notifyLoading||!dealerEmailInput.trim()?"not-allowed":"pointer",
                             opacity:notifyLoading||!dealerEmailInput.trim()?0.6:1 }}>
                           {notifyLoading?"Sending…":"📧 Send to Dealer"}
                         </button>
                         <button onClick={()=>setShowNotifyDealer(false)}
-                          style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",
-                            padding:"10px 20px",borderRadius:8,fontWeight:500,fontSize:14,cursor:"pointer" }}>
+                          style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"10px 20px",borderRadius:8,fontWeight:500,fontSize:14,cursor:"pointer" }}>
                           Cancel
                         </button>
                       </div>
@@ -1435,8 +1509,7 @@ export default function ApproverDashboard() {
                   borderLeft:`4px solid ${selected.status==="Approved"?"#16a34a":selected.status==="Rejected"?"#dc2626":"#f59e0b"}`,
                   borderRadius:10,padding:"16px 20px" }}>
                   <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4 }}>
-                    <strong style={{ fontSize:14,
-                      color:selected.status==="Approved"?"#166534":selected.status==="Rejected"?"#991b1b":"#92400e" }}>
+                    <strong style={{ fontSize:14,color:selected.status==="Approved"?"#166634":selected.status==="Rejected"?"#991b1b":"#92400e" }}>
                       {selected.status==="NeedsRevision"?"Revision requested":selected.status}
                     </strong>
                     {selected.decidedAt&&(
@@ -1448,8 +1521,7 @@ export default function ApproverDashboard() {
                   {selected.approverNote&&<p style={{ margin:"4px 0 0",fontSize:13,color:"#374151" }}>{selected.approverNote}</p>}
                   {selected.status==="NeedsRevision"&&(
                     <button onClick={()=>navigate(`/rsm-form?edit=${selected.id}`)}
-                      style={{ marginTop:12,background:"#f59e0b",color:"#fff",border:"none",
-                        borderRadius:7,padding:"8px 18px",fontSize:13,fontWeight:600,cursor:"pointer" }}>
+                      style={{ marginTop:12,background:"#f59e0b",color:"#fff",border:"none",borderRadius:7,padding:"8px 18px",fontSize:13,fontWeight:600,cursor:"pointer" }}>
                       ✏ Edit &amp; resubmit →
                     </button>
                   )}
@@ -1464,9 +1536,7 @@ export default function ApproverDashboard() {
                   borderLeft:`4px solid ${selected.status==="Approved"?"#16a34a":"#dc2626"}`,
                   borderRadius:10,padding:"14px 18px" }}>
                   <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between" }}>
-                    <strong style={{ fontSize:14,color:selected.status==="Approved"?"#166534":"#991b1b" }}>
-                      {selected.status}
-                    </strong>
+                    <strong style={{ fontSize:14,color:selected.status==="Approved"?"#166634":"#991b1b" }}>{selected.status}</strong>
                     {selected.decidedAt&&(
                       <span style={{ fontSize:12,color:"#6b7280" }}>
                         {fmtDate(selected.decidedAt)}{selected.approvedBy&&` · ${selected.approvedBy}`}
@@ -1486,13 +1556,11 @@ export default function ApproverDashboard() {
               display:"flex",justifyContent:"flex-end",alignItems:"center",gap:12 }}>
               <span style={{ fontSize:12,color:"#f59e0b",fontWeight:600 }}>⚠ Unsaved changes</span>
               <button onClick={()=>{ setEditData(toEditable(selected)); setIsEditing(false); }}
-                style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",
-                  borderRadius:7,padding:"9px 20px",fontWeight:500,fontSize:14,cursor:"pointer" }}>
+                style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",borderRadius:7,padding:"9px 20px",fontWeight:500,fontSize:14,cursor:"pointer" }}>
                 Discard
               </button>
               <button onClick={saveEdits} disabled={saveLoading}
-                style={{ background:"#0a2540",color:"#fff",border:"none",
-                  borderRadius:7,padding:"9px 24px",fontWeight:600,fontSize:14,
+                style={{ background:"#0a2540",color:"#fff",border:"none",borderRadius:7,padding:"9px 24px",fontWeight:600,fontSize:14,
                   cursor:saveLoading?"not-allowed":"pointer",opacity:saveLoading?0.7:1 }}>
                 {saveLoading?"Saving…":"💾 Save changes"}
               </button>
@@ -1516,14 +1584,13 @@ function StatCard({ label, value, color, onClick, active }: {
 }) {
   return (
     <div
-      className={`ap-stat${onClick ? " ap-stat--clickable" : ""}${active ? " ap-stat--active" : ""}`}
+      className={`ap-stat${onClick?" ap-stat--clickable":""}${active?" ap-stat--active":""}`}
       onClick={onClick}
-      title={onClick ? `Filter by: ${label}` : undefined}
-      style={{ cursor: onClick ? "pointer" : "default" }}
-    >
+      title={onClick?`Filter by: ${label}`:undefined}
+      style={{ cursor:onClick?"pointer":"default" }}>
       <span className={`ap-stat-val ap-${color}`}>{value}</span>
       <span className="ap-stat-lbl">{label}</span>
-      {active && <span className="ap-stat-active-dot"/>}
+      {active&&<span className="ap-stat-active-dot"/>}
     </div>
   );
 }

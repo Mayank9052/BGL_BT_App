@@ -14,23 +14,41 @@ interface DealerLayoutProps {
 
 export default function DealerLayout({ onLogout }: DealerLayoutProps) {
   const navigate = useNavigate();
-  const dealer = getDealerUser();
+  const dealer   = getDealerUser();
 
-  const [collapsed, setCollapsed] = useState(
+  const [collapsed,  setCollapsed]  = useState(
     () => localStorage.getItem(SIDEBAR_KEY) === "true"
   );
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // Persist collapsed state
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, String(collapsed));
   }, [collapsed]);
 
+  // Auto-close mobile sidebar on resize to desktop
   useEffect(() => {
     const handler = () => {
       if (window.innerWidth > 768) setMobileOpen(false);
     };
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
+  }, []);
+
+  // Auto-collapse sidebar when viewport is narrow (e.g. 900–1100px range)
+  // so the proposal full-page view has enough room
+  useEffect(() => {
+    const checkWidth = () => {
+      if (window.innerWidth < 1100 && !collapsed) {
+        setCollapsed(true);
+      }
+    };
+    // Check on mount
+    checkWidth();
+    window.addEventListener("resize", checkWidth);
+    return () => window.removeEventListener("resize", checkWidth);
+  // Only run on mount — don't re-run when collapsed changes (would create loop)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleLogout = () => {
@@ -49,7 +67,7 @@ export default function DealerLayout({ onLogout }: DealerLayoutProps) {
       <DealerSidebar
         collapsed={collapsed}
         mobileOpen={mobileOpen}
-        onToggle={() => setCollapsed((c) => !c)}
+        onToggle={()    => setCollapsed((c) => !c)}
         onMobileClose={() => setMobileOpen(false)}
         onLogout={handleLogout}
         dealerName={dealer?.dealerName || dealer?.displayName}
