@@ -1,7 +1,11 @@
 // src/pages/RSMForm.tsx
-// Merged: new features (ATL/BTL auto-fill, locked fields, used activity types)
-//         + restored: Additional Budget, BGauss Share (dropdown), Media Files
-//         + BGauss Share drives a "BGauss Budget" calc shown in totals
+// CHANGES:
+//   1. RSM/TSM + Commando lock (LockedField) when dealer auto-filled
+//   2. BGauss CAC + BGauss CPL in totals strip
+//   3. CAC warning checks BGauss CAC against allowed limit
+//   4. Sales % column — Retail auto-calculates and locks from Lead × Sales%
+//   5. goToSummary BLOCKS if BGauss CAC exceeds allowed limit (red warning shown)
+
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -10,7 +14,10 @@ import {
   fetchDealers, fetchDealerEligibility,
   type DealerOption, type DealerEligibility,
 } from "../services/dealerService";
-import { fetchActivityTypes, type ActivityType } from "../services/activityService";
+import {
+  fetchActivityTypes, groupActivityTypes,
+  type ActivityType, type ActivityGroup,
+} from "../services/activityService";
 import { fetchVendors, type VendorOption } from "../services/vendorService";
 import SearchableSelect from "../components/SearchableSelect";
 import type { StateOption, CityOption } from "../types/location";
@@ -22,8 +29,8 @@ import {
   type ProposalResponse,
 } from "../services/proposalService";
 
-const DEALER_TYPES        = ["Old", "New"];
-const ELIGIBILITY_OPTIONS = ["Eligible", "Not Eligible", "Pending Approval"];
+const DEALER_TYPES         = ["Old", "New"];
+const ELIGIBILITY_OPTIONS  = ["Eligible", "Not Eligible", "Pending Approval"];
 const BGAUSS_SHARE_OPTIONS = ["100", "70", "50"];
 const MONTHS = [
   "January","February","March","April","May","June",
@@ -32,40 +39,29 @@ const MONTHS = [
 const CURRENT_MONTH = MONTHS[new Date().getMonth()];
 
 interface ActivityRow {
-  id:              string;
-  activityType:    string;
-  category:        string;
-  categoryLocked:  boolean;   // auto-filled from ActivityMaster
-  leadTarget:      string;
-  retailTarget:    string;
-  startDate:       string;
-  endDate:         string;
-  budget:          string;
-  additionalBudget:string;
-  bgaussShare:     string;    // "100" | "70" | "50"
-  remarks:         string;
-  mediaFiles:      MediaFile[];
+  id: string; activityType: string; category: string;
+  categoryLocked: boolean; subcategory: string; qty: string;
+  leadTarget: string; salesPercent: string; retailTarget: string;
+  retailLocked: boolean;
+  startDate: string; endDate: string;
+  budget: string; additionalBudget: string; bgaussShare: string;
+  remarks: string; mediaFiles: MediaFile[]; _maxQty: number;
 }
-
-interface MediaFile {
-  id: string; fileUrl: string; fileName: string; fileType: string;
-}
-
+interface MediaFile { id: string; fileUrl: string; fileName: string; fileType: string; }
 interface ProposalHeader {
   dealerId: string; dealerName: string; vendorId: string; vendorName: string;
   state: string; stateId: number | null; location: string; type: string;
   rsmName: string; commandoName: string; month: string;
   eligibility: string; remarks: string;
 }
-
 interface FieldErrors {
   dealerName?: string; state?: string; location?: string; type?: string;
   rsmName?: string; month?: string; eligibility?: string;
 }
-
 interface ActivityErrors {
   [rowId: string]: {
-    activityType?: string; leadTarget?: string; retailTarget?: string;
+    activityType?: string; subcategory?: string; qty?: string;
+    leadTarget?: string; retailTarget?: string;
     startDate?: string; endDate?: string; budget?: string;
   };
 }
@@ -77,23 +73,26 @@ const titleCase = (str: string): string =>
 
 function generateDocNumber(): string {
   const now = new Date();
-  const yy = now.getFullYear().toString().slice(-2);
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dd = String(now.getDate()).padStart(2, "0");
-  return `BTL-${yy}${mm}${dd}-${Math.floor(Math.random() * 9000) + 1000}`;
+  return `BTL-${now.getFullYear().toString().slice(-2)}${String(now.getMonth()+1).padStart(2,"0")}${String(now.getDate()).padStart(2,"0")}-${Math.floor(Math.random()*9000)+1000}`;
 }
 function formatDate(d: Date): string {
-  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  return d.toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" });
+}
+
+function calcRetailFromSales(leadTarget: string, salesPercent: string): string {
+  const lead = num(leadTarget);
+  const pct  = num(salesPercent);
+  if (!lead || !salesPercent.trim() || pct <= 0) return "";
+  return String(Math.round(lead * pct / 100));
 }
 
 const emptyActivity = (): ActivityRow => ({
-  id: crypto.randomUUID(), activityType: "", category: "",
-  categoryLocked: false,
-  leadTarget: "", retailTarget: "", startDate: "", endDate: "",
-  budget: "", additionalBudget: "0", bgaussShare: "100",
-  remarks: "", mediaFiles: [],
+  id: crypto.randomUUID(), activityType: "", category: "", categoryLocked: false,
+  subcategory: "", qty: "1", _maxQty: 5, leadTarget: "", salesPercent: "",
+  retailTarget: "", retailLocked: false,
+  startDate: "", endDate: "", budget: "", additionalBudget: "0",
+  bgaussShare: "100", remarks: "", mediaFiles: [],
 });
-
 const emptyHeader = (): ProposalHeader => ({
   dealerId: "", dealerName: "", vendorId: "", vendorName: "",
   state: "", stateId: null, location: "", type: "",
@@ -107,41 +106,28 @@ function validateDetails(h: ProposalHeader): FieldErrors {
   if (!h.state.trim())       e.state       = "State is required.";
   if (!h.location.trim())    e.location    = "City is required.";
   if (!h.type.trim())        e.type        = "Location type is required.";
-  if (!h.rsmName.trim())     e.rsmName     = "RSM / TSM name is required.";
   if (!h.month.trim())       e.month       = "Month is required.";
   if (!h.eligibility.trim()) e.eligibility = "Eligibility is required.";
   return e;
 }
-
 function validateActivities(rows: ActivityRow[]): ActivityErrors {
   const e: ActivityErrors = {};
-  const typeCounts: Record<string, number> = {};
-  rows.forEach((a) => {
-    if (a.activityType)
-      typeCounts[a.activityType.toLowerCase()] = (typeCounts[a.activityType.toLowerCase()] ?? 0) + 1;
-  });
   rows.forEach((a) => {
     const rowErr: ActivityErrors[string] = {};
-    if (!a.activityType.trim()) rowErr.activityType = "Required";
-    else if ((typeCounts[a.activityType.toLowerCase()] ?? 0) > 1)
-      rowErr.activityType = "Duplicate activity type in same proposal";
-    if (!a.leadTarget   || num(a.leadTarget)   <= 0) rowErr.leadTarget   = "Required";
-    if (!a.retailTarget || num(a.retailTarget) <= 0) rowErr.retailTarget = "Required";
-    if (!a.startDate) rowErr.startDate = "Required";
-    if (!a.endDate)   rowErr.endDate   = "Required";
+    if (!a.activityType.trim())                         rowErr.activityType = "Required";
+    if (!a.leadTarget   || num(a.leadTarget)   <= 0)   rowErr.leadTarget   = "Required";
+    if (!a.retailTarget || num(a.retailTarget) <= 0)   rowErr.retailTarget = "Required";
+    if (!a.startDate)                                   rowErr.startDate    = "Required";
+    if (!a.endDate)                                     rowErr.endDate      = "Required";
     if (a.startDate && a.endDate && a.endDate < a.startDate) rowErr.endDate = "End must be after start";
-    if (!a.budget || num(a.budget) <= 0) rowErr.budget = "Required";
+    if (!a.budget || num(a.budget) <= 0)               rowErr.budget       = "Required";
     if (Object.keys(rowErr).length) e[a.id] = rowErr;
   });
   return e;
 }
 
-// ── BGauss share calc: budget * share% ───────────────────────────────────────
-const bgaussAmount = (budget: string, addBudget: string, share: string) => {
-  const total = num(budget) + num(addBudget);
-  const pct   = num(share || "100") / 100;
-  return Math.round(total * pct);
-};
+const bgaussAmount = (budget: string, addBudget: string, share: string) =>
+  Math.round((num(budget) + num(addBudget)) * (num(share || "100") / 100));
 
 export default function RSMProposalForm() {
   const { instance, accounts } = useMsal();
@@ -183,16 +169,18 @@ export default function RSMProposalForm() {
   const [dealerHistory,  setDealerHistory]  = useState<ProposalResponse[]>([]);
   const [loadingDealerHistory, setLoadingDealerHistory] = useState(false);
   const [activityTypes,       setActivityTypes]       = useState<ActivityType[]>([]);
+  const [activityGroups,      setActivityGroups]      = useState<ActivityGroup[]>([]);
   const [activityTypesLoaded, setActivityTypesLoaded] = useState(false);
   const [eligibility,        setEligibility]        = useState<DealerEligibility | null>(null);
   const [eligibilityLoading, setEligibilityLoading] = useState(false);
   const [cacWarning,         setCacWarning]         = useState<string | null>(null);
+  const [cacBlocking,        setCacBlocking]        = useState(false); // true = red, blocks submit
 
-  const [activeSection,   setActiveSection]   = useState<"details" | "activities" | "summary">("details");
+  const [activeSection,   setActiveSection]   = useState<"details"|"activities"|"summary">("details");
   const [showDealerPanel, setShowDealerPanel] = useState(false);
-  const [xlsxMsg,         setXlsxMsg]         = useState<{ ok: boolean; text: string } | null>(null);
-  const [xlsxAlert,       setXlsxAlert]       = useState<{ unknownTypes: string[]; skippedRows: number } | null>(null);
-  const [uploadingMedia,  setUploadingMedia]  = useState<Record<string, boolean>>({});
+  const [xlsxMsg,         setXlsxMsg]         = useState<{ok:boolean;text:string}|null>(null);
+  const [xlsxAlert,       setXlsxAlert]       = useState<{unknownTypes:string[];skippedRows:number}|null>(null);
+  const [uploadingMedia,  setUploadingMedia]  = useState<Record<string,boolean>>({});
 
   const selectedDealer = dealers.find((d) => d.customerCode === header.dealerId) ?? null;
 
@@ -209,13 +197,12 @@ export default function RSMProposalForm() {
   }, [instance]);
   useEffect(() => {
     fetchActivityTypes(instance)
-      .then((types) => { setActivityTypes(types); setActivityTypesLoaded(true); })
+      .then((types) => { setActivityTypes(types); setActivityGroups(groupActivityTypes(types)); setActivityTypesLoaded(true); })
       .catch(() => setActivityTypesLoaded(true));
   }, [instance]);
   useEffect(() => {
     if (!header.dealerName || !header.month || editMode) { setUsedActivityTypes([]); return; }
-    fetchActivityTypesUsed(header.dealerName, header.month, instance)
-      .then(setUsedActivityTypes).catch(() => setUsedActivityTypes([]));
+    fetchActivityTypesUsed(header.dealerName, header.month, instance).then(setUsedActivityTypes).catch(() => setUsedActivityTypes([]));
   }, [header.dealerName, header.month, instance, editMode]);
 
   useEffect(() => {
@@ -232,14 +219,15 @@ export default function RSMProposalForm() {
         });
         setActivities(p.activities.map((a) => ({
           id: crypto.randomUUID(), activityType: a.activityType, category: a.category ?? "",
-          categoryLocked: false,
-          leadTarget: String(a.leadTarget ?? 0), retailTarget: String(a.retailTarget ?? 0),
+          categoryLocked: false, subcategory: (a as any).subcategory ?? "",
+          qty: String((a as any).qty ?? 1), _maxQty: 20,
+          leadTarget: String(a.leadTarget ?? 0),
+          salesPercent: String((a as any).salesPercent ?? ""), retailTarget: String(a.retailTarget ?? 0),
+          retailLocked: !!(a as any).salesPercent && num(String((a as any).salesPercent)) > 0,
           startDate: a.startDate?.split("T")[0] ?? "", endDate: a.endDate?.split("T")[0] ?? "",
           budget: String(a.budget), additionalBudget: String(a.additionalBudget ?? 0),
           bgaussShare: String(a.bgaussShare ?? 100), remarks: a.remarks ?? "",
-          mediaFiles: (a.mediaFiles ?? []).map((m: any) => ({
-            id: m.id, fileUrl: m.fileUrl, fileName: m.fileName, fileType: m.fileType,
-          })),
+          mediaFiles: (a.mediaFiles ?? []).map((m: any) => ({ id: m.id, fileUrl: m.fileUrl, fileName: m.fileName, fileType: m.fileType })),
         })));
         if (p.approverNote) setRevisionNote(p.approverNote);
         setDealerAutoFilled(false);
@@ -248,28 +236,36 @@ export default function RSMProposalForm() {
       .finally(() => setLoadingEdit(false));
   }, [editId, instance]);
 
-  // ── Totals: total = sum(budget + additionalBudget), bgauss = budget * share% ─
   const totals = useMemo(() => {
     const totalBudget       = activities.reduce((s, a) => s + num(a.budget) + num(a.additionalBudget), 0);
     const totalLeadTarget   = activities.reduce((s, a) => s + num(a.leadTarget), 0);
     const totalRetailTarget = activities.reduce((s, a) => s + num(a.retailTarget), 0);
     const totalBgauss       = activities.reduce((s, a) => s + bgaussAmount(a.budget, a.additionalBudget, a.bgaussShare), 0);
-    const cpl = totalLeadTarget   > 0 ? totalBudget / totalLeadTarget   : 0;
-    const cac = totalRetailTarget > 0 ? totalBudget / totalRetailTarget : 0;
-    return { totalBudget, totalLeadTarget, totalRetailTarget, totalBgauss, cpl, cac };
+    // CAC/CPL are BGauss-share-adjusted: reflect the actual BGauss contribution per unit
+    // When BGauss% changes on a row, CAC/CPL update live
+    const cac = totalRetailTarget > 0 ? totalBgauss / totalRetailTarget : 0;
+    const cpl = totalLeadTarget   > 0 ? totalBgauss / totalLeadTarget   : 0;
+    return { totalBudget, totalLeadTarget, totalRetailTarget, totalBgauss, cac, cpl };
   }, [activities]);
+  const { totalBudget, totalLeadTarget, totalRetailTarget, totalBgauss, cac, cpl } = totals;
 
-  const { totalBudget, totalLeadTarget, totalRetailTarget, totalBgauss, cpl, cac } = totals;
-
+  // ── CAC warning — updates live as Budget / BGauss% / Retail change ────────
   useEffect(() => {
-    if (!eligibility || (totalLeadTarget === 0 && totalRetailTarget === 0)) { setCacWarning(null); return; }
+    if (!eligibility || (totals.totalLeadTarget === 0 && totals.totalRetailTarget === 0)) {
+      setCacWarning(null); setCacBlocking(false); return;
+    }
     if (cac > eligibility.baseCacPerVehicle) {
       setCacWarning(
         `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ` +
-        `₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle for ${eligibility.dealerType} dealer.`
+        `₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle for ${eligibility.dealerType} dealer. ` +
+        `Reduce budget or BGauss% or increase Retail target.`
       );
-    } else { setCacWarning(null); }
-  }, [cac, totalLeadTarget, totalRetailTarget, eligibility]);
+      setCacBlocking(true);
+    } else {
+      setCacWarning(null);
+      setCacBlocking(false);
+    }
+  }, [cac, totals.totalLeadTarget, totals.totalRetailTarget, eligibility]);
 
   const setField = (key: keyof ProposalHeader, value: string) => {
     setHeader((h) => ({ ...h, [key]: value }));
@@ -280,17 +276,21 @@ export default function RSMProposalForm() {
   const handleDealerSelect = (customerCode: string) => {
     const dealer = dealers.find((d) => d.customerCode === customerCode);
     setShowDealerPanel(false); setDealerHistory([]); setEligibility(null);
-    setCacWarning(null); setUsedActivityTypes([]);
+    setCacWarning(null); setCacBlocking(false); setUsedActivityTypes([]);
     if (dealer) {
       setDealerAutoFilled(true);
       setHeader((h) => ({
-        ...h, dealerId: dealer.customerCode, dealerName: titleCase(dealer.customerName),
-        state: titleCase(dealer.state ?? ""), stateId: null, location: titleCase(dealer.city ?? ""),
-        rsmName: titleCase(dealer.rsmName ?? dealer.rsmCode ?? ""),
+        ...h,
+        dealerId:      dealer.customerCode,
+        dealerName:    titleCase(dealer.customerName),
+        state:         titleCase(dealer.state ?? ""),
+        stateId:       null,
+        location:      titleCase(dealer.city ?? ""),
+        rsmName:      titleCase(dealer.rsmName ?? dealer.rsmCode ?? ""),
         commandoName: titleCase(dealer.tsmName ?? dealer.tsmCode ?? ""),
       }));
       setCities([]);
-      setFieldErrors((e) => { const n = { ...e }; delete n.dealerName; return n; });
+      setFieldErrors((e) => { const n = { ...e }; delete n.dealerName; delete n.rsmName; return n; });
       setEligibilityLoading(true);
       fetchDealerEligibility(dealer.customerCode, instance)
         .then((elig) => {
@@ -316,35 +316,46 @@ export default function RSMProposalForm() {
     if (fieldErrors.state) setFieldErrors((err) => { const n = { ...err }; delete n.state; return n; });
     if (id) {
       setLoadingCities(true);
-      fetchCitiesByState(id, instance).then(setCities)
-        .catch(() => setLocationError("Could not load cities.")).finally(() => setLoadingCities(false));
+      fetchCitiesByState(id, instance).then(setCities).catch(() => setLocationError("Could not load cities.")).finally(() => setLoadingCities(false));
     }
   };
 
-  // ── Activity type change: auto-fill category from ActivityMaster ─────────────
-  const handleActivityTypeChange = (rowId: string, value: string) => {
-    const master = activityTypes.find((t) => t.activityName.toLowerCase() === value.toLowerCase());
-    setActivities((rows) => rows.map((r) =>
-      r.id === rowId
-        ? { ...r, activityType: value, category: master ? master.activityType : r.category, categoryLocked: !!master }
-        : r
-    ));
+  const handleActivityNameChange = (rowId: string, activityName: string) => {
+    const group = activityGroups.find((g) => g.activityName.toLowerCase() === activityName.toLowerCase());
+    setActivities((rows) => rows.map((r) => r.id === rowId ? {
+      ...r, activityType: activityName,
+      category: group ? group.activityType : r.category,
+      categoryLocked: !!group, subcategory: "", qty: "1",
+      _maxQty: group?.subcategories?.[0]?.maxQty ?? 5,
+    } : r));
     if (activityErrors[rowId]?.activityType)
-      setActivityErrors((prev) => {
-        const next = { ...prev };
-        if (next[rowId]) { next[rowId] = { ...next[rowId] }; delete next[rowId].activityType; if (!Object.keys(next[rowId]).length) delete next[rowId]; }
-        return next;
-      });
+      setActivityErrors((prev) => { const next = { ...prev }; if (next[rowId]) { next[rowId] = { ...next[rowId] }; delete next[rowId].activityType; if (!Object.keys(next[rowId]).length) delete next[rowId]; } return next; });
+  };
+
+  const handleSubcategoryChange = (rowId: string, activityName: string, subcategory: string) => {
+    const group = activityGroups.find((g) => g.activityName.toLowerCase() === activityName.toLowerCase());
+    const sub   = group?.subcategories.find((s) => s.subcategory === subcategory);
+    setActivities((rows) => rows.map((r) => r.id === rowId ? { ...r, subcategory, qty: "1", _maxQty: sub?.maxQty ?? 5 } : r));
   };
 
   const setActivity = (id: string, key: keyof ActivityRow, value: string | MediaFile[]) => {
-    setActivities((rows) => rows.map((r) => (r.id === id ? { ...r, [key]: value } : r)));
+    setActivities((rows) => rows.map((r) => {
+      if (r.id !== id) return r;
+      const next: ActivityRow = { ...r, [key]: value } as ActivityRow;
+      if (typeof value === "string" && (key === "leadTarget" || key === "salesPercent")) {
+        const pctTrimmed = next.salesPercent.trim();
+        if (pctTrimmed && num(pctTrimmed) > 0) {
+          const computed = calcRetailFromSales(next.leadTarget, next.salesPercent);
+          next.retailTarget = computed;
+          next.retailLocked = true;
+        } else {
+          next.retailLocked = false;
+        }
+      }
+      return next;
+    }));
     if (typeof value === "string" && activityErrors[id]?.[key as keyof ActivityErrors[string]])
-      setActivityErrors((prev) => {
-        const next = { ...prev };
-        if (next[id]) { next[id] = { ...next[id] }; delete next[id][key as keyof ActivityErrors[string]]; if (!Object.keys(next[id]).length) delete next[id]; }
-        return next;
-      });
+      setActivityErrors((prev) => { const next = { ...prev }; if (next[id]) { next[id] = { ...next[id] }; delete next[id][key as keyof ActivityErrors[string]]; if (!Object.keys(next[id]).length) delete next[id]; } return next; });
   };
 
   const addActivity    = () => setActivities((rows) => [...rows, emptyActivity()]);
@@ -353,7 +364,6 @@ export default function RSMProposalForm() {
     setActivityErrors((prev) => { const n = { ...prev }; delete n[id]; return n; });
   };
 
-  // ── Media upload ──────────────────────────────────────────────────────────────
   const handleMediaUpload = async (activityId: string, files: FileList) => {
     setUploadingMedia((prev) => ({ ...prev, [activityId]: true }));
     try {
@@ -362,27 +372,20 @@ export default function RSMProposalForm() {
         const data = await uploadActivityMedia(file, instance);
         uploaded.push({ id: crypto.randomUUID(), fileUrl: data.url, fileName: data.fileName, fileType: data.fileType });
       }
-      setActivities((rows) => rows.map((r) =>
-        r.id === activityId ? { ...r, mediaFiles: [...r.mediaFiles, ...uploaded] } : r
-      ));
-    } catch (err) {
-      setXlsxMsg({ ok: false, text: "File upload failed. Please try again." });
-    } finally {
-      setUploadingMedia((prev) => ({ ...prev, [activityId]: false }));
-    }
+      setActivities((rows) => rows.map((r) => r.id === activityId ? { ...r, mediaFiles: [...r.mediaFiles, ...uploaded] } : r));
+    } catch { setXlsxMsg({ ok: false, text: "File upload failed. Please try again." }); }
+    finally { setUploadingMedia((prev) => ({ ...prev, [activityId]: false })); }
   };
 
-  const removeMedia = (activityId: string, mediaId: string) => {
-    setActivities((rows) => rows.map((r) =>
-      r.id === activityId ? { ...r, mediaFiles: r.mediaFiles.filter((m) => m.id !== mediaId) } : r
-    ));
-  };
+  const removeMedia = (activityId: string, mediaId: string) =>
+    setActivities((rows) => rows.map((r) => r.id === activityId ? { ...r, mediaFiles: r.mediaFiles.filter((m) => m.id !== mediaId) } : r));
 
   const resetForm = useCallback(() => {
     setHeader(emptyHeader()); setActivities([emptyActivity()]); setCities([]);
     setShowDealerPanel(false); setRevisionNote(null); setDealerHistory([]);
     setFieldErrors({}); setActivityErrors({}); setShowDetailErr(false); setShowActErr(false);
-    setEligibility(null); setCacWarning(null); setXlsxMsg(null); setXlsxAlert(null);
+    setEligibility(null); setCacWarning(null); setCacBlocking(false);
+    setXlsxMsg(null); setXlsxAlert(null);
     setDealerAutoFilled(false); setUsedActivityTypes([]);
   }, []);
 
@@ -401,29 +404,23 @@ export default function RSMProposalForm() {
     const errs = validateActivities(activities);
     if (Object.keys(errs).length) { setActivityErrors(errs); setShowActErr(true); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
     setActivityErrors({}); setShowActErr(false);
-    setActiveSection("summary"); window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const goToSection = (key: "details" | "activities" | "summary") => {
-    if (key === "details") { setActiveSection("details"); return; }
-    if (key === "activities") { if (activeSection === "details") { goToActivities(); return; } setActiveSection("activities"); return; }
-    if (key === "summary") {
-      if (activeSection === "details") {
-        const errs = validateDetails(header);
-        if (Object.keys(errs).length) { setFieldErrors(errs); setShowDetailErr(true); window.scrollTo({top:0,behavior:"smooth"}); return; }
-        const aErrs = validateActivities(activities);
-        if (Object.keys(aErrs).length) { setActiveSection("activities"); setActivityErrors(aErrs); setShowActErr(true); window.scrollTo({top:0,behavior:"smooth"}); return; }
-      }
-      if (activeSection === "activities") { goToSummary(); return; }
-      setActiveSection("summary");
+    // ── BLOCK: CAC exceeds allowed limit ─────────────────────────────────────
+    if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0) {
+      setCacWarning(
+        `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ` +
+        `₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle for ${eligibility.dealerType} dealer. ` +
+        `Reduce budget or BGauss% or increase Retail target to proceed.`
+      );
+      setCacBlocking(true);
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }); return;
     }
+    setActiveSection("summary"); window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const cellVal = (r: Record<string, unknown>, ...keys: string[]): string => {
     for (const k of keys) { const v = r[k]; if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim(); }
     return "";
   };
-
   const parseExcelDate = (v: unknown): string => {
     if (!v && v !== 0) return "";
     if (typeof v === "number") {
@@ -437,7 +434,6 @@ export default function RSMProposalForm() {
     const native = new Date(str); if (!isNaN(native.getTime())) return native.toISOString().split("T")[0];
     return "";
   };
-
   const isSkippableRow = (rawType: string) =>
     !rawType || rawType.startsWith("[") || rawType.startsWith("Valid:") || rawType.toLowerCase() === "activity type";
 
@@ -454,37 +450,44 @@ export default function RSMProposalForm() {
         const ws = wb.Sheets[wb.SheetNames[0]]; if (!ws) { setXlsxMsg({ ok: false, text: "No sheet found." }); return; }
         const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
         if (!rows.length) { setXlsxMsg({ ok: false, text: "File is empty." }); return; }
-        const validTypes = new Set(activityTypes.map((t) => t.activityName.trim().toLowerCase()));
-        const realDataRows = rows.filter((r) => !isSkippableRow(cellVal(r, "Activity Type", "activityType")));
+        const validNames = new Set(activityGroups.map((g) => g.activityName.trim().toLowerCase()));
+        const realDataRows = rows.filter((r) => !isSkippableRow(cellVal(r, "Activity Name", "activityName")));
         if (realDataRows.length === 0) { setXlsxMsg({ ok: false, text: "No data rows found." }); return; }
         const unknownTypes: string[] = []; const validRows: typeof rows = [];
         rows.forEach((r) => {
-          const rawType = cellVal(r, "Activity Type", "activityType", "activity_type");
-          if (isSkippableRow(rawType)) return;
-          const isKnown = validTypes.size === 0 || validTypes.has(rawType.toLowerCase());
-          if (!isKnown) { if (!unknownTypes.includes(rawType)) unknownTypes.push(rawType); } else validRows.push(r);
+          const rawName = cellVal(r, "Activity Name", "activityName");
+          if (isSkippableRow(rawName)) return;
+          const isKnown = validNames.size === 0 || validNames.has(rawName.toLowerCase());
+          if (!isKnown) { if (!unknownTypes.includes(rawName)) unknownTypes.push(rawName); } else validRows.push(r);
         });
         const skippedCount = realDataRows.length - validRows.length;
         if (unknownTypes.length > 0) setXlsxAlert({ unknownTypes, skippedRows: skippedCount });
         if (validRows.length === 0) { setXlsxMsg({ ok: false, text: `No valid rows — ${unknownTypes.length} unknown type(s).` }); return; }
         const mapped: ActivityRow[] = validRows.map((r) => {
-          const actName = cellVal(r, "Activity Type", "activityType");
-          const master  = activityTypes.find((t) => t.activityName.toLowerCase() === actName.toLowerCase());
-          const shareRaw = cellVal(r, "BGauss Share", "bgaussShare") || "100";
-          const shareVal = BGAUSS_SHARE_OPTIONS.includes(shareRaw) ? shareRaw : "100";
+          const actName   = cellVal(r, "Activity Name", "activityName");
+          const subcat    = cellVal(r, "Subcategory", "subcategory");
+          const group     = activityGroups.find((g) => g.activityName.toLowerCase() === actName.toLowerCase());
+          const sub       = group?.subcategories.find((s) => s.subcategory.toLowerCase() === subcat.toLowerCase());
+          const shareRaw  = cellVal(r, "BGauss Share", "bgaussShare") || "100";
+          const shareVal  = BGAUSS_SHARE_OPTIONS.includes(shareRaw) ? shareRaw : "100";
+          const qtyRaw    = cellVal(r, "QTY", "qty") || "1";
+          const leadRaw   = cellVal(r, "Lead Target", "leadTarget", "Target", "target");
+          const salesPct  = cellVal(r, "Sales %", "Sales%", "salesPercent");
+          const retailRaw = cellVal(r, "Retail Target", "retailTarget");
+          const computedRetail = calcRetailFromSales(leadRaw, salesPct);
           return {
             id: crypto.randomUUID(), activityType: actName,
-            category: master ? master.activityType : cellVal(r, "Category", "category"),
-            categoryLocked: !!master,
-            leadTarget:   cellVal(r, "Lead Target", "leadTarget", "Target", "target"),
-            retailTarget: cellVal(r, "Retail Target", "retailTarget"),
-            startDate:    parseExcelDate(r["Start Date"] ?? r["startDate"] ?? ""),
-            endDate:      parseExcelDate(r["End Date"]   ?? r["endDate"]   ?? ""),
-            budget:       cellVal(r, "Budget", "budget"),
+            category: group ? group.activityType : cellVal(r, "Category", "category"),
+            categoryLocked: !!group, subcategory: subcat, qty: qtyRaw,
+            _maxQty: sub?.maxQty ?? group?.subcategories?.[0]?.maxQty ?? 5,
+            leadTarget: leadRaw, salesPercent: salesPct,
+            retailTarget: computedRetail || retailRaw, retailLocked: !!computedRetail,
+            startDate:        parseExcelDate(r["Start Date"] ?? r["startDate"] ?? ""),
+            endDate:          parseExcelDate(r["End Date"]   ?? r["endDate"]   ?? ""),
+            budget:           cellVal(r, "Budget", "budget"),
             additionalBudget: cellVal(r, "Additional Budget", "additionalBudget") || "0",
-            bgaussShare:  shareVal,
-            remarks:      cellVal(r, "Remarks", "remarks") || "",
-            mediaFiles:   [],
+            bgaussShare: shareVal, remarks: cellVal(r, "Remarks", "remarks") || "",
+            mediaFiles: [],
           };
         });
         setActivities(mapped); setActivityErrors({});
@@ -497,19 +500,24 @@ export default function RSMProposalForm() {
   };
 
   const downloadTemplate = () => {
-    const validTypeNames = activityTypes.length > 0 ? activityTypes.map((t) => t.activityName) : ["1 Canopy", "Road Show"];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([
-      ["Activity Type","Category","Lead Target","Retail Target","Start Date","End Date","Budget","Additional Budget","BGauss Share","Remarks"],
-      ["", "", "", "", `Valid: ${validTypeNames.join(" | ")}`, "dd-MM-yyyy", "", "", "100/70/50", ""],
-      [validTypeNames[0] ?? "1 Canopy", "BTL", "10", "5", "01-07-2025", "31-07-2025", "50000", "5000", "100", "Sample"],
+      ["Activity Name","Subcategory","QTY","Category","Lead Target","Sales %","Retail Target","Start Date","End Date","Budget","Additional Budget","BGauss Share","Remarks"],
+      ["", "", "", "", "", "leave blank to enter Retail manually", "", "dd-MM-yyyy", "dd-MM-yyyy", "", "", "100/70/50", ""],
+      [activityGroups[0]?.activityName ?? "Digital", activityGroups[0]?.subcategories?.[0]?.subcategory ?? "Facebook", "1", "ATL", "20", "3", "", "01-07-2025", "31-07-2025", "50000", "0", "100", "Sample"],
     ]);
-    ws["!cols"] = [{wch:30},{wch:8},{wch:12},{wch:14},{wch:14},{wch:14},{wch:12},{wch:18},{wch:12},{wch:25}];
+    ws["!cols"] = [{wch:22},{wch:24},{wch:6},{wch:8},{wch:12},{wch:10},{wch:14},{wch:14},{wch:14},{wch:12},{wch:18},{wch:12},{wch:25}];
     XLSX.utils.book_append_sheet(wb, ws, "Activities");
     XLSX.writeFile(wb, "BTL_Activity_Template.xlsx");
   };
 
   const handleSubmit = async () => {
+    // Double-check CAC before final submit
+    if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0) {
+      setCacBlocking(true);
+      setCacWarning(`CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle. Cannot submit.`);
+      return;
+    }
     const dErrs = validateDetails(header); const aErrs = validateActivities(activities);
     if (Object.keys(dErrs).length) { setFieldErrors(dErrs); setShowDetailErr(true); setActiveSection("details"); window.scrollTo({top:0,behavior:"smooth"}); return; }
     if (Object.keys(aErrs).length) { setActivityErrors(aErrs); setShowActErr(true); setActiveSection("activities"); window.scrollTo({top:0,behavior:"smooth"}); return; }
@@ -517,11 +525,13 @@ export default function RSMProposalForm() {
     try {
       const activityPayload = activities.map((a) => ({
         activityType: a.activityType, category: a.category || null,
+        subcategory: a.subcategory || null, qty: num(a.qty) || 1,
+        salesPercent: a.salesPercent.trim() ? parseFloat(a.salesPercent) : null,  // ← NEW
         leadTarget: num(a.leadTarget), retailTarget: num(a.retailTarget),
         startDate: a.startDate, endDate: a.endDate,
         budget: num(a.budget), additionalBudget: num(a.additionalBudget),
-        bgaussShare: num(a.bgaussShare) || 100,
-        vendorId: null, remarks: a.remarks,
+        bgaussShare: num(a.bgaussShare) || 100, vendorId: null,
+        remarks: a.remarks,
         mediaFiles: a.mediaFiles.map((m) => ({ fileUrl: m.fileUrl, fileName: m.fileName, fileType: m.fileType })),
       }));
       const payload = {
@@ -542,41 +552,35 @@ export default function RSMProposalForm() {
     } catch (ex) { setError(ex instanceof Error ? ex.message : "Something went wrong."); setSubmitting(false); }
   };
 
-  const dealerOptions    = dealers.map((d) => ({ value: d.customerCode, label: titleCase(d.customerName), sublabel: [d.city, d.state].filter((v): v is string => v !== null).map(titleCase).join(", ") }));
-  const vendorOptions    = vendors.map((v) => ({ value: String(v.id), label: titleCase(v.vendorName) }));
-  const rsmOptions       = Array.from(new Map([
-    ...dealers.filter((d) => d.rsmName||d.rsmCode).map((d) => { const val=d.rsmName??d.rsmCode!; return [titleCase(val),{value:val,label:titleCase(val)}] as [string,{value:string;label:string}]; }),
-    ...dealers.filter((d) => d.tsmName||d.tsmCode).map((d) => { const val=d.tsmName??d.tsmCode!; return [titleCase(val),{value:val,label:titleCase(val)}] as [string,{value:string;label:string}]; }),
-  ]).values()).sort((a,b) => a.label.localeCompare(b.label));
-  const commandoOptions  = Array.from(new Map(
-    dealers.filter((d) => d.tsmName||d.tsmCode).map((d) => { const val=d.tsmName??d.tsmCode!; return [titleCase(val),{value:val,label:titleCase(val)}] as [string,{value:string;label:string}]; })
-  ).values()).sort((a,b) => a.label.localeCompare(b.label));
-  const activityOptions  = activityTypes.length > 0
-    ? activityTypes.map((t) => ({ value: t.activityName, label: titleCase(t.activityName) }))
-    : ["1 Canopy","2 Canopy","Digital","Hoarding","Newspaper"].map((t) => ({ value:t, label:t }));
-  const monthOptions     = MONTHS.map((m) => ({ value:m, label:m }));
-  const detailsComplete  = Object.keys(validateDetails(header)).length === 0;
-  const activitiesComplete = Object.keys(validateActivities(activities)).length === 0;
+  const dealerOptions = dealers.map((d) => ({
+    value: d.customerCode, label: titleCase(d.customerName),
+    sublabel: [d.city, d.state].filter((v): v is string => v !== null).map(titleCase).join(", ")
+  }));
+  const vendorOptions = vendors.map((v) => ({ value: String(v.id), label: titleCase(v.vendorName) }));
+  const rsmOptions = Array.from(new Map([
+    ...dealers.filter((d) => d.rsmName || d.rsmCode).map((d) => { const val = d.rsmName ?? d.rsmCode!; return [titleCase(val), { value: val, label: titleCase(val) }] as [string, { value: string; label: string }]; }),
+    ...dealers.filter((d) => d.tsmName || d.tsmCode).map((d) => { const val = d.tsmName ?? d.tsmCode!; return [titleCase(val), { value: val, label: titleCase(val) }] as [string, { value: string; label: string }]; }),
+  ]).values()).sort((a, b) => a.label.localeCompare(b.label));
+  const commandoOptions = Array.from(new Map(
+    dealers.filter((d) => d.tsmName || d.tsmCode).map((d) => { const val = d.tsmName ?? d.tsmCode!; return [titleCase(val), { value: val, label: titleCase(val) }] as [string, { value: string; label: string }]; })
+  ).values()).sort((a, b) => a.label.localeCompare(b.label));
+  const activityNameOptions = activityGroups.map((g) => ({ value: g.activityName, label: g.activityName }));
+  const monthOptions        = MONTHS.map((m) => ({ value: m, label: m }));
 
-  const stepCircleClass = (key: string, done: boolean) => {
-    if (done) return "rsm-step-circle rsm-step-circle--done";
-    if (activeSection === key) return "rsm-step-circle rsm-step-circle--active";
-    return "rsm-step-circle rsm-step-circle--pending";
-  };
-
-  const fmtShort = (iso: string) => new Date(iso).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"});
+  const fmtShort = (iso: string) => new Date(iso).toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" });
   const statusCls = (s: string) => {
-    if (s === "Approved") return "rsm-history-status--approved";
-    if (s === "Rejected") return "rsm-history-status--rejected";
+    if (s === "Approved")      return "rsm-history-status--approved";
+    if (s === "Rejected")      return "rsm-history-status--rejected";
     if (s === "NeedsRevision") return "rsm-history-status--revision";
     return "rsm-history-status--pending";
   };
 
   const LockedField = ({ value }: { value: string }) => (
     <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",
-      border:"1.5px solid #e2e8f0",borderRadius:7,padding:"8px 11px",height:38,fontSize:13,color:"#0a2540" }}>
+      border:"1.5px solid #e2e8f0",borderRadius:7,padding:"8px 11px",height:38,
+      fontSize:13,color:"#0a2540",minHeight:38 }}>
       <span style={{ flex:1 }}>{value || <span style={{ color:"#9ca3af" }}>—</span>}</span>
-      <span style={{ fontSize:11,color:"#9ca3af" }} title="Auto-filled from dealer selection">🔒</span>
+      <span style={{ fontSize:11,color:"#9ca3af" }} title="Auto-filled from dealer ERP data">🔒</span>
     </div>
   );
 
@@ -593,35 +597,32 @@ export default function RSMProposalForm() {
     );
   }
 
+  // ── CAC warning component — red when blocking, yellow when advisory ─────
+  const CacWarningBanner = ({ style }: { style?: React.CSSProperties }) => {
+    if (!cacWarning) return null;
+    return (
+      <div style={{
+        background: cacBlocking ? "#fef2f2" : "#fefce8",
+        border: `1px solid ${cacBlocking ? "#fecaca" : "#fde68a"}`,
+        borderLeft: `4px solid ${cacBlocking ? "#ef4444" : "#f59e0b"}`,
+        borderRadius: 8, padding: "10px 14px", fontSize: 13,
+        color: cacBlocking ? "#991b1b" : "#92400e", fontWeight: 500,
+        ...style,
+      }}>
+        {cacBlocking ? "🚫" : "⚠"} {cacWarning}
+        {cacBlocking && (
+          <div style={{ fontSize:12,fontWeight:400,marginTop:4,color:"#b91c1c" }}>
+            Cannot proceed — please reduce budget, switch BGauss share to 70%/50%, or increase Retail Target.
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="rsm-page">
       <main className="rsm-main">
 
-        {/* Document banner */}
-        {/* <div className="rsm-doc-banner">
-          <div>
-            <div className="rsm-doc-tag">{editMode ? "Revision" : "New Proposal"}</div>
-            <h1 className="rsm-doc-title">
-              {editMode ? "Edit & Resubmit Proposal" : "Activity Proposal Form"}
-            </h1>
-            <p className="rsm-doc-sub">
-              {editMode
-                ? "Update your proposal as requested by the reviewer and resubmit."
-                : "Submit a marketing or sales activity plan for management approval."}
-            </p>
-          </div>
-          <div className="rsm-doc-meta">
-            <DocMeta label="Document No." value={docNumber} mono />
-            <DocMeta label="Date"          value={docDate} />
-            <DocMeta label="Submitted by"  value={account?.name ?? "—"} />
-            <div className={`rsm-draft-badge${editMode ? " rsm-draft-badge--revision" : ""}`}>
-              <span className="rsm-draft-dot" />
-              {editMode ? "Revision" : "Draft"}
-            </div>
-          </div>
-        </div> */}
-
-        {/* Revision note */}
         {editMode && revisionNote && (
           <div className="rsm-revision-banner">
             <span className="rsm-revision-icon">↩</span>
@@ -629,21 +630,7 @@ export default function RSMProposalForm() {
           </div>
         )}
 
-        {/* Step bar */}
-        {/* <div className="rsm-step-bar">
-          {([
-            {key:"details",    label:"Proposal Details", n:1, done:detailsComplete},
-            {key:"activities", label:"Activities",        n:2, done:activitiesComplete&&detailsComplete},
-            {key:"summary",    label:"Review & Submit",   n:3, done:false},
-          ] as const).map(({key,label,n,done}) => (
-            <button key={key} className="rsm-step-btn" onClick={() => goToSection(key)}>
-              <div className={stepCircleClass(key,done)}>{done?"✓":n}</div>
-              <span className={`rsm-step-label${activeSection===key?" rsm-step-label--active":""}`}>{label}</span>
-            </button>
-          ))}
-        </div> */}
-
-        {/* ════ SECTION 1 — Details ════ */}
+        {/* ════ SECTION 1 — Proposal Details ════ */}
         {activeSection === "details" && (
           <Card title="Proposal Details" subtitle="Fill in all required fields marked with *.">
             {showDetailErr && Object.keys(fieldErrors).length > 0 && (
@@ -652,7 +639,7 @@ export default function RSMProposalForm() {
                 <div>
                   <strong>Please fill in all required fields before continuing.</strong>
                   <ul className="rsm-validation-list">
-                    {Object.values(fieldErrors).map((msg,i) => <li key={i}>{msg}</li>)}
+                    {Object.values(fieldErrors).map((msg, i) => <li key={i}>{msg}</li>)}
                   </ul>
                 </div>
               </div>
@@ -663,10 +650,10 @@ export default function RSMProposalForm() {
                 <Label text="Dealer" required/>
                 {dealerError && <span className="rsm-field-error">{dealerError}</span>}
                 <div className="rsm-dealer-input-wrap">
-                  <div style={{ flex:1,minWidth:0 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
                     {editMode ? (
                       <input className={`rsm-select${fieldErrors.dealerName?" rsm-input--error":""}`}
-                        value={header.dealerName} onChange={(e) => setField("dealerName",e.target.value)} placeholder="Dealer name"/>
+                        value={header.dealerName} onChange={(e) => setField("dealerName", e.target.value)} placeholder="Dealer name"/>
                     ) : (
                       <div className={fieldErrors.dealerName?"rsm-select-error-wrap":""}>
                         <SearchableSelect options={dealerOptions} value={header.dealerId}
@@ -685,7 +672,7 @@ export default function RSMProposalForm() {
               <div className="rsm-field">
                 <Label text="Vendor"/>
                 <SearchableSelect options={vendorOptions} value={header.vendorId}
-                  onChange={(v) => { const vend = vendors.find((vn) => String(vn.id)===v); setHeader((h) => ({...h,vendorId:v,vendorName:vend?titleCase(vend.vendorName):""})); }}
+                  onChange={(v) => { const vend = vendors.find((vn) => String(vn.id) === v); setHeader((h) => ({...h, vendorId:v, vendorName:vend?titleCase(vend.vendorName):""})); }}
                   placeholder={loadingVendors?"Loading…":"Select vendor (optional)"} loading={loadingVendors} allowCreate={false}/>
               </div>
 
@@ -709,28 +696,28 @@ export default function RSMProposalForm() {
               </div>
             </div>
 
-            <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(2,1fr)",marginTop:0 }}>
+            <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(2,1fr)", marginTop:0 }}>
               <div className="rsm-field">
                 <Label text="City" required/>
                 {dealerAutoFilled && !editMode ? <LockedField value={header.location}/> :
                  header.location && !header.stateId ? (
                   <input className={`rsm-select${fieldErrors.location?" rsm-input--error":""}`}
-                    value={header.location} onChange={(e) => setField("location",e.target.value)} placeholder="City"/>
+                    value={header.location} onChange={(e) => setField("location", e.target.value)} placeholder="City"/>
                 ) : (
                   <select className={`rsm-select${fieldErrors.location?" rsm-input--error":""}`}
-                    value={header.location} onChange={(e) => setField("location",e.target.value)}
-                    disabled={!header.stateId||loadingCities}>
+                    value={header.location} onChange={(e) => setField("location", e.target.value)}
+                    disabled={!header.stateId || loadingCities}>
                     <option value="">{!header.stateId?"Select state first":loadingCities?"Loading…":"Select city"}</option>
                     {cities.map((c) => <option key={c.id} value={titleCase(c.name)}>{titleCase(c.name)}</option>)}
                   </select>
                 )}
-                {(fieldErrors.location||locationError) && <span className="rsm-field-error">{fieldErrors.location||locationError}</span>}
+                {(fieldErrors.location || locationError) && <span className="rsm-field-error">{fieldErrors.location || locationError}</span>}
               </div>
               <div className="rsm-field">
                 <Label text="Dealer Type" required/>
                 {dealerAutoFilled && !editMode ? <LockedField value={header.type}/> : (
                   <select className={`rsm-select${fieldErrors.type?" rsm-input--error":""}`}
-                    value={header.type} onChange={(e) => setField("type",e.target.value)}>
+                    value={header.type} onChange={(e) => setField("type", e.target.value)}>
                     <option value="">{eligibilityLoading?"Loading…":"Select type"}</option>
                     {DEALER_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                   </select>
@@ -739,22 +726,24 @@ export default function RSMProposalForm() {
               </div>
             </div>
 
-            {/* Dealer info panel */}
             {!editMode && showDealerPanel && selectedDealer && (
               <div className="rsm-dealer-panel">
                 <div className="rsm-dealer-panel-head">
                   <div>
                     <h3 className="rsm-dealer-panel-name">{titleCase(selectedDealer.customerName)}</h3>
                     <p className="rsm-dealer-panel-sub">Code: <b>{selectedDealer.customerCode}</b>&nbsp;·&nbsp;
-                      {[selectedDealer.city,selectedDealer.state].filter((v):v is string=>v!==null).map(titleCase).join(", ")}</p>
+                      {[selectedDealer.city, selectedDealer.state].filter((v): v is string => v !== null).map(titleCase).join(", ")}</p>
                   </div>
                   <button className="rsm-close-panel-btn" onClick={() => setShowDealerPanel(false)}>✕</button>
                 </div>
                 <div className="rsm-dealer-contacts">
                   {selectedDealer.contactPerson && <span className="rsm-dealer-contact">👤 {titleCase(selectedDealer.contactPerson)}</span>}
                   {selectedDealer.mobile        && <span className="rsm-dealer-contact">📞 {selectedDealer.mobile}</span>}
-                  {selectedDealer.tsmName       && <span className="rsm-dealer-contact">🧑‍💼 TSM: {titleCase(selectedDealer.tsmName)}</span>}
                   {selectedDealer.rsmName       && <span className="rsm-dealer-contact">👔 RSM: {titleCase(selectedDealer.rsmName)}</span>}
+                  {selectedDealer.tsmName       && <span className="rsm-dealer-contact">🧑‍💼 TSM: {titleCase(selectedDealer.tsmName)}</span>}
+                  {!selectedDealer.rsmName && !selectedDealer.tsmName && (
+                    <span className="rsm-dealer-contact" style={{ color:"#9ca3af" }}>No RSM/TSM assigned in ERP</span>
+                  )}
                 </div>
                 <div className="rsm-dealer-history">
                   <p className="rsm-panel-section-title">Previous Proposals
@@ -773,14 +762,14 @@ export default function RSMProposalForm() {
                           <th className="rsm-panel-th">Status</th><th className="rsm-panel-th">Submitted</th>
                         </tr></thead>
                         <tbody>
-                          {dealerHistory.map((p,i) => (
+                          {dealerHistory.map((p, i) => (
                             <tr key={p.id} className={i%2===0?"rsm-panel-row--even":"rsm-panel-row--odd"}>
-                              <td className="rsm-panel-td"><span className="rsm-history-token">{p.tokenNumber??"—"}</span></td>
+                              <td className="rsm-panel-td"><span className="rsm-history-token">{p.tokenNumber ?? "—"}</span></td>
                               <td className="rsm-panel-td">{p.month}</td>
-                              <td className="rsm-panel-td" style={{ whiteSpace:"nowrap" }}>{p.rsmName?titleCase(p.rsmName):"—"}</td>
+                              <td className="rsm-panel-td" style={{ whiteSpace:"nowrap" }}>{p.rsmName ? titleCase(p.rsmName) : "—"}</td>
                               <td className="rsm-panel-td">
                                 {p.activities.slice(0,2).map((a,ai) => <span key={ai} className="rsm-history-chip">{a.activityType}</span>)}
-                                {p.activities.length>2 && <span className="rsm-history-chip rsm-history-chip--more">+{p.activities.length-2}</span>}
+                                {p.activities.length > 2 && <span className="rsm-history-chip rsm-history-chip--more">+{p.activities.length-2}</span>}
                               </td>
                               <td className="rsm-panel-td rsm-panel-td--right">₹{Math.round(p.totalBudget).toLocaleString("en-IN")}</td>
                               <td className="rsm-panel-td rsm-panel-td--right">{p.totalLeadTarget}</td>
@@ -803,28 +792,49 @@ export default function RSMProposalForm() {
                 <div style={{ flex:1 }}>
                   <strong>{eligibility.isEligible?"Eligible for BTL":"Not Eligible for BTL"}</strong>
                   <span style={{ marginLeft:8,fontWeight:400,fontSize:12 }}>{eligibility.eligibilityReason}</span>
-                  {eligibility.isEligible && <span className="rsm-elig-cac">&nbsp;·&nbsp;Max CAC: ₹{eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle&nbsp;({eligibility.dealerType} dealer)</span>}
+                  {eligibility.isEligible && <span className="rsm-elig-cac">&nbsp;·&nbsp;Max BGauss CAC: ₹{eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle&nbsp;({eligibility.dealerType} dealer)</span>}
                 </div>
               </div>
             )}
 
             <div className="rsm-form-row2">
               <div className="rsm-field">
-                <Label text="RSM / TSM Name" required/>
-                <SearchableSelect options={rsmOptions} value={header.rsmName}
-                  onChange={(v) => setField("rsmName",v)} placeholder="Search or type…" allowCreate={true}
-                  className={fieldErrors.rsmName?"rsm-select-error-wrap":""}/>
+                <Label text="RSM Name"/>
+                {dealerAutoFilled && !editMode ? (
+                  <LockedField value={header.rsmName}/>
+                ) : (
+                  <SearchableSelect options={rsmOptions} value={header.rsmName}
+                    onChange={(v) => setField("rsmName", v)} placeholder="Search or type…" allowCreate={true}
+                    className={fieldErrors.rsmName?"rsm-select-error-wrap":""}/>
+                )}
                 {fieldErrors.rsmName && <span className="rsm-field-error">{fieldErrors.rsmName}</span>}
+                {dealerAutoFilled && !editMode && header.rsmName && (
+                  <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>
+                    Auto-filled from ERP · <button type="button"
+                      style={{ fontSize:10,color:"#2563eb",background:"none",border:"none",cursor:"pointer",padding:0 }}
+                      onClick={() => setDealerAutoFilled(false)}>Edit manually</button>
+                  </span>
+                )}
               </div>
               <div className="rsm-field">
-                <Label text="Commando Name"/>
-                <SearchableSelect options={commandoOptions} value={header.commandoName}
-                  onChange={(v) => setField("commandoName",v)} placeholder="Search or type…" allowCreate={true}/>
+                <Label text="Commando / TSM Name"/>
+                {dealerAutoFilled && !editMode ? (
+                  header.commandoName
+                    ? <LockedField value={header.commandoName}/>
+                    : <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",
+                        border:"1.5px solid #e2e8f0",borderRadius:7,padding:"8px 11px",height:38,fontSize:13 }}>
+                        <span style={{ color:"#9ca3af",flex:1,fontSize:12 }}>Not assigned in ERP</span>
+                        <span style={{ fontSize:11,color:"#e2e8f0" }}>🔒</span>
+                      </div>
+                ) : (
+                  <SearchableSelect options={commandoOptions} value={header.commandoName}
+                    onChange={(v) => setField("commandoName", v)} placeholder="Search or type…" allowCreate={true}/>
+                )}
               </div>
               <div className="rsm-field">
                 <Label text="Month" required/>
                 <SearchableSelect options={monthOptions} value={header.month}
-                  onChange={(v) => setField("month",v)} placeholder="Select month" allowCreate={false}
+                  onChange={(v) => setField("month", v)} placeholder="Select month" allowCreate={false}
                   className={fieldErrors.month?"rsm-select-error-wrap":""}/>
                 {fieldErrors.month && <span className="rsm-field-error">{fieldErrors.month}</span>}
               </div>
@@ -832,7 +842,7 @@ export default function RSMProposalForm() {
                 <Label text="Eligibility" required/>
                 {dealerAutoFilled && !editMode ? <LockedField value={header.eligibility}/> : (
                   <select className={`rsm-select${fieldErrors.eligibility?" rsm-input--error":""}`}
-                    value={header.eligibility} onChange={(e) => setField("eligibility",e.target.value)}>
+                    value={header.eligibility} onChange={(e) => setField("eligibility", e.target.value)}>
                     <option value="">{eligibilityLoading?"Checking…":"Select eligibility"}</option>
                     {ELIGIBILITY_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
                   </select>
@@ -844,9 +854,8 @@ export default function RSMProposalForm() {
             <div className="rsm-remarks-row">
               <Label text="Overall Remarks"/>
               <textarea className="rsm-textarea" placeholder="Additional notes for the approver…"
-                value={header.remarks} onChange={(e) => setField("remarks",e.target.value)}/>
+                value={header.remarks} onChange={(e) => setField("remarks", e.target.value)}/>
             </div>
-
             <div className="rsm-section-footer">
               <button className="rsm-primary-btn" onClick={goToActivities}>Continue to Activities →</button>
             </div>
@@ -855,7 +864,8 @@ export default function RSMProposalForm() {
 
         {/* ════ SECTION 2 — Activities ════ */}
         {activeSection === "activities" && (
-          <Card title="Activity Plan" subtitle="Select activity — Category (ATL/BTL) auto-fills. BGauss Share drives the BGauss budget."
+          <Card title="Activity Plan"
+            subtitle="Select Activity Name → Subcategory → QTY. Enter Sales % to auto-lock Retail Target."
             action={
               <div className="rsm-card-actions">
                 <input ref={xlsxRef} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleExcelImport}/>
@@ -874,15 +884,13 @@ export default function RSMProposalForm() {
               </div>
             )}
 
-            {/* Already used this month alert */}
             {usedActivityTypes.length > 0 && !editMode && (
               <div style={{ background:"#fef9c3",border:"1px solid #fde68a",borderLeft:"3px solid #f59e0b",
                 borderRadius:7,padding:"8px 14px",marginBottom:12,fontSize:12,color:"#92400e" }}>
                 <strong>⚠ Already used this month for {header.dealerName}:</strong>
                 <span style={{ marginLeft:8 }}>
-                  {usedActivityTypes.map((t,i) => (
-                    <span key={t} style={{ background:"#fef3c7",border:"1px solid #fde68a",borderRadius:4,
-                      padding:"1px 7px",marginLeft:i>0?4:0,fontWeight:600 }}>{t}</span>
+                  {usedActivityTypes.map((t, i) => (
+                    <span key={t} style={{ background:"#fef3c7",border:"1px solid #fde68a",borderRadius:4,padding:"1px 7px",marginLeft:i>0?4:0,fontWeight:600 }}>{t}</span>
                   ))}
                 </span>
               </div>
@@ -903,187 +911,161 @@ export default function RSMProposalForm() {
               </div>
             )}
 
-            {/* Activity table */}
             <div className="rsm-table-scroll">
               <table className="rsm-table">
                 <thead>
                   <tr className="rsm-thead-row">
                     <th className="rsm-th" style={{ width:32 }}>#</th>
-                    <th className="rsm-th" style={{ width:180 }}>Activity Name <span style={{ color:"#f87171" }}>*</span></th>
-                    <th className="rsm-th" style={{ width:80 }}>
-                      Category
-                      <div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>ATL/BTL (auto)</div>
-                    </th>
-                    <th className="rsm-th" style={{ width:90 }}>Lead <span style={{ color:"#f87171" }}>*</span></th>
-                    <th className="rsm-th" style={{ width:90 }}>Retail <span style={{ color:"#f87171" }}>*</span></th>
-                    <th className="rsm-th" style={{ width:126 }}>Start Date <span style={{ color:"#f87171" }}>*</span></th>
-                    <th className="rsm-th" style={{ width:126 }}>End Date <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:160 }}>Activity Name <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:80 }}>Type<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>ATL/BTL</div></th>
+                    <th className="rsm-th" style={{ width:160 }}>Subcategory <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:62 }}>QTY</th>
+                    <th className="rsm-th" style={{ width:82 }}>Lead Target <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:78 }}>Sales %<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
+                    <th className="rsm-th" style={{ width:82 }}>Retail Target <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:120 }}>Start Date <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:120 }}>End Date <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th rsm-th--right" style={{ width:100 }}>Budget (₹) <span style={{ color:"#f87171" }}>*</span></th>
-                    {/* <th className="rsm-th rsm-th--right" style={{ width:110 }}>Add. Budget (₹)</th> */}
-                    <th className="rsm-th" style={{ width:100 }}>
-                      BGauss Share
-                      <div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>% of total</div>
-                    </th>
-                    <th className="rsm-th rsm-th--right" style={{ width:110 }}>
-                      BGauss Amt
-                      <div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>auto calc</div>
-                    </th>
-                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>Total (₹)</th>
-                    <th className="rsm-th" style={{ width:120 }}>Remarks</th>
-                    <th className="rsm-th" style={{ width:90 }}>Files</th>
-                    <th className="rsm-th" style={{ width:36 }}></th>
+                    <th className="rsm-th" style={{ width:90 }}>BGauss%<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>% of total</div></th>
+                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>BGauss Amt<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>auto calc</div></th>
+                    <th className="rsm-th rsm-th--right" style={{ width:90 }}>Total (₹)</th>
+                    <th className="rsm-th" style={{ width:110 }}>Remarks</th>
+                    {/* <th className="rsm-th" style={{ width:80 }}>Files</th> */}
+                    <th className="rsm-th" style={{ width:32 }}></th>
                   </tr>
                 </thead>
                 <tbody>
                   {activities.map((a, idx) => {
-                    const rowErr     = activityErrors[a.id];
-                    const alreadyUsed = !editMode && a.activityType &&
-                      usedActivityTypes.some((u) => u.toLowerCase() === a.activityType.toLowerCase());
-                    const rowTotal  = num(a.budget) + num(a.additionalBudget);
-                    const bgAmt     = bgaussAmount(a.budget, a.additionalBudget, a.bgaussShare);
+                    const rowErr      = activityErrors[a.id];
+                    const group       = activityGroups.find((g) => g.activityName.toLowerCase() === a.activityType.toLowerCase());
+                    const subs        = group?.subcategories ?? [];
+                    const selSub      = subs.find((s) => s.subcategory === a.subcategory);
+                    const maxQty      = selSub?.maxQty ?? a._maxQty ?? 5;
+                    const qtyOpts     = Array.from({ length: maxQty }, (_, i) => String(i + 1));
+                    const alreadyUsed = !editMode && a.activityType && usedActivityTypes.some((u) => u.toLowerCase() === a.activityType.toLowerCase());
+                    const rowTotal    = num(a.budget) + num(a.additionalBudget);
+                    const bgAmt       = bgaussAmount(a.budget, a.additionalBudget, a.bgaussShare);
                     return (
                       <tr key={a.id} className={idx%2===0?"rsm-row--even":"rsm-row--odd"}>
                         <td className="rsm-td"><span className="rsm-row-num">{idx+1}</span></td>
-
-                        {/* Activity Name */}
-                        <td className="rsm-td" style={{ minWidth:160 }}>
-                          <SearchableSelect
-                            options={activityOptions} value={a.activityType}
-                            onChange={(v) => handleActivityTypeChange(a.id, v)}
-                            placeholder="Select or type…" allowCreate={true}
-                            className={rowErr?.activityType||alreadyUsed?"rsm-select-error-wrap":""}
-                          />
+                        <td className="rsm-td" style={{ minWidth:150 }}>
+                          <SearchableSelect options={activityNameOptions} value={a.activityType}
+                            onChange={(v) => handleActivityNameChange(a.id, v)}
+                            placeholder="Select name…" allowCreate={false}
+                            className={rowErr?.activityType||alreadyUsed?"rsm-select-error-wrap":""}/>
                           {rowErr?.activityType && <span className="rsm-field-error">{rowErr.activityType}</span>}
                           {alreadyUsed && !rowErr?.activityType && (
-                            <span style={{ fontSize:10,color:"#92400e",background:"#fef9c3",
-                              border:"1px solid #fde68a",borderRadius:4,padding:"1px 6px",
-                              display:"inline-block",marginTop:2 }}>⚠ Already used this month</span>
+                            <span style={{ fontSize:10,color:"#92400e",background:"#fef9c3",border:"1px solid #fde68a",borderRadius:4,padding:"1px 6px",display:"inline-block",marginTop:2 }}>⚠ Already used this month</span>
                           )}
                         </td>
-
-                        {/* Category — locked badge or editable */}
                         <td className="rsm-td">
                           {a.categoryLocked ? (
-                            <div style={{
-                              display:"flex",alignItems:"center",gap:4,
-                              background:a.category==="ATL"?"#eff6ff":"#f0fdf4",
-                              border:`1.5px solid ${a.category==="ATL"?"#bfdbfe":"#bbf7d0"}`,
-                              borderRadius:6,padding:"5px 8px",height:32,fontSize:12,fontWeight:700,
-                              color:a.category==="ATL"?"#1e40af":"#166534",minWidth:60,whiteSpace:"nowrap",
-                            }}>
-                              <span>{a.category}</span>
-                              <span style={{ fontSize:10,color:"#9ca3af",marginLeft:"auto" }}
-                                title="Auto-filled from Activity Master">🔒</span>
+                            <div style={{ display:"flex",alignItems:"center",gap:4,background:a.category==="ATL"?"#eff6ff":"#f0fdf4",
+                              border:`1.5px solid ${a.category==="ATL"?"#bfdbfe":"#bbf7d0"}`,borderRadius:6,padding:"4px 7px",
+                              fontSize:11,fontWeight:700,color:a.category==="ATL"?"#1e40af":"#166534",minWidth:48,whiteSpace:"nowrap",height:30 }}>
+                              {a.category}<span style={{ fontSize:9,color:"#9ca3af",marginLeft:"auto" }} title="Auto-filled">🔒</span>
                             </div>
                           ) : (
-                            <input type="text" className="rsm-input-sm" style={{ width:76 }}
-                              placeholder="ATL/BTL" value={a.category}
-                              onChange={(e) => setActivity(a.id,"category",e.target.value)}/>
+                            <select className="rsm-input-sm" style={{ width:68 }} value={a.category} onChange={(e) => setActivity(a.id,"category",e.target.value)}>
+                              <option value="">—</option><option value="ATL">ATL</option><option value="BTL">BTL</option>
+                            </select>
                           )}
                         </td>
-
-                        {/* Lead */}
+                        <td className="rsm-td" style={{ minWidth:145 }}>
+                          {subs.length > 0 ? (
+                            <select className={`rsm-input-sm${rowErr?.subcategory?" rsm-input-sm--error":""}`} style={{ width:"100%" }}
+                              value={a.subcategory} onChange={(e) => handleSubcategoryChange(a.id, a.activityType, e.target.value)}>
+                              <option value="">Select subcategory…</option>
+                              {subs.map((s) => <option key={s.subcategory} value={s.subcategory}>{s.subcategory}</option>)}
+                            </select>
+                          ) : (
+                            <input type="text" className="rsm-input-sm" style={{ width:"100%" }}
+                              placeholder={a.activityType?"Type subcategory…":"Select name first"}
+                              value={a.subcategory} disabled={!a.activityType}
+                              onChange={(e) => setActivity(a.id,"subcategory",e.target.value)}/>
+                          )}
+                        </td>
                         <td className="rsm-td">
-                          <input type="number" min={0}
-                            className={`rsm-input-sm${rowErr?.leadTarget?" rsm-input-sm--error":""}`}
-                            style={{ width:80 }} value={a.leadTarget}
-                            onChange={(e) => setActivity(a.id,"leadTarget",e.target.value)}/>
+                          <select className="rsm-input-sm" style={{ width:56 }} value={a.qty}
+                            onChange={(e) => setActivity(a.id,"qty",e.target.value)}
+                            disabled={!a.subcategory && subs.length > 0}>
+                            {qtyOpts.map((q) => <option key={q} value={q}>{q}</option>)}
+                          </select>
+                        </td>
+                        <td className="rsm-td">
+                          <input type="number" min={0} className={`rsm-input-sm${rowErr?.leadTarget?" rsm-input-sm--error":""}`}
+                            style={{ width:72 }} value={a.leadTarget} onChange={(e) => setActivity(a.id,"leadTarget",e.target.value)}/>
                           {rowErr?.leadTarget && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.leadTarget}</span>}
                         </td>
-
-                        {/* Retail */}
                         <td className="rsm-td">
-                          <input type="number" min={0}
-                            className={`rsm-input-sm${rowErr?.retailTarget?" rsm-input-sm--error":""}`}
-                            style={{ width:80 }} value={a.retailTarget}
-                            onChange={(e) => setActivity(a.id,"retailTarget",e.target.value)}/>
+                          <input type="number" min={0} max={100} step="0.1" className="rsm-input-sm"
+                            style={{ width:66 }} placeholder="e.g. 3"
+                            value={a.salesPercent}
+                            onChange={(e) => setActivity(a.id,"salesPercent",e.target.value)}/>
+                        </td>
+                        <td className="rsm-td">
+                          {a.retailLocked ? (
+                            <div title="Auto-calculated from Lead × Sales%"
+                              style={{ display:"flex",alignItems:"center",gap:4,background:"#eff6ff",
+                                border:"1.5px solid #bfdbfe",borderRadius:6,padding:"4px 7px",
+                                fontSize:12,fontWeight:600,color:"#1e40af",width:72,height:30,justifyContent:"space-between" }}>
+                              <span>{a.retailTarget || "0"}</span>
+                              <span style={{ fontSize:9,color:"#93c5fd" }}>🔒</span>
+                            </div>
+                          ) : (
+                            <input type="number" min={0} className={`rsm-input-sm${rowErr?.retailTarget?" rsm-input-sm--error":""}`}
+                              style={{ width:72 }} value={a.retailTarget} onChange={(e) => setActivity(a.id,"retailTarget",e.target.value)}/>
+                          )}
                           {rowErr?.retailTarget && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.retailTarget}</span>}
                         </td>
-
-                        {/* Start Date */}
                         <td className="rsm-td">
-                          <input type="date"
-                            className={`rsm-input-sm${rowErr?.startDate?" rsm-input-sm--error":""}`}
-                            style={{ width:116 }} value={a.startDate}
-                            onChange={(e) => setActivity(a.id,"startDate",e.target.value)}/>
+                          <input type="date" className={`rsm-input-sm${rowErr?.startDate?" rsm-input-sm--error":""}`}
+                            style={{ width:112 }} value={a.startDate} onChange={(e) => setActivity(a.id,"startDate",e.target.value)}/>
                           {rowErr?.startDate && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.startDate}</span>}
                         </td>
-
-                        {/* End Date */}
                         <td className="rsm-td">
-                          <input type="date"
-                            className={`rsm-input-sm${rowErr?.endDate?" rsm-input-sm--error":""}`}
-                            style={{ width:116 }} value={a.endDate} min={a.startDate||undefined}
+                          <input type="date" className={`rsm-input-sm${rowErr?.endDate?" rsm-input-sm--error":""}`}
+                            style={{ width:112 }} value={a.endDate} min={a.startDate||undefined}
                             onChange={(e) => setActivity(a.id,"endDate",e.target.value)}/>
                           {rowErr?.endDate && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.endDate}</span>}
                         </td>
-
-                        {/* Budget */}
                         <td className="rsm-td rsm-td--right">
-                          <input type="number" min={0}
-                            className={`rsm-input-sm${rowErr?.budget?" rsm-input-sm--error":""}`}
-                            style={{ width:90,textAlign:"right" }} value={a.budget}
-                            onChange={(e) => setActivity(a.id,"budget",e.target.value)}/>
+                          <input type="number" min={0} className={`rsm-input-sm${rowErr?.budget?" rsm-input-sm--error":""}`}
+                            style={{ width:90,textAlign:"right" }} value={a.budget} onChange={(e) => setActivity(a.id,"budget",e.target.value)}/>
                           {rowErr?.budget && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.budget}</span>}
                         </td>
-
-                        {/* Add. Budget */}
-                        {/* <td className="rsm-td rsm-td--right">
-                          <input type="number" min={0} className="rsm-input-sm"
-                            style={{ width:100,textAlign:"right" }} value={a.additionalBudget}
-                            onChange={(e) => setActivity(a.id,"additionalBudget",e.target.value)}/>
-                        </td> */}
-
-                        {/* BGauss Share — dropdown 100/70/50 */}
                         <td className="rsm-td">
-                          <select className="rsm-input-sm"
-                            style={{ width:80,padding:"4px 6px",textAlign:"center" }}
-                            value={a.bgaussShare}
+                          <select className="rsm-input-sm" style={{ width:76,padding:"4px 6px" }} value={a.bgaussShare}
                             onChange={(e) => setActivity(a.id,"bgaussShare",e.target.value)}>
-                            {BGAUSS_SHARE_OPTIONS.map((o) => (
-                              <option key={o} value={o}>{o}%</option>
-                            ))}
+                            {BGAUSS_SHARE_OPTIONS.map((o) => <option key={o} value={o}>{o}%</option>)}
                           </select>
                         </td>
-
-                        {/* BGauss Amt — auto-calculated, read-only */}
                         <td className="rsm-td rsm-td--right">
-                          <div style={{ fontSize:12,fontWeight:600,color:"#1e40af",
-                            background:"#eff6ff",border:"1px solid #bfdbfe",
-                            borderRadius:6,padding:"5px 8px",textAlign:"right",
-                            whiteSpace:"nowrap",height:32,display:"flex",
-                            alignItems:"center",justifyContent:"flex-end" }}>
+                          <div style={{ fontSize:12,fontWeight:600,color:"#1e40af",background:"#eff6ff",border:"1px solid #bfdbfe",
+                            borderRadius:6,padding:"5px 8px",textAlign:"right",whiteSpace:"nowrap",height:32,
+                            display:"flex",alignItems:"center",justifyContent:"flex-end" }}>
                             ₹{inr(bgAmt)}
                           </div>
                         </td>
-
-                        {/* Total */}
                         <td className="rsm-td rsm-td--total">₹{inr(rowTotal)}</td>
-
-                        {/* Remarks */}
                         <td className="rsm-td">
-                          <input type="text" className="rsm-input-sm" style={{ width:110 }}
-                            placeholder="Note…" value={a.remarks}
-                            onChange={(e) => setActivity(a.id,"remarks",e.target.value)}/>
+                          <input type="text" className="rsm-input-sm" style={{ width:100 }}
+                            placeholder="Note…" value={a.remarks} onChange={(e) => setActivity(a.id,"remarks",e.target.value)}/>
                         </td>
-
-                        {/* Files */}
-                        <td className="rsm-td">
+                        {/* <td className="rsm-td">
                           <label className="rsm-table-upload-btn">
                             {uploadingMedia[a.id] ? "⏳" : `📎${a.mediaFiles.length>0?" "+a.mediaFiles.length:""}`}
-                            <input type="file" multiple accept="image/*,application/pdf,video/*"
-                              style={{ display:"none" }}
+                            <input type="file" multiple accept="image/*,application/pdf,video/*" style={{ display:"none" }}
                               onChange={(e) => e.target.files && handleMediaUpload(a.id, e.target.files)}/>
                           </label>
                           {a.mediaFiles.length > 0 && (
                             <div className="rsm-table-media-list">
                               {a.mediaFiles.map((m) => {
-                                const fullUrl = m.fileUrl.startsWith("http")
-                                  ? m.fileUrl : `${import.meta.env.VITE_API_BASE_URL}${m.fileUrl}`;
+                                const fullUrl = m.fileUrl.startsWith("http") ? m.fileUrl : `${import.meta.env.VITE_API_BASE_URL}${m.fileUrl}`;
                                 return (
                                   <div key={m.id} className="rsm-table-media-chip">
                                     <a href={fullUrl} target="_blank" rel="noopener noreferrer" title={m.fileName}>
-                                      {m.fileType.startsWith("image/") ? "🖼" : m.fileType.includes("pdf") ? "📄" : "🎬"}
+                                      {m.fileType.startsWith("image/")?"🖼":m.fileType.includes("pdf")?"📄":"🎬"}
                                     </a>
                                     <button type="button" onClick={() => removeMedia(a.id, m.id)}>✕</button>
                                   </div>
@@ -1091,9 +1073,7 @@ export default function RSMProposalForm() {
                               })}
                             </div>
                           )}
-                        </td>
-
-                        {/* Remove */}
+                        </td> */}
                         <td className="rsm-td">
                           <button className="rsm-remove-btn" onClick={() => removeActivity(a.id)}
                             disabled={activities.length===1} type="button">×</button>
@@ -1105,23 +1085,24 @@ export default function RSMProposalForm() {
               </table>
             </div>
 
-            {/* Totals strip — includes BGauss Budget total */}
             <div className="rsm-totals-strip">
-              <TotalCell label="Total Activities" value={String(activities.length)}/>
-              <TotalCell label="Lead Target"       value={String(Math.round(totalLeadTarget))}/>
-              <TotalCell label="Retail Target"     value={String(Math.round(totalRetailTarget))}/>
-              <TotalCell label="Total Budget"      value={`₹ ${inr(totalBudget)}`} accent/>
-              {/* BGauss Budget — highlighted in blue */}
-              <TotalCell label="BGauss Budget"     value={`₹ ${inr(totalBgauss)}`} bgauss/>
-              <TotalCell label="CPL (auto)"        value={`₹ ${cpl.toLocaleString("en-IN",{maximumFractionDigits:0})}`}/>
-              <TotalCell label="CAC (auto)"        value={`₹ ${cac.toLocaleString("en-IN",{maximumFractionDigits:0})}`}/>
+              <TotalCell label="Activities"    value={String(activities.length)}/>
+              <TotalCell label="Lead Target"   value={String(Math.round(totalLeadTarget))}/>
+              <TotalCell label="Retail Target" value={String(Math.round(totalRetailTarget))}/>
+              <TotalCell label="Total Budget"  value={`₹ ${inr(totalBudget)}`} accent/>
+              <TotalCell label="BGauss Budget" value={`₹ ${inr(totalBgauss)}`} bgauss/>
+              <TotalCell label="CAC"           value={`₹ ${cac.toLocaleString("en-IN",{maximumFractionDigits:0})}`} bgauss warn={cacBlocking}/>
+              <TotalCell label="CPL"           value={`₹ ${cpl.toLocaleString("en-IN",{maximumFractionDigits:0})}`} bgauss/>
             </div>
 
-            {cacWarning && <div className="rsm-cac-warning">⚠ {cacWarning}</div>}
+            <CacWarningBanner style={{ marginTop:10 }}/>
 
             <div className="rsm-section-footer">
               <button className="rsm-ghost-btn2" onClick={() => { setActiveSection("details"); window.scrollTo({top:0,behavior:"smooth"}); }}>← Back</button>
-              <button className="rsm-primary-btn" onClick={goToSummary}>Review & Submit →</button>
+              <button className="rsm-primary-btn" onClick={goToSummary} disabled={cacBlocking}
+                title={cacBlocking?"Reduce BGauss budget or increase Retail target first":""}>
+                {cacBlocking ? "CAC Exceeded — Fix First" : "Review & Submit →"}
+              </button>
             </div>
           </Card>
         )}
@@ -1144,15 +1125,14 @@ export default function RSMProposalForm() {
                 {header.remarks && <ReviewRow label="Remarks" value={header.remarks}/>}
               </ReviewGroup>
               <ReviewGroup title="Financial Summary">
-                <ReviewRow label="Activities"   value={String(activities.length)}/>
-                <ReviewRow label="Lead Target"  value={String(Math.round(totalLeadTarget))}/>
-                <ReviewRow label="Retail Target"value={String(Math.round(totalRetailTarget))}/>
-                <ReviewRow label="Total Budget" value={`₹ ${inr(totalBudget)}`} highlight/>
-                <ReviewRow label="BGauss Budget"value={`₹ ${inr(totalBgauss)}`}/>
-                <ReviewRow label="CPL"          value={`₹ ${cpl.toLocaleString("en-IN",{maximumFractionDigits:2})}`}/>
-                <ReviewRow label="CAC"          value={`₹ ${cac.toLocaleString("en-IN",{maximumFractionDigits:2})}`}/>
-                {eligibility && <ReviewRow label="Allowed CAC"
-                  value={`₹ ${eligibility.baseCacPerVehicle.toLocaleString("en-IN")} (${eligibility.dealerType})`}/>}
+                <ReviewRow label="Activities"    value={String(activities.length)}/>
+                <ReviewRow label="Lead Target"   value={String(Math.round(totalLeadTarget))}/>
+                <ReviewRow label="Retail Target" value={String(Math.round(totalRetailTarget))}/>
+                <ReviewRow label="Total Budget"  value={`₹ ${inr(totalBudget)}`} highlight/>
+                <ReviewRow label="BGauss Budget" value={`₹ ${inr(totalBgauss)}`}/>
+                <ReviewRow label="CAC"            value={`₹ ${cac.toLocaleString("en-IN",{maximumFractionDigits:2})}`}/>
+                <ReviewRow label="CPL"            value={`₹ ${cpl.toLocaleString("en-IN",{maximumFractionDigits:2})}`}/>
+                {eligibility && <ReviewRow label="Allowed CAC" value={`₹ ${eligibility.baseCacPerVehicle.toLocaleString("en-IN")} (${eligibility.dealerType})`}/>}
               </ReviewGroup>
             </div>
 
@@ -1161,15 +1141,13 @@ export default function RSMProposalForm() {
               <table className="rsm-table">
                 <thead>
                   <tr className="rsm-thead-row">
-                    <th className="rsm-th">#</th>
-                    <th className="rsm-th">Activity</th>
-                    <th className="rsm-th">Type</th>
-                    <th className="rsm-th">Lead</th>
-                    <th className="rsm-th">Retail</th>
+                    <th className="rsm-th">#</th><th className="rsm-th">Activity Name</th>
+                    <th className="rsm-th">Type</th><th className="rsm-th">Subcategory</th>
+                    <th className="rsm-th">QTY</th><th className="rsm-th">Lead Target</th>
+                    <th className="rsm-th">Sales %</th><th className="rsm-th">Retail Target</th>
                     <th className="rsm-th">Dates</th>
                     <th className="rsm-th rsm-th--right">Budget</th>
-                    <th className="rsm-th rsm-th--right">Add. Budget</th>
-                    <th className="rsm-th rsm-th--right">BGauss %</th>
+                    <th className="rsm-th rsm-th--right">BGauss%</th>
                     <th className="rsm-th rsm-th--right">BGauss Amt</th>
                     <th className="rsm-th rsm-th--right">Total</th>
                     <th className="rsm-th">Files</th>
@@ -1182,18 +1160,21 @@ export default function RSMProposalForm() {
                       <td className="rsm-td">{a.activityType||"—"}</td>
                       <td className="rsm-td">
                         {a.category ? (
-                          <span style={{
-                            fontSize:11,fontWeight:700,padding:"2px 7px",borderRadius:4,
+                          <span style={{ fontSize:11,fontWeight:700,padding:"2px 7px",borderRadius:4,
                             background:a.category==="ATL"?"#eff6ff":"#f0fdf4",
-                            color:a.category==="ATL"?"#1e40af":"#166534",
-                          }}>{a.category}</span>
+                            color:a.category==="ATL"?"#1e40af":"#166534" }}>{a.category}</span>
                         ) : "—"}
                       </td>
+                      <td className="rsm-td">{a.subcategory||"—"}</td>
+                      <td className="rsm-td" style={{ textAlign:"center",fontWeight:600 }}>{a.qty||"1"}</td>
                       <td className="rsm-td">{a.leadTarget||"—"}</td>
-                      <td className="rsm-td">{a.retailTarget||"—"}</td>
+                      <td className="rsm-td">{a.salesPercent ? `${a.salesPercent}%` : "—"}</td>
+                      <td className="rsm-td">
+                        {a.retailTarget||"—"}
+                        {a.retailLocked && <span style={{ marginLeft:4,fontSize:10,color:"#93c5fd" }} title="Auto-calculated">🔒</span>}
+                      </td>
                       <td className="rsm-td">{a.startDate&&a.endDate?`${a.startDate} → ${a.endDate}`:a.startDate||"—"}</td>
                       <td className="rsm-td rsm-td--right">₹{inr(num(a.budget))}</td>
-                      <td className="rsm-td rsm-td--right">₹{inr(num(a.additionalBudget))}</td>
                       <td className="rsm-td rsm-td--right">{a.bgaussShare}%</td>
                       <td className="rsm-td rsm-td--right" style={{ color:"#1e40af",fontWeight:600 }}>
                         ₹{inr(bgaussAmount(a.budget,a.additionalBudget,a.bgaussShare))}
@@ -1206,14 +1187,15 @@ export default function RSMProposalForm() {
               </table>
             </div>
 
-            {cacWarning && <div className="rsm-cac-warning" style={{ marginTop:12 }}>⚠ {cacWarning}</div>}
-            {submitted  && <div className="rsm-success-banner">✓ Proposal {editMode?"resubmitted":"submitted"} — redirecting…</div>}
-            {error      && <div className="rsm-error-banner">{error}</div>}
+            <CacWarningBanner style={{ marginTop:12 }}/>
+            {submitted && <div className="rsm-success-banner">✓ Proposal {editMode?"resubmitted":"submitted"} — redirecting…</div>}
+            {error     && <div className="rsm-error-banner">{error}</div>}
 
             <div className="rsm-section-footer">
               <button className="rsm-ghost-btn2" onClick={() => { setActiveSection("activities"); window.scrollTo({top:0,behavior:"smooth"}); }}>← Back</button>
-              <button className="rsm-primary-btn" onClick={handleSubmit} disabled={submitting}>
-                {submitting?"Submitting…":editMode?"Resubmit for Approval":"Submit for Approval"}
+              <button className="rsm-primary-btn" onClick={handleSubmit} disabled={submitting || cacBlocking}
+                title={cacBlocking?"BGauss CAC exceeds limit — go back and fix":""}>
+                {submitting ? "Submitting…" : cacBlocking ? "CAC Exceeded" : editMode ? "Resubmit for Approval" : "Submit for Approval"}
               </button>
             </div>
           </Card>
@@ -1224,7 +1206,7 @@ export default function RSMProposalForm() {
   );
 }
 
-function Card({title,subtitle,children,action}:{title:string;subtitle?:string;children:React.ReactNode;action?:React.ReactNode}) {
+function Card({ title, subtitle, children, action }: { title:string; subtitle?:string; children:React.ReactNode; action?:React.ReactNode }) {
   return (
     <div className="rsm-card">
       <div className="rsm-card-head">
@@ -1235,13 +1217,13 @@ function Card({title,subtitle,children,action}:{title:string;subtitle?:string;ch
     </div>
   );
 }
-function Label({text,required}:{text:string;required?:boolean}) {
+function Label({ text, required }: { text:string; required?:boolean }) {
   return <label className="rsm-label">{text}{required&&<span className="rsm-label-req"> *</span>}</label>;
 }
-function ReviewGroup({title,children}:{title:string;children:React.ReactNode}) {
+function ReviewGroup({ title, children }: { title:string; children:React.ReactNode }) {
   return <div className="rsm-review-group"><p className="rsm-review-group-title">{title}</p>{children}</div>;
 }
-function ReviewRow({label,value,highlight,mono}:{label:string;value:string;highlight?:boolean;mono?:boolean}) {
+function ReviewRow({ label, value, highlight, mono }: { label:string; value:string; highlight?:boolean; mono?:boolean }) {
   return (
     <div className="rsm-review-row">
       <span className="rsm-review-label">{label}</span>
@@ -1249,11 +1231,11 @@ function ReviewRow({label,value,highlight,mono}:{label:string;value:string;highl
     </div>
   );
 }
-function TotalCell({label,value,accent,bgauss}:{label:string;value:string;accent?:boolean;bgauss?:boolean}) {
+function TotalCell({ label, value, accent, bgauss, warn }: { label:string; value:string; accent?:boolean; bgauss?:boolean; warn?:boolean }) {
   return (
-    <div className={`rsm-total-cell${accent?" rsm-total-cell--accent":""}${bgauss?" rsm-total-cell--bgauss":""}`}>
+    <div className={`rsm-total-cell${accent?" rsm-total-cell--accent":""}${bgauss&&!warn?" rsm-total-cell--bgauss":""}${warn?" rsm-total-cell--warn":""}`}>
       <span className="rsm-total-label">{label}</span>
-      <span className={`rsm-total-value${accent?" rsm-total-value--accent":""}${bgauss?" rsm-total-value--bgauss":""}`}>{value}</span>
+      <span className={`rsm-total-value${accent?" rsm-total-value--accent":""}${bgauss&&!warn?" rsm-total-value--bgauss":""}${warn?" rsm-total-value--warn":""}`}>{value}</span>
     </div>
   );
 }

@@ -23,14 +23,10 @@ export default function DealerSidebar({
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [mobileOpen]);
+  }, [mobileOpen, onMobileClose]);
 
   useEffect(() => {
-    if (mobileOpen) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
+    document.body.style.overflow = mobileOpen ? "hidden" : "";
     return () => { document.body.style.overflow = ""; };
   }, [mobileOpen]);
 
@@ -46,25 +42,42 @@ export default function DealerSidebar({
 
       <aside className={[
         "sb",
-        collapsed  ? "sb--col"    : "",
+        collapsed  ? "sb--col"         : "",
         mobileOpen ? "sb--mobile-open" : "",
       ].filter(Boolean).join(" ")}>
 
-        <button className="sb-toggle sb-toggle--desktop"
+        {/* <button className="sb-toggle sb-toggle--desktop"
           onClick={onToggle}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
           <i className={collapsed ? "ti ti-chevron-right" : "ti ti-chevron-left"} />
-        </button>
+        </button> */}
 
         <button className="sb-toggle sb-toggle--mobile"
           onClick={onMobileClose} aria-label="Close menu">
           <i className="ti ti-x" />
         </button>
 
+        {/* Logo — use white version on dark sidebar */}
         <div className="sb-brand">
-          <img src="/BGauss_Logo.png" alt="BGauss" className="sb-logo" />
-          {!collapsed && <span className="sb-brand-name">BGauss</span>}
+          <img
+            src="/BGauss_Logo.png"
+            alt="BGauss"
+            className="sb-logo"
+            style={{ background: "transparent", border: "none" }}
+          />
+          {!collapsed && <span className="sb-brand-name"></span>}
         </div>
+
+        {/* Dealer badge */}
+        {!collapsed && (
+          <div style={{ margin: "0 12px 8px",
+            background: "rgba(255,255,255,0.08)",
+            border: "1px solid rgba(255,255,255,0.12)",
+            borderRadius: 6, padding: "5px 10px", fontSize: 11,
+            color: "rgba(255,255,255,0.6)", textAlign: "center", letterSpacing: "0.04em" }}>
+            DEALER PORTAL
+          </div>
+        )}
 
         <nav className="sb-nav" role="navigation">
           {!collapsed && <span className="sb-section-lbl">Main</span>}
@@ -82,7 +95,9 @@ export default function DealerSidebar({
             {!collapsed && (
               <div className="sb-user-info">
                 <span className="sb-user-name">{dealerName ?? "—"}</span>
-                <span className="sb-user-role">{dealerCode ? `Dealer · ${dealerCode}` : "Dealer"}</span>
+                <span className="sb-user-role">
+                  {dealerCode ? `Dealer · ${dealerCode}` : "Dealer"}
+                </span>
               </div>
             )}
           </div>

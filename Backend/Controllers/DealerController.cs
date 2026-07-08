@@ -1,3 +1,7 @@
+// ── DealerController.cs — FINAL with correct RSM/TSM JOIN ──────────────────
+// Replaces the old H_TSMMaster join with C_CustomerIntRepDetail GroupId=1/2
+// GroupId=1 = RSM, GroupId=2 = TSM/Commando (confirmed from DB data)
+
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
@@ -16,7 +20,7 @@ public class DealerController : ControllerBase
     public DealerController(IConfiguration config, ILogger<DealerController> logger)
     {
         _baplConn = config.GetConnectionString("BaplConnection") ?? "";
-        _logger = logger;
+        _logger   = logger;
     }
 
     [HttpGet]
@@ -28,37 +32,42 @@ public class DealerController : ControllerBase
             return StatusCode(503, new { message = "Dealer service is not configured." });
         }
 
+        // ── CONFIRMED JOIN PATTERN (from DB investigation) ────────────────────
+        // C_CustomerIntRepDetail.GroupId = 1  →  RSM
+        // C_CustomerIntRepDetail.GroupId = 2  →  TSM / Commando
+        // InternalRepresentative = EmployeeCode → H_EmployeeMaster.EmployeeCode
+        // C_CustomerMaster has NO RSMCode/TSMCode columns — must use IntRepDetail
         const string sql = """
             SELECT
                 c.CustomerCode,
                 c.CustomerName,
-                cy.CityName      AS City,
-                s.StateName      AS State,
+                ci.CityName      AS City,
+                st.StateName     AS State,
                 c.Mobile,
                 c.ContactPerson,
-                tsm.TSMCode,
-                eT.EmployeeName  AS TsmName,
-                tsm.RSMCode,
-                eR.EmployeeName  AS RsmName
-            FROM dbo.C_CustomerMaster c
-            LEFT JOIN (
-                SELECT cir1.*
-                FROM dbo.C_CustomerIntRepDetail cir1
-                INNER JOIN (
-                    SELECT CustomerCode, MIN(Id) AS MinId
-                    FROM dbo.C_CustomerIntRepDetail
-                    GROUP BY CustomerCode
-                ) cir2 ON cir1.CustomerCode = cir2.CustomerCode
-                       AND cir1.Id          = cir2.MinId
-            ) cir ON cir.CustomerCode = c.CustomerCode
-            LEFT JOIN dbo.H_TSMMaster tsm
-                ON tsm.TSMCode = cir.InternalRepresentative
-            LEFT JOIN dbo.H_EmployeeMaster eT
-                ON eT.EmployeeCode = tsm.TSMCode
-            LEFT JOIN dbo.H_EmployeeMaster eR
-                ON eR.EmployeeCode = tsm.RSMCode
-            LEFT JOIN dbo.C_CityMaster  cy ON cy.Id = c.CityId
-            LEFT JOIN dbo.C_StateMaster s  ON s.Id  = c.StateId
+                rsm_emp.EmployeeCode  AS RsmCode,
+                rsm_emp.EmployeeName  AS RsmName,
+                tsm_emp.EmployeeCode  AS TsmCode,
+                tsm_emp.EmployeeName  AS TsmName
+            FROM [dbo].[C_CustomerMaster] c
+            LEFT JOIN [dbo].[C_StateMaster] st
+                ON st.Id = c.StateId
+            LEFT JOIN [dbo].[C_CityMaster] ci
+                ON ci.Id = c.CityId
+            -- RSM (GroupId = 1)
+            LEFT JOIN [dbo].[C_CustomerIntRepDetail] rsm_rep
+                ON rsm_rep.CustomerCode = c.CustomerCode
+                AND rsm_rep.GroupId = 1
+            LEFT JOIN [dbo].[H_EmployeeMaster] rsm_emp
+                ON rsm_emp.EmployeeCode = rsm_rep.InternalRepresentative
+                AND rsm_emp.Status = 'Y'
+            -- TSM / Commando (GroupId = 2)
+            LEFT JOIN [dbo].[C_CustomerIntRepDetail] tsm_rep
+                ON tsm_rep.CustomerCode = c.CustomerCode
+                AND tsm_rep.GroupId = 2
+            LEFT JOIN [dbo].[H_EmployeeMaster] tsm_emp
+                ON tsm_emp.EmployeeCode = tsm_rep.InternalRepresentative
+                AND tsm_emp.Status = 'Y'
             WHERE c.Active = 'Y'
             ORDER BY c.CustomerName
             """;
@@ -82,10 +91,10 @@ public class DealerController : ControllerBase
                     State:         reader["State"]         == DBNull.Value ? null : reader["State"].ToString(),
                     Mobile:        reader["Mobile"]        == DBNull.Value ? null : reader["Mobile"].ToString(),
                     ContactPerson: reader["ContactPerson"] == DBNull.Value ? null : reader["ContactPerson"].ToString(),
-                    TsmCode:       reader["TSMCode"]       == DBNull.Value ? null : reader["TSMCode"].ToString(),
-                    TsmName:       reader["TsmName"]       == DBNull.Value ? null : reader["TsmName"].ToString(),
-                    RsmCode:       reader["RSMCode"]       == DBNull.Value ? null : reader["RSMCode"].ToString(),
-                    RsmName:       reader["RsmName"]       == DBNull.Value ? null : reader["RsmName"].ToString()
+                    RsmCode:       reader["RsmCode"]       == DBNull.Value ? null : reader["RsmCode"].ToString(),
+                    RsmName:       reader["RsmName"]       == DBNull.Value ? null : reader["RsmName"].ToString(),
+                    TsmCode:       reader["TsmCode"]       == DBNull.Value ? null : reader["TsmCode"].ToString(),
+                    TsmName:       reader["TsmName"]       == DBNull.Value ? null : reader["TsmName"].ToString()
                 ));
             }
 

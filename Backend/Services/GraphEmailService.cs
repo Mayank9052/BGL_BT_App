@@ -479,7 +479,7 @@ public class GraphEmailService : IEmailService
             {remarks}
             <p style="margin:0 0 8px;font-size:12px;color:#374151;">
               @Vijay Maurya — please approve/reject this proposal in the portal.</p>
-            {LinkBtn(link, "✅ Review & Decide in Portal", "#166534")}
+            {LinkBtn(link, "✅ Click Here to Review", "#166534")}
             <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">
               Thanks &amp; Regards · <strong>Mayank Maheshwari</strong> · BGauss Auto Pvt. Ltd.</p>
             """);

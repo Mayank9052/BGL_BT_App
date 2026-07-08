@@ -41,7 +41,6 @@ public class ProposalsController : ControllerBase
         if (dto.Activities is null || dto.Activities.Count == 0)
             return BadRequest("At least one activity is required.");
 
-        // ── Validate: no duplicate activity type in same proposal/month ───────
         var duplicateTypes = dto.Activities
             .Where(a => !string.IsNullOrWhiteSpace(a.ActivityType))
             .GroupBy(a => a.ActivityType.Trim().ToLower())
@@ -56,7 +55,6 @@ public class ProposalsController : ControllerBase
                            $"{string.Join(", ", duplicateTypes)}"
             });
 
-        // ── Validate: end date must be after start date for each activity ─────
         foreach (var a in dto.Activities)
         {
             var s = ParseDate(a.StartDate);
@@ -69,7 +67,6 @@ public class ProposalsController : ControllerBase
         }
 
         var submittedBy = CurrentUserEmail();
-
         var submitter = await _db.Users
             .AsNoTracking()
             .FirstOrDefaultAsync(u => u.Email == submittedBy);
@@ -78,6 +75,9 @@ public class ProposalsController : ControllerBase
         {
             ActivityType     = a.ActivityType,
             Category         = a.Category,
+            Subcategory      = a.Subcategory,                          // ← FIXED
+            Qty              = a.Qty > 0 ? a.Qty : 1,                 // ← FIXED
+            SalesPercent     = a.SalesPercent,                         // ← NEW
             LeadTarget       = a.LeadTarget,
             RetailTarget     = a.RetailTarget,
             StartDate        = ParseDate(a.StartDate),
@@ -87,7 +87,6 @@ public class ProposalsController : ControllerBase
             BGaussShare      = a.BGaussShare > 0 ? a.BGaussShare : 100m,
             VendorId         = a.VendorId,
             Remarks          = a.Remarks,
-            // ── FIX: map incoming media file entries to ActivityMedia rows ────
             MediaFiles       = (a.MediaFiles ?? new List<MediaFileDto>())
                 .Where(m => !string.IsNullOrWhiteSpace(m.FileUrl))
                 .Select(m => new ActivityMedia
@@ -104,7 +103,6 @@ public class ProposalsController : ControllerBase
         var cac = totalRetailTarget > 0 ? Math.Round(totalBudget / totalRetailTarget, 2) : 0m;
         var cpl = totalLeadTarget   > 0 ? Math.Round(totalBudget / totalLeadTarget,   2) : 0m;
 
-        // ── ERP eligibility / CAC validation ──────────────────────────────
         var (allowedCac, cacWarning) = await GetCacLimitAsync(dto.DealerName, cac);
 
         var proposal = new Proposal
@@ -194,9 +192,7 @@ public class ProposalsController : ControllerBase
         return Ok(proposals.Select(ToResponse));
     }
 
-    // ── GET /api/proposals/by-dealer-month?name={dealerName}&month={month} ────
-    // Helper to check existing activity types for a dealer in a given month
-    // (used by frontend to warn about duplicates before submit)
+    // ── GET /api/proposals/activity-types-used ────────────────────────────────
     [HttpGet("activity-types-used")]
     public async Task<ActionResult<IEnumerable<string>>> GetActivityTypesUsed(
         [FromQuery] string dealerName, [FromQuery] string month)
@@ -246,7 +242,6 @@ public class ProposalsController : ControllerBase
         if (dto.Activities is null || dto.Activities.Count == 0)
             return BadRequest(new { message = "At least one activity is required." });
 
-        // ── Validate: no duplicate activity type ───────────────────────────────
         var duplicateTypes = dto.Activities
             .Where(a => !string.IsNullOrWhiteSpace(a.ActivityType))
             .GroupBy(a => a.ActivityType.Trim().ToLower())
@@ -257,11 +252,10 @@ public class ProposalsController : ControllerBase
         if (duplicateTypes.Count > 0)
             return BadRequest(new
             {
-                message = $"Duplicate activity type(s) not allowed in the same proposal: " +
+                message = $"Duplicate activity type(s) not allowed: " +
                            $"{string.Join(", ", duplicateTypes)}"
             });
 
-        // ── Validate: end date after start date ─────────────────────────────────
         foreach (var a in dto.Activities)
         {
             var s = ParseDate(a.StartDate);
@@ -287,7 +281,6 @@ public class ProposalsController : ControllerBase
         proposal.Eligibility  = dto.Eligibility;
         proposal.Remarks      = dto.Remarks;
 
-        // Remove old activities (cascades to ActivityMedia via FK delete)
         await _db.ProposalActivities
             .Where(a => a.ProposalId == id)
             .ExecuteDeleteAsync();
@@ -298,6 +291,9 @@ public class ProposalsController : ControllerBase
             ProposalId       = id,
             ActivityType     = a.ActivityType,
             Category         = a.Category,
+            Subcategory      = a.Subcategory,                          // ← FIXED
+            Qty              = a.Qty > 0 ? a.Qty : 1,                 // ← FIXED
+            SalesPercent     = a.SalesPercent,                         // ← NEW
             LeadTarget       = a.LeadTarget,
             RetailTarget     = a.RetailTarget,
             StartDate        = ParseDate(a.StartDate),
@@ -307,7 +303,6 @@ public class ProposalsController : ControllerBase
             BGaussShare      = a.BGaussShare > 0 ? a.BGaussShare : 100m,
             VendorId         = a.VendorId,
             Remarks          = a.Remarks,
-            // ── FIX: map incoming media file entries to ActivityMedia rows ────
             MediaFiles       = (a.MediaFiles ?? new List<MediaFileDto>())
                 .Where(m => !string.IsNullOrWhiteSpace(m.FileUrl))
                 .Select(m => new ActivityMedia
@@ -328,7 +323,6 @@ public class ProposalsController : ControllerBase
         proposal.Cpl = proposal.TotalLeadTarget > 0
             ? Math.Round(proposal.TotalBudget / proposal.TotalLeadTarget, 2) : 0m;
 
-        // Recompute CAC limit on resubmit
         var (allowedCac, cacWarning) = await GetCacLimitAsync(proposal.DealerName, proposal.Cac);
         proposal.AllowedCac = allowedCac;
         proposal.CacWarning = cacWarning;
@@ -357,7 +351,7 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(updated));
     }
 
-    // POST /api/proposals/{id}/dealer-sendback — Dealer sends budget add-on request
+    // POST /api/proposals/{id}/dealer-sendback
     [HttpPost("{id:guid}/dealer-sendback")]
     [Authorize(AuthenticationSchemes = "DealerJwt")]
     public async Task<ActionResult<ProposalResponseDto>> DealerSendBack(
@@ -369,13 +363,10 @@ public class ProposalsController : ControllerBase
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
-
         if (proposal.Status != "Approved")
             return Conflict(new { message = "Only approved proposals can have add-on requests." });
-
         if (string.IsNullOrWhiteSpace(dto.DealerEmail))
             return BadRequest(new { message = "Dealer email is required." });
-
         if (string.IsNullOrWhiteSpace(dto.RequestNote))
             return BadRequest(new { message = "Request note is required." });
 
@@ -385,7 +376,6 @@ public class ProposalsController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        // Send email: Dealer → Mayank (CC: RSM)
         var graphToken = Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
         var (sent, error) = await _emailService.SendDealerSendBackMailAsync(
             proposal, dto.DealerEmail, dto.RequestNote, graphToken);
@@ -409,9 +399,8 @@ public class ProposalsController : ControllerBase
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
-
         if (proposal.Status is "Approved" or "Rejected")
-            return Conflict(new { message = $"This proposal was already {proposal.Status} and can no longer be modified." });
+            return Conflict(new { message = $"This proposal was already {proposal.Status}." });
 
         var approvedBy = dto.ApprovedBy ?? CurrentUserEmail();
 
@@ -428,7 +417,6 @@ public class ProposalsController : ControllerBase
             ApprovedBy   = approvedBy,
         };
         _db.ApprovalDecisions.Add(decision);
-
         await _db.SaveChangesAsync();
 
         var (sent, error) = await _emailService.SendDecisionMailAsync(proposal, decision, GraphToken());
@@ -453,7 +441,6 @@ public class ProposalsController : ControllerBase
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
-
         if (proposal.Status is "Approved" or "Rejected")
             return Conflict(new { message = "Cannot send back a finalised proposal." });
 
@@ -481,7 +468,6 @@ public class ProposalsController : ControllerBase
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
-
         if (proposal.Status != "Approved")
             return BadRequest(new { message = "Actuals can only be added after approval." });
 
@@ -502,7 +488,6 @@ public class ProposalsController : ControllerBase
     }
 
     // ── POST /api/proposals/{id}/activities/{activityId}/media ───────────────
-    // Attach an already-uploaded media file (via /api/media/upload) to an activity
     [HttpPost("{id:guid}/activities/{activityId:guid}/media")]
     public async Task<ActionResult<ActivityMediaDto>> AddActivityMedia(
         Guid id, Guid activityId, [FromBody] AddActivityMediaDto dto)
@@ -541,10 +526,7 @@ public class ProposalsController : ControllerBase
         return Ok(new { message = "Removed." });
     }
 
-    // ── GET /api/proposals/my-dealer-proposals — Dealer-auth only ────────────────
-    // FIXED: match by DealerCode first (exact), fallback to DealerName.
-    // This handles the case where the dealer user's DealerName in Users table
-    // differs from the DealerName stored on the Proposal (which comes from ERP/RSM form).
+    // ── GET /api/proposals/my-dealer-proposals ────────────────────────────────
     [HttpGet("my-dealer-proposals")]
     [Authorize(AuthenticationSchemes = "DealerJwt")]
     public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMyDealerProposals()
@@ -556,13 +538,8 @@ public class ProposalsController : ControllerBase
         var dealerUser = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
         if (dealerUser is null) return Unauthorized();
 
-        _logger.LogInformation(
-            "[GetMyDealerProposals] DealerCode={Code}, DealerName={Name}, Email={Email}",
-            dealerUser.DealerCode, dealerUser.DealerName, dealerUser.Email);
-
         List<Proposal> proposals;
 
-        // ── Strategy 1: match by DealerCode (most reliable — set from ERP) ────────
         if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
         {
             proposals = await _db.Proposals
@@ -572,39 +549,9 @@ public class ProposalsController : ControllerBase
                 .AsNoTracking()
                 .ToListAsync();
 
-            if (proposals.Count > 0)
-            {
-                _logger.LogInformation("[GetMyDealerProposals] Matched {Count} proposals by DealerName={Name}",
-                    proposals.Count, dealerUser.DealerName);
-                return Ok(proposals.Select(ToResponse));
-            }
-
-            _logger.LogInformation("[GetMyDealerProposals] No proposals found by DealerName={Name}, trying DealerCode",
-                dealerUser.DealerCode);
+            if (proposals.Count > 0) return Ok(proposals.Select(ToResponse));
         }
 
-        // ── Strategy 2: match by DealerName (exact) ───────────────────────────────
-        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
-        {
-            proposals = await _db.Proposals
-                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
-                .Where(p => p.DealerName == dealerUser.DealerName)
-                .OrderByDescending(p => p.CreatedAt)
-                .AsNoTracking()
-                .ToListAsync();
-
-            if (proposals.Count > 0)
-            {
-                _logger.LogInformation("[GetMyDealerProposals] Matched {Count} proposals by DealerName={Name}",
-                    proposals.Count, dealerUser.DealerName);
-                return Ok(proposals.Select(ToResponse));
-            }
-
-            _logger.LogInformation("[GetMyDealerProposals] No proposals found by DealerName={Name}, trying case-insensitive",
-                dealerUser.DealerName);
-        }
-
-        // ── Strategy 3: case-insensitive DealerName match ─────────────────────────
         if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
         {
             var lower = dealerUser.DealerName.Trim().ToLower();
@@ -615,19 +562,9 @@ public class ProposalsController : ControllerBase
                 .AsNoTracking()
                 .ToListAsync();
 
-            if (proposals.Count > 0)
-            {
-                _logger.LogInformation("[GetMyDealerProposals] Matched {Count} proposals by DealerName (case-insensitive)={Name}",
-                    proposals.Count, dealerUser.DealerName);
-                return Ok(proposals.Select(ToResponse));
-            }
-        }
+            if (proposals.Count > 0) return Ok(proposals.Select(ToResponse));
 
-        // ── Strategy 4: partial DealerName match (contains) ───────────────────────
-        // Last resort — avoids showing nothing when name is slightly different
-        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
-        {
-            var partial = dealerUser.DealerName.Trim().ToLower();
+            var partial = lower;
             proposals = await _db.Proposals
                 .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
                 .Where(p => p.DealerName.ToLower().Contains(partial)
@@ -636,28 +573,13 @@ public class ProposalsController : ControllerBase
                 .AsNoTracking()
                 .ToListAsync();
 
-            if (proposals.Count > 0)
-            {
-                _logger.LogWarning(
-                    "[GetMyDealerProposals] Partial match: found {Count} proposals. " +
-                    "DealerName in Users='{UserName}', DealerName on Proposals may differ. " +
-                    "Fix the DealerName in Users table for exact matching.",
-                    proposals.Count, dealerUser.DealerName);
-                return Ok(proposals.Select(ToResponse));
-            }
+            if (proposals.Count > 0) return Ok(proposals.Select(ToResponse));
         }
-
-        _logger.LogWarning(
-            "[GetMyDealerProposals] No proposals found for dealer. " +
-            "DealerCode={Code}, DealerName={Name}, Email={Email}. " +
-            "Check that Proposals.DealerName matches Users.DealerName for this dealer.",
-            dealerUser.DealerCode, dealerUser.DealerName, dealerUser.Email);
 
         return Ok(Array.Empty<ProposalResponseDto>());
     }
 
-
-    // ── POST /api/proposals/{id}/forward — Mayank forwards to Vijay ───────────────
+    // ── POST /api/proposals/{id}/forward ─────────────────────────────────────
     [HttpPost("{id:guid}/forward")]
     public async Task<ActionResult<ProposalResponseDto>> ForwardToApprover(Guid id)
     {
@@ -667,11 +589,9 @@ public class ProposalsController : ControllerBase
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
-
         if (proposal.Status != "Pending")
             return Conflict(new { message = "Only pending proposals can be forwarded." });
 
-        // Record that Mayank has checked it
         proposal.CheckedByEmail = CurrentUserEmail();
         proposal.CheckedAt      = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync();
@@ -683,7 +603,7 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(proposal));
     }
 
-    // ── POST /api/proposals/{id}/notify-dealer — Mayank sends to dealer ───────────
+    // ── POST /api/proposals/{id}/notify-dealer ────────────────────────────────
     [HttpPost("{id:guid}/notify-dealer")]
     public async Task<ActionResult<ProposalResponseDto>> NotifyDealer(
         Guid id, [FromBody] NotifyDealerDto dto)
@@ -694,10 +614,8 @@ public class ProposalsController : ControllerBase
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (proposal is null) return NotFound();
-
         if (proposal.Status != "Approved")
             return Conflict(new { message = "Only approved proposals can be sent to the dealer." });
-
         if (string.IsNullOrWhiteSpace(dto.DealerEmail))
             return BadRequest(new { message = "Dealer email is required." });
 
@@ -728,7 +646,6 @@ public class ProposalsController : ControllerBase
     private static DateOnly? ParseDate(string? value) =>
         DateOnly.TryParse(value, out var date) ? date : null;
 
-    // ── ERP CAC validation helper ─────────────────────────────────────────────
     private async Task<(int AllowedCac, string? Warning)>
     GetCacLimitAsync(string dealerName, decimal actualCac)
     {
@@ -736,25 +653,15 @@ public class ProposalsController : ControllerBase
         {
             var cutoff = DateTime.UtcNow.AddMonths(-3).Date;
 
-            // Match dealer by name in C_CustomerMaster
             var dealer = await _bapl.DealerMasters
                 .AsNoTracking()
-                .FirstOrDefaultAsync(d => d.CustomerName == dealerName
-                                    && d.Active == "Y");
+                .FirstOrDefaultAsync(d => d.CustomerName == dealerName && d.Active == "Y");
 
-            if (dealer == null)
-            {
-                _logger.LogInformation(
-                    "Dealer '{Name}' not found in ERP — using default CAC 4000",
-                    dealerName);
-                return (4000, null);
-            }
+            if (dealer == null) return (4000, null);
 
-            // New dealer check
             bool isNew = dealer.OnboardedDate.HasValue &&
                         dealer.OnboardedDate.Value.Date >= cutoff;
 
-            // Count retails using salebill_date (nvarchar dd-MM-yyyy)
             var rows = await _bapl.Database
                 .SqlQueryRaw<MonthlyCount>(@"
                     SELECT
@@ -772,27 +679,25 @@ public class ProposalsController : ControllerBase
                     dealer.CustomerCode, cutoff)
                 .ToListAsync();
 
-            // Always divide by 3 — fixed 3-month window regardless of actual
-            // months with data, so a month with zero sales still counts.
             double avg        = (double)rows.Sum(r => r.RetailCount) / 3.0;
             int    allowedCac = isNew ? 6000 : 4000;
 
             string? warning = actualCac > allowedCac
                 ? $"CAC/CPL ₹{actualCac:N0} exceeds allowed ₹{allowedCac}/vehicle " +
-                $"({(isNew ? "New" : "Old")} dealer, avg {avg:N1} retails/month). " +
-                "Deviation approval required."
+                  $"({(isNew ? "New" : "Old")} dealer, avg {avg:N1} retails/month). " +
+                  "Deviation approval required."
                 : null;
 
             return (allowedCac, warning);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex,
-                "CAC check failed for '{Name}' — using default 4000", dealerName);
+            _logger.LogWarning(ex, "CAC check failed for '{Name}' — using default 4000", dealerName);
             return (4000, null);
         }
     }
 
+    // ── ToResponse — maps model → DTO, including Subcategory/Qty/SalesPercent ─
     private static ProposalResponseDto ToResponse(Proposal p) => new(
         p.Id, p.State, p.Location, p.Type, p.DealerName,
         p.VendorId, p.VendorName, p.RsmName, p.CommandoName,
@@ -802,11 +707,11 @@ public class ProposalsController : ControllerBase
         p.SubmittedBy, p.CreatedAt, p.SubmittedByDisplayName,
         p.Status, p.ApproverNote, p.ApprovedBy, p.DecidedAt,
         p.TokenNumber, p.AllowedCac, p.CacWarning,
-        // new fields:
         p.CheckedByEmail, p.CheckedAt, p.DealerNotified, p.DealerEmail,
         p.DealerSendBackNote, p.DealerSentBack, p.DealerSentBackAt,
         p.Activities.Select(a => new ActivityResponseDto(
             a.Id, a.ActivityType, a.Category,
+            a.Subcategory, a.Qty, a.SalesPercent,    // ← Subcategory + Qty + SalesPercent
             a.LeadTarget, a.RetailTarget,
             a.StartDate, a.EndDate,
             a.Budget, a.AdditionalBudget, a.BGaussShare,

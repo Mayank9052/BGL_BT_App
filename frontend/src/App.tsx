@@ -17,6 +17,7 @@ import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 import ReportsPage from "./pages/ReportsPage";
 import DealerDashboard from "./pages/DealerDashboard";
+import ChatTestPage from "./pages/ChatTestPage";
 import { getDealerUser, type DealerLoginResponse } from "./services/dealerAuthService";
 
 export default function App() {
@@ -54,15 +55,17 @@ export default function App() {
       ) : isAuthenticated ? (
         <Routes>
           <Route element={<AppLayout />}>
-            <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/rsm-form"  element={<RSMProposalForm />} />
+            <Route path="/dashboard"  element={<DashboardPage />} />
+            <Route path="/rsm-form"   element={<RSMProposalForm />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin/users" element={<AdminUsersPage />} />
             </Route>
-            <Route path="/approver" element={<ApproverDashboard />} />
-            <Route path="/reports"  element={<ReportsPage />} />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/approver"   element={<ApproverDashboard />} />
+            <Route path="/reports"    element={<ReportsPage />} />
+            {/* ── Chat test page — accessible at /chat ── */}
+            <Route path="/chat"       element={<ChatTestPage />} />
+            <Route path="/"  element={<Navigate to="/dashboard" replace />} />
+            <Route path="*"  element={<Navigate to="/dashboard" replace />} />
           </Route>
         </Routes>
       ) : (

@@ -15,6 +15,9 @@ export interface ActivityResponse {
   id:               string;
   activityType:     string;
   category:         string | null;
+  subcategory:      string | null;
+  qty:              number;
+  salesPercent:     number | null;    // ← NEW
   leadTarget:       number;
   retailTarget:     number;
   startDate:        string | null;
@@ -24,14 +27,12 @@ export interface ActivityResponse {
   bgaussShare:      number;
   vendorId:         number | null;
   remarks:          string | null;
-  // ── actuals (filled after approval) ──
-  actualStartDate: string | null;
-  actualEndDate:   string | null;
-  mediaFileUrl:    string | null;
-  mediaFileName:   string | null;
-  mediaFileType:   string | null;
-  // ── multiple media files ──
-  mediaFiles:      ActivityMediaResponse[];
+  actualStartDate:  string | null;
+  actualEndDate:    string | null;
+  mediaFileUrl:     string | null;
+  mediaFileName:    string | null;
+  mediaFileType:    string | null;
+  mediaFiles:       ActivityMediaResponse[];
 }
 
 export interface ProposalResponse {
@@ -77,6 +78,9 @@ export interface DealerSendBackPayload {
 interface ActivityPayload {
   activityType:     string;
   category:         string | null;
+  subcategory:      string | null;
+  qty:              number;
+  salesPercent:     number | null;    // ← NEW
   leadTarget:       number;
   retailTarget:     number;
   startDate:        string;
@@ -176,7 +180,6 @@ async function getGraphToken(instance: IPublicClientApplication): Promise<string
 
 /* ── API calls ────────────────────────────────────────────────────────────── */
 
-/** Submit a new proposal */
 export async function submitProposal(
   payload: ProposalPayload,
   instance: IPublicClientApplication,
@@ -198,7 +201,6 @@ export async function submitProposal(
   return res.json();
 }
 
-/** Update an existing pending proposal (reviewer edits / RSM resubmits) */
 export async function updateProposal(
   id: string,
   payload: UpdateProposalPayload,
@@ -221,7 +223,6 @@ export async function updateProposal(
   return res.json();
 }
 
-/** Fetch a single proposal by ID */
 export async function fetchProposalById(
   id: string,
   instance: IPublicClientApplication,
@@ -234,7 +235,6 @@ export async function fetchProposalById(
   return res.json();
 }
 
-/** Fetch proposals submitted by the current logged-in user (RSM "My Proposals") */
 export async function fetchMyProposals(
   instance: IPublicClientApplication,
 ): Promise<ProposalResponse[]> {
@@ -246,28 +246,21 @@ export async function fetchMyProposals(
   return res.json();
 }
 
-/** Dealer sends a budget add-on request back to Mayank */
 export async function dealerSendBack(
   id: string,
   payload: DealerSendBackPayload,
 ): Promise<ProposalResponse> {
   const token = getDealerToken();
   if (!token) throw new Error("Not signed in as a dealer.");
-
   const res = await fetch(`${API_BASE_URL}/api/proposals/${id}/dealer-sendback`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization:  `Bearer ${token}`,
-      // Dealer JWT route — no Graph token needed for this action
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
   return res.json();
 }
 
-/** Fetch all proposals — admin/approver view */
 export async function fetchProposals(
   instance: IPublicClientApplication,
 ): Promise<ProposalResponse[]> {
@@ -279,12 +272,6 @@ export async function fetchProposals(
   return res.json();
 }
 
-/**
- * Fetch proposal history for a specific dealer.
- * Uses the dedicated /api/proposals/by-dealer endpoint so that:
- *  - The backend filters by dealerName only (no user restriction)
- *  - RSM can see all past proposals for a dealer, not just their own
- */
 export async function fetchProposalsByDealer(
   dealerName: string,
   instance: IPublicClientApplication,
@@ -298,10 +285,6 @@ export async function fetchProposalsByDealer(
   return res.json();
 }
 
-/**
- * Fetch activity types already used for a dealer in a given month.
- * Used by frontend to warn about duplicate activity types before submit.
- */
 export async function fetchActivityTypesUsed(
   dealerName: string,
   month: string,
@@ -317,7 +300,6 @@ export async function fetchActivityTypesUsed(
   return res.json();
 }
 
-/** Approve or reject a proposal */
 export async function decideProposal(
   id: string,
   payload: DecidePayload,
@@ -340,7 +322,6 @@ export async function decideProposal(
   return res.json();
 }
 
-/** Send a proposal back for revision */
 export async function sendBackProposal(
   id: string,
   payload: SendBackPayload,
@@ -363,7 +344,6 @@ export async function sendBackProposal(
   return res.json();
 }
 
-/** Update actual dates + media for approved proposal activities */
 export async function updateProposalActuals(
   id: string,
   actuals: ActivityActualsPayload[],
@@ -382,7 +362,6 @@ export async function updateProposalActuals(
   return res.json();
 }
 
-/** Upload a media file, returns { url, fileName, fileType } */
 export async function uploadActivityMedia(
   file: File,
   instance: IPublicClientApplication,
@@ -403,9 +382,8 @@ export async function uploadActivityMedia(
 }
 
 export async function fetchMyDealerProposals(): Promise<ProposalResponse[]> {
-  const token = getDealerToken();          // from dealerAuthService
+  const token = getDealerToken();
   if (!token) throw new Error("Not signed in as a dealer.");
-
   const res = await fetch(`${API_BASE_URL}/api/proposals/my-dealer-proposals`, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -416,7 +394,6 @@ export async function fetchMyDealerProposals(): Promise<ProposalResponse[]> {
   return res.json();
 }
 
-/** Attach an already-uploaded media file to a specific activity */
 export async function addActivityMedia(
   proposalId: string,
   activityId: string,
@@ -439,7 +416,6 @@ export async function addActivityMedia(
   return res.json();
 }
 
-/** Mayank forwards a checked proposal to Vijay (final approver) */
 export async function forwardProposalToApprover(
   id: string,
   instance: IPublicClientApplication,
@@ -459,7 +435,6 @@ export async function forwardProposalToApprover(
   return res.json();
 }
 
-/** Mayank sends approved proposal details to the dealer by email */
 export async function notifyDealer(
   id: string,
   dealerEmail: string,
@@ -482,7 +457,6 @@ export async function notifyDealer(
   return res.json();
 }
 
-/** Remove a media file from an activity */
 export async function removeActivityMedia(
   proposalId: string,
   activityId: string,
@@ -498,4 +472,4 @@ export async function removeActivityMedia(
     const text = await res.text().catch(() => "");
     throw new Error(text || `Failed to remove media (${res.status})`);
   }
-}
+} 

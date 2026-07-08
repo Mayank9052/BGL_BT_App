@@ -23,8 +23,9 @@ public class ActivityMasterController : ControllerBase
     {
         var list = await _db.ActivityMasters
             .Where(a => a.IsActive)
-            .OrderBy(a => a.ActivityName)
-            .Select(a => new ActivityTypeDto(a.Id, a.ActivityName, a.ActivityType, a.IsActive))
+            .OrderBy(a => a.ActivityName).ThenBy(a => a.Subcategory)
+            .Select(a => new ActivityTypeDto(
+                a.Id, a.ActivityName, a.ActivityType, a.IsActive, a.Subcategory, a.MaxQty))
             .ToListAsync();
         return Ok(list);
     }
@@ -34,8 +35,9 @@ public class ActivityMasterController : ControllerBase
     public async Task<IActionResult> GetAllAdmin()
     {
         var list = await _db.ActivityMasters
-            .OrderBy(a => a.ActivityName)
-            .Select(a => new ActivityTypeDto(a.Id, a.ActivityName, a.ActivityType, a.IsActive))
+            .OrderBy(a => a.ActivityName).ThenBy(a => a.Subcategory)
+            .Select(a => new ActivityTypeDto(
+                a.Id, a.ActivityName, a.ActivityType, a.IsActive, a.Subcategory, a.MaxQty))
             .ToListAsync();
         return Ok(list);
     }
@@ -54,8 +56,9 @@ public class ActivityMasterController : ControllerBase
         if (actType != "ATL" && actType != "BTL")
             return BadRequest(new { message = "ActivityType must be 'ATL' or 'BTL'." });
 
-        var exists = await _db.ActivityMasters
-            .AnyAsync(a => a.ActivityName.ToLower() == dto.ActivityName.Trim().ToLower());
+        var exists = await _db.ActivityMasters.AnyAsync(a =>
+            a.ActivityName.ToLower() == dto.ActivityName.Trim().ToLower() &&
+            (dto.Subcategory == null || a.Subcategory == dto.Subcategory.Trim()));
         if (exists)
             return Conflict(new { message = $"'{dto.ActivityName}' already exists." });
 
@@ -63,11 +66,15 @@ public class ActivityMasterController : ControllerBase
         {
             ActivityName = dto.ActivityName.Trim(),
             ActivityType = actType,
+            Subcategory  = dto.Subcategory?.Trim(),
+            MaxQty       = dto.MaxQty > 0 ? dto.MaxQty : 5,
             IsActive     = true,
         };
         _db.ActivityMasters.Add(activity);
         await _db.SaveChangesAsync();
-        return Ok(new ActivityTypeDto(activity.Id, activity.ActivityName, activity.ActivityType, activity.IsActive));
+        return Ok(new ActivityTypeDto(
+            activity.Id, activity.ActivityName, activity.ActivityType,
+            activity.IsActive, activity.Subcategory, activity.MaxQty));
     }
 
     // PATCH /api/activity-types/{id}/toggle — admin only
@@ -82,7 +89,9 @@ public class ActivityMasterController : ControllerBase
 
         activity.IsActive = dto.IsActive;
         await _db.SaveChangesAsync();
-        return Ok(new ActivityTypeDto(activity.Id, activity.ActivityName, activity.ActivityType, activity.IsActive));
+        return Ok(new ActivityTypeDto(
+            activity.Id, activity.ActivityName, activity.ActivityType,
+            activity.IsActive, activity.Subcategory, activity.MaxQty));
     }
 
     private async Task<IActionResult?> EnsureAdmin()

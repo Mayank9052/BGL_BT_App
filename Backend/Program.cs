@@ -1,4 +1,5 @@
 using BGL_BT_App.Backend.Data;
+using BGL_BT_App.Backend.Hubs;
 using BGL_BT_App.Backend.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -17,31 +18,52 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// ── ERP read-only (baplfinal on Azure SQL) ────────────────────────────────────
 builder.Services.AddDbContext<BaplDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("BaplConnection")));
 
 // ── Authentication — Azure AD (staff) + Local JWT (dealers) ───────────────────
-// Capture the base AuthenticationBuilder first, then add each scheme on it —
-// AddMicrosoftIdentityWebApi returns a specialized builder that doesn't
-// expose AddJwtBearer/AddPolicyScheme directly.
 var authBuilder = builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = "MultiScheme";
     options.DefaultChallengeScheme    = "MultiScheme";
 });
 
-authBuilder.AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"), "AzureAD");
+// AddMicrosoftIdentityWebApi(IConfigurationSection, string) — the correct 2-arg overload
+authBuilder.AddMicrosoftIdentityWebApi(
+    builder.Configuration.GetSection("AzureAd"),
+    "AzureAD");
+
+// ── SignalR WebSocket auth fix ─────────────────────────────────────────────────
+// WebSocket cannot send HTTP headers; SignalR appends ?access_token=... to the URL.
+// PostConfigure reads it from the query string so the JWT validator sees it.
+builder.Services.PostConfigure<JwtBearerOptions>("AzureAD", options =>
+{
+    var existing = options.Events ?? new JwtBearerEvents();
+    var prevOnMessageReceived = existing.OnMessageReceived;
+
+    existing.OnMessageReceived = async context =>
+    {
+        // Run any existing handler first
+        if (prevOnMessageReceived != null)
+            await prevOnMessageReceived(context);
+
+        // Only inject token for the SignalR hub path
+        var accessToken = context.Request.Query["access_token"];
+        var path        = context.HttpContext.Request.Path;
+        if (!string.IsNullOrEmpty(accessToken) &&
+            path.StartsWithSegments("/hubs/chat"))
+        {
+            context.Token = accessToken;
+        }
+    };
+
+    options.Events = existing;
+});
 
 authBuilder.AddJwtBearer("DealerJwt", options =>
 {
     var jwtSecret = builder.Configuration["DealerJwt:Secret"]!;
-
-    // Prevent JwtSecurityTokenHandler from rewriting short claim names
-    // ("sub", "email", "role") into long XML-namespace ClaimTypes
-    // equivalents — keeps claims exactly as issued by JwtTokenService.
     options.MapInboundClaims = false;
-
     options.TokenValidationParameters = new TokenValidationParameters
     {
         ValidateIssuer           = true,
@@ -50,9 +72,10 @@ authBuilder.AddJwtBearer("DealerJwt", options =>
         ValidAudience            = builder.Configuration["DealerJwt:Audience"],
         ValidateLifetime         = true,
         ValidateIssuerSigningKey = true,
-        IssuerSigningKey         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
-        NameClaimType            = "name",
-        RoleClaimType             = "role",
+        IssuerSigningKey         = new SymmetricSecurityKey(
+                                       Encoding.UTF8.GetBytes(jwtSecret)),
+        NameClaimType = "name",
+        RoleClaimType = "role",
     };
 });
 
@@ -60,6 +83,12 @@ authBuilder.AddPolicyScheme("MultiScheme", "MultiScheme", options =>
 {
     options.ForwardDefaultSelector = ctx =>
     {
+        // SignalR WebSocket: no Authorization header — check query string
+        var accessToken = ctx.Request.Query["access_token"];
+        if (!string.IsNullOrEmpty(accessToken) &&
+            ctx.Request.Path.StartsWithSegments("/hubs/chat"))
+            return "AzureAD";
+
         var authHeader = ctx.Request.Headers["Authorization"].FirstOrDefault();
         if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer "))
             return "AzureAD";
@@ -68,21 +97,18 @@ authBuilder.AddPolicyScheme("MultiScheme", "MultiScheme", options =>
         try
         {
             var handler = new JwtSecurityTokenHandler();
-            var jwt = handler.ReadJwtToken(token);
+            var jwt     = handler.ReadJwtToken(token);
             return jwt.Issuer == builder.Configuration["DealerJwt:Issuer"]
                 ? "DealerJwt"
                 : "AzureAD";
         }
-        catch
-        {
-            return "AzureAD";
-        }
+        catch { return "AzureAD"; }
     };
 });
 
 builder.Services.AddAuthorization();
 
-// ── CORS ──────────────────────────────────────────────────────────────────────
+// ── CORS ─────────────────────────────────────────────────────────────────────
 var allowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
     .Get<string[]>() ?? new[] { "http://localhost:5173" };
@@ -93,26 +119,23 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
-              .AllowCredentials());
+              .AllowCredentials());   // required for SignalR WebSocket upgrade
 });
 
-// ── 1 GB upload limits ────────────────────────────────────────────────────────
+// ── Upload limits ─────────────────────────────────────────────────────────────
 const long OneGb = 1_073_741_824L;
-
 builder.Services.Configure<FormOptions>(o =>
 {
     o.MultipartBodyLengthLimit    = OneGb;
     o.ValueLengthLimit            = int.MaxValue;
     o.MultipartHeadersLengthLimit = int.MaxValue;
 });
-
 builder.Services.Configure<KestrelServerOptions>(o =>
     o.Limits.MaxRequestBodySize = OneGb);
-
 builder.Services.Configure<IISServerOptions>(o =>
     o.MaxRequestBodySize = OneGb);
 
-// ── Services ──────────────────────────────────────────────────────────────────
+// ── Core services ─────────────────────────────────────────────────────────────
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -120,15 +143,29 @@ builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddTransient<IClaimsTransformation, DbRoleClaimsTransformation>();
 
-// ── Email — Graph API (sends as logged-in user via Mail.Send scope) ───────────
+// ── Email ─────────────────────────────────────────────────────────────────────
 builder.Services.AddHttpClient<GraphEmailService>();
 builder.Services.AddScoped<IEmailService, GraphEmailService>();
-
 builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 
+// ── Chat — SignalR + AI bot with DB access ────────────────────────────────────
+builder.Services.AddSignalR(opts =>
+{
+    opts.EnableDetailedErrors      = builder.Environment.IsDevelopment();
+    opts.MaximumReceiveMessageSize = 64 * 1024;
+    opts.ClientTimeoutInterval     = TimeSpan.FromSeconds(60);
+    opts.KeepAliveInterval         = TimeSpan.FromSeconds(20);
+});
+builder.Services.AddHttpClient("anthropic");
+builder.Services.AddScoped<IBotService, BotService>();   // BotService now has AppDbContext
+
+// ── WhatsApp ──────────────────────────────────────────────────────────────────
+builder.Services.AddHttpClient("whatsapp");
+builder.Services.AddScoped<IWhatsAppService, WhatsAppService>();
+
+// ── Build ─────────────────────────────────────────────────────────────────────
 var app = builder.Build();
 
-// ── Global error handler ──────────────────────────────────────────────────────
 app.Use(async (context, next) =>
 {
     try { await next(); }
@@ -139,14 +176,14 @@ app.Use(async (context, next) =>
         context.Response.StatusCode  = 500;
         context.Response.ContentType = "application/json";
         await context.Response.WriteAsync(
-            System.Text.Json.JsonSerializer.Serialize(new {
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
                 message = ex.Message,
-                inner   = ex.InnerException?.Message
+                inner   = ex.InnerException?.Message,
             }));
     }
 });
 
-// ── Middleware Pipeline ───────────────────────────────────────
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -159,12 +196,10 @@ if (app.Environment.IsDevelopment())
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
-
 app.UseCors("FrontendPolicy");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
-
+app.MapHub<ChatHub>("/hubs/chat");
 app.MapFallbackToFile("index.html");
-
 app.Run();
