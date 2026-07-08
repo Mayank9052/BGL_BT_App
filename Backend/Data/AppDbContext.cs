@@ -24,6 +24,7 @@ public class AppDbContext : DbContext
     public DbSet<ChatRoomMember> ChatRoomMembers => Set<ChatRoomMember>();
     public DbSet<ChatMessage>    ChatMessages    => Set<ChatMessage>();
     public DbSet<WhatsAppMessage> WhatsAppMessages => Set<WhatsAppMessage>();
+    public DbSet<BotKnowledge>    BotKnowledgeBase  => Set<BotKnowledge>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -178,6 +179,20 @@ public class AppDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(m => m.RoomId);
             e.HasIndex(m => m.SentAt);
+        });
+
+        // ── Bot Knowledge Base ───────────────────────────────────────────────
+        modelBuilder.Entity<BotKnowledge>(e =>
+        {
+            e.ToTable("BotKnowledge");
+            e.HasKey(b => b.Id);
+            e.Property(b => b.Category).HasMaxLength(100).IsRequired();
+            e.Property(b => b.Question).HasMaxLength(500).IsRequired();
+            e.Property(b => b.Keywords).HasMaxLength(1000).IsRequired();
+            e.Property(b => b.IsActive).HasDefaultValue(true);
+            e.Property(b => b.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+            e.HasIndex(b => b.Category);
+            e.HasIndex(b => b.IsActive);
         });
 
         // ── WhatsApp Messages ─────────────────────────────────────────────────

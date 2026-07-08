@@ -142,7 +142,10 @@ export default function WhatsAppPanel() {
       // Refresh contacts to update lastMessage
       fetchWaContacts(instance).then(setContacts).catch(() => {});
     } catch (e) {
-      setSendErr(e instanceof Error ? e.message : "Send failed.");
+      const msg = e instanceof Error ? e.message : "Send failed.";
+      setSendErr(msg.includes("not configured")
+        ? "WhatsApp not configured yet. Set PhoneNumberId & AccessToken in appsettings.json."
+        : msg);
     } finally {
       setSending(false);
     }

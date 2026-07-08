@@ -18,10 +18,21 @@ public class ChatController : ControllerBase
 
     public ChatController(AppDbContext db) => _db = db;
 
-    private string MyEmail() =>
-        User.FindFirstValue("preferred_username")
-        ?? User.FindFirstValue(ClaimTypes.Email)
-        ?? "unknown";
+        private string MyEmail()
+    {
+        var claims = new[]
+        {
+            "preferred_username", "upn", "email", "unique_name",
+            ClaimTypes.Upn, ClaimTypes.Email, ClaimTypes.Name,
+        };
+        foreach (var c in claims)
+        {
+            var v = User.FindFirstValue(c);
+            if (!string.IsNullOrWhiteSpace(v) && v.Contains('@'))
+                return v.ToLowerInvariant();
+        }
+        return (User.Identity?.Name ?? "unknown").ToLowerInvariant();
+    }
 
     private string MyName() =>
         User.FindFirstValue("name")
@@ -147,7 +158,7 @@ public class ChatController : ControllerBase
         if (existing != null) return Ok(new { roomId = existing.Id });
 
         var room = new ChatRoom { RoomType = "bot" };
-        room.Members.Add(new ChatRoomMember { UserId = 0, Email = myEmail });
+        room.Members.Add(new ChatRoomMember { UserId = 0, Email = myEmail.ToLowerInvariant() });
         room.Members.Add(new ChatRoomMember { UserId = -1, Email = "bot@bgauss.com" });
 
         _db.ChatRooms.Add(room);

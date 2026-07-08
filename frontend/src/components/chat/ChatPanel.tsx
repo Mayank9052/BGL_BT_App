@@ -4,7 +4,7 @@ import { useMsal } from "@azure/msal-react";
 import { useAuthStore } from "../../store/authStore";
 import {
   initChatConnection, startConnection, stopConnection,
-  getConnection, sendMessage, sendTyping,
+  getConnection, sendMessage, sendTyping, joinRoom, leaveRoom,
   fetchEmployees, fetchRooms, fetchMessages,
   getOrCreateDirect, getOrCreateBotRoom,
   type ChatMessage, type ChatRoom, type Employee,
@@ -75,10 +75,13 @@ export default function ChatPanel() {
 
     // Incoming message — only show in thread if it belongs to the active room
     conn.on("ReceiveMessage", (msg: ChatMessage) => {
+      console.log("[Chat] ReceiveMessage:", msg.roomId, "isBot:", msg.isBot, "current:", activeRoomRef.current?.id);
       const currentRoom = activeRoomRef.current;
       // Case-insensitive roomId comparison (Guid serialization can vary)
+      // Compare roomId - normalize both sides (Guid can be with/without dashes)
+      const normalizeId = (id: string) => id?.toLowerCase().replace(/-/g, "");
       const sameRoom = currentRoom &&
-        msg.roomId.toLowerCase() === currentRoom.id.toLowerCase();
+        normalizeId(msg.roomId) === normalizeId(currentRoom.id);
 
       if (sameRoom) {
         setMessages((prev) => {
@@ -110,6 +113,17 @@ export default function ChatPanel() {
       reloadRooms();
     });
 
+    conn.on("ChatError", (msg: string) => {
+      console.error("[ChatError]", msg);
+      // Show error in the chat as a system message
+      const errMsg: ChatMessage = {
+        id: crypto.randomUUID(), roomId: activeRoomRef.current?.id ?? "",
+        senderEmail: "system", senderName: "System",
+        body: `⚠ ${msg}`, isBot: true, sentAt: new Date().toISOString(),
+      };
+      setMessages(prev => [...prev, errMsg]);
+    });
+
     conn.on("UserTyping", ({ senderName, isTyping }: { senderName: string; isTyping: boolean }) => {
       setTyping(isTyping ? senderName : null);
       if (isTyping) {
@@ -139,11 +153,19 @@ export default function ChatPanel() {
   // otherName/otherEmail come from the server already filtered to "the other person"
   // (ChatController returns otherEmail = the member who is NOT the current user)
   const openThread = async (room: ChatRoom) => {
+    // Leave previous room group
+    if (activeRoomRef.current?.id && activeRoomRef.current.id !== room.id)
+      leaveRoom(activeRoomRef.current.id).catch(() => {});
+
     setActiveRoom(room);
     setView("thread");
     setLoading(true);
     setUnread(0);
     setMessages([]);
+
+    // Join room group for efficient typing broadcast (no DB query on server)
+    joinRoom(room.id).catch(() => {});
+
     try {
       const msgs = await fetchMessages(room.id, instance);
       setMessages(msgs);
@@ -226,18 +248,35 @@ export default function ChatPanel() {
     };
     setMessages((prev) => [...prev, temp]);
     scrollBottom();
-    try { await sendMessage(activeRoom.id, body); } catch {}
+    try {
+      await sendMessage(activeRoom.id, body);
+    } catch (e) {
+      // Show delivery error in chat
+      const errMsg: ChatMessage = {
+        id: crypto.randomUUID(), roomId: activeRoom.id,
+        senderEmail: "system", senderName: "System",
+        body: `⚠ Message not delivered: ${e instanceof Error ? e.message : "Connection error"}. Please try again.`,
+        isBot: true, sentAt: new Date().toISOString(),
+      };
+      setMessages(prev => [...prev, errMsg]);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
-  const handleTyping = async () => {
+  // Typing indicator — debounced to max once per 3 seconds to protect DB
+  const lastTypingSent = useRef<number>(0);
+  const handleTyping = () => {
     if (!activeRoom) return;
-    await sendTyping(activeRoom.id, true);
+    const now = Date.now();
+    if (now - lastTypingSent.current < 3000) return;  // throttle to 1 call per 3s
+    lastTypingSent.current = now;
+    sendTyping(activeRoom.id, true).catch(() => {});   // fire and forget, never throw
     if (typingTimer.current) clearTimeout(typingTimer.current);
-    typingTimer.current = setTimeout(() => sendTyping(activeRoom.id, false), 1500);
+    typingTimer.current = setTimeout(() =>
+      sendTyping(activeRoom.id, false).catch(() => {}), 3000);
   };
 
   const openEmployees = async () => {
@@ -345,6 +384,11 @@ export default function ChatPanel() {
                   </svg>
                   <span className="chat-head-title">BGauss Chat</span>
                   <span className={`chat-conn-dot chat-conn-dot--${connState}`} title={connState}/>
+                {connState === "disconnected" && (
+                  <span style={{ fontSize:10, color:"#ef4444", fontWeight:600 }}>
+                    Reconnecting…
+                  </span>
+                )}
                 </div>
                 {/* Show logged-in user identity */}
                 <span className="chat-my-email" title={myEmail}>

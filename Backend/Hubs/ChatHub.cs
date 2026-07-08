@@ -9,33 +9,39 @@ using System.Security.Claims;
 
 namespace BGL_BT_App.Backend.Hubs;
 
-// ── IMPORTANT: [Authorize] without a scheme ──────────────────────────────────
-// Must NOT specify AuthenticationSchemes here — the MultiScheme policy selector
-// in Program.cs handles routing, and the OnMessageReceived event we added to
-// the AzureAD JwtBearer handler reads the token from the ?access_token= query
-// string that SignalR appends during the WebSocket upgrade.
 [Authorize]
 public class ChatHub : Hub
 {
-    private readonly AppDbContext     _db;
-    private readonly IBotService      _bot;
-    private readonly ILogger<ChatHub> _logger;
+    // Inject IServiceScopeFactory so we can create fresh scopes for background work
+    // AppDbContext is SCOPED — it gets disposed when the SignalR request ends.
+    // Task.Run() runs OUTSIDE that request, so we must create a NEW scope with
+    // a fresh DbContext for the bot response. This is the standard ASP.NET pattern
+    // for background work in scoped services.
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<ChatHub>     _logger;
 
-    public ChatHub(AppDbContext db, IBotService bot, ILogger<ChatHub> logger)
+    public ChatHub(IServiceScopeFactory scopeFactory, ILogger<ChatHub> logger)
     {
-        _db     = db;
-        _bot    = bot;
-        _logger = logger;
+        _scopeFactory = scopeFactory;
+        _logger       = logger;
     }
 
-    private string MyEmail() =>
-        Context.User?.FindFirstValue("preferred_username")
-        ?? Context.User?.FindFirstValue(ClaimTypes.Upn)
-        ?? Context.User?.FindFirstValue("upn")
-        ?? Context.User?.FindFirstValue(ClaimTypes.Email)
-        ?? Context.User?.FindFirstValue("email")
-        ?? Context.User?.Identity?.Name
-        ?? "unknown";
+    // ── Read email from claims — always lowercase ─────────────────────────────
+    private string MyEmail()
+    {
+        var candidates = new[]
+        {
+            "preferred_username", "upn", "email", "unique_name",
+            ClaimTypes.Upn, ClaimTypes.Email, ClaimTypes.Name,
+        };
+        foreach (var c in candidates)
+        {
+            var v = Context.User?.FindFirstValue(c);
+            if (!string.IsNullOrWhiteSpace(v) && v.Contains('@'))
+                return v.ToLowerInvariant();
+        }
+        return (Context.User?.Identity?.Name ?? "unknown").ToLowerInvariant();
+    }
 
     private string MyName() =>
         Context.User?.FindFirstValue("name")
@@ -46,25 +52,35 @@ public class ChatHub : Hub
     public override async Task OnConnectedAsync()
     {
         var email = MyEmail();
-        _logger.LogInformation("[Chat] Connected: {Email} ({ConnectionId})",
-            email, Context.ConnectionId);
-
-        // Join personal group (both original case and lowercase)
-        // so bot replies always reach the user regardless of email casing
+        _logger.LogInformation("[Chat] Connected: {Email} ({ConnectionId})", email, Context.ConnectionId);
         await Groups.AddToGroupAsync(Context.ConnectionId, email);
-        await Groups.AddToGroupAsync(Context.ConnectionId, email.ToLowerInvariant());
         await base.OnConnectedAsync();
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        _logger.LogInformation("[Chat] Disconnected: {Email} ({ConnectionId})",
-            MyEmail(), Context.ConnectionId);
+        _logger.LogInformation("[Chat] Disconnected: {Email}", MyEmail());
         await base.OnDisconnectedAsync(exception);
     }
 
+    // ── JoinRoom / LeaveRoom — no DB, pure in-memory for typing ──────────────
+    public async Task JoinRoom(string roomId)
+        => await Groups.AddToGroupAsync(Context.ConnectionId, $"room:{roomId}");
+
+    public async Task LeaveRoom(string roomId)
+        => await Groups.RemoveFromGroupAsync(Context.ConnectionId, $"room:{roomId}");
+
+    // ── MarkTyping — zero DB queries ──────────────────────────────────────────
+    public async Task MarkTyping(Guid roomId, bool isTyping)
+    {
+        var senderEmail = MyEmail();
+        var senderName  = MyName();
+        var payload     = new { roomId = roomId.ToString(), senderEmail, senderName, isTyping };
+        await Clients.GroupExcept($"room:{roomId}", Context.ConnectionId)
+                     .SendAsync("UserTyping", payload);
+    }
+
     // ── SendMessage ───────────────────────────────────────────────────────────
-    // Called by client: await connection.invoke("SendMessage", roomId, body)
     public async Task SendMessage(Guid roomId, string body)
     {
         if (string.IsNullOrWhiteSpace(body)) return;
@@ -72,17 +88,33 @@ public class ChatHub : Hub
         var senderEmail = MyEmail();
         var senderName  = MyName();
 
-        // Verify caller is member of the room
-        var isMember = await _db.ChatRoomMembers
-            .AnyAsync(m => m.RoomId == roomId && m.Email == senderEmail);
+        _logger.LogInformation("[Chat] SendMessage room={RoomId} from={Email}", roomId, senderEmail);
+
+        // Use a fresh scope for all DB work in this method
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        // Verify / auto-fix membership — case-insensitive
+        var isMember = await db.ChatRoomMembers
+            .AnyAsync(m => m.RoomId == roomId && m.Email.ToLower() == senderEmail);
+
         if (!isMember)
         {
-            _logger.LogWarning("[Chat] {Email} tried to send to room {Room} but is not a member.",
-                senderEmail, roomId);
-            return;
+            var roomExists = await db.ChatRooms.AnyAsync(r => r.Id == roomId);
+            if (!roomExists)
+            {
+                await Clients.Caller.SendAsync("ChatError",
+                    "Room not found. Please close and reopen the chat.");
+                return;
+            }
+            // Auto-join (handles old rooms created before lowercase fix)
+            db.ChatRoomMembers.Add(new ChatRoomMember
+                { RoomId = roomId, UserId = 0, Email = senderEmail });
+            await db.SaveChangesAsync();
+            _logger.LogInformation("[Chat] Auto-joined {Email} to {RoomId}", senderEmail, roomId);
         }
 
-        // Persist
+        // Persist message
         var message = new ChatMessage
         {
             RoomId      = roomId,
@@ -92,126 +124,160 @@ public class ChatHub : Hub
             IsBot       = false,
             SentAt      = DateTimeOffset.UtcNow,
         };
-        _db.ChatMessages.Add(message);
-        await _db.SaveChangesAsync();
+        db.ChatMessages.Add(message);
+        await db.SaveChangesAsync();
 
-        // Build payload
+        _logger.LogInformation("[Chat] Persisted message {Id}", message.Id);
+
+        // Get all members for broadcast
+        var memberEmails = await db.ChatRoomMembers
+            .Where(m => m.RoomId == roomId)
+            .Select(m => m.Email.ToLower())
+            .Distinct()
+            .ToListAsync();
+
+        // Echo message to all members
         var payload = new
         {
-            id          = message.Id,
-            roomId,
+            id          = message.Id.ToString(),
+            roomId      = roomId.ToString(),
             senderEmail,
             senderName,
             body        = message.Body,
             isBot       = false,
             sentAt      = message.SentAt.ToString("o"),
         };
-
-        // Broadcast to all members of the room via their personal groups
-        var memberEmails = await _db.ChatRoomMembers
-            .Where(m => m.RoomId == roomId)
-            .Select(m => m.Email)
-            .ToListAsync();
-
         foreach (var email in memberEmails)
             await Clients.Group(email).SendAsync("ReceiveMessage", payload);
 
-        // Bot rooms: trigger AI response
-        var room = await _db.ChatRooms.FindAsync(roomId);
-        if (room?.RoomType == "bot")
-            await TriggerBotResponseAsync(roomId, body, senderEmail);
-    }
+        // Is this a bot room?
+        var roomType = await db.ChatRooms
+            .Where(r => r.Id == roomId)
+            .Select(r => r.RoomType)
+            .FirstOrDefaultAsync();
 
-    // ── MarkTyping ────────────────────────────────────────────────────────────
-    // Called by client: await connection.invoke("MarkTyping", roomId, isTyping)
-    public async Task MarkTyping(Guid roomId, bool isTyping)
-    {
-        var senderEmail = MyEmail();
-        var senderName  = MyName();
+        _logger.LogInformation("[Chat] RoomType={Type}", roomType);
 
-        var memberEmails = await _db.ChatRoomMembers
-            .Where(m => m.RoomId == roomId && m.Email != senderEmail)
-            .Select(m => m.Email)
-            .ToListAsync();
-
-        var payload = new { roomId, senderEmail, senderName, isTyping };
-        foreach (var email in memberEmails)
-            await Clients.Group(email).SendAsync("UserTyping", payload);
-    }
-
-    // ── AI bot response ───────────────────────────────────────────────────────
-    private async Task TriggerBotResponseAsync(Guid roomId, string userMessage, string userEmail)
-    {
-        // Get human members of this room upfront (used for both typing + delivery)
-        var humanMembers = await _db.ChatRoomMembers
-            .Where(m => m.RoomId == roomId && m.Email != "bot@bgauss.com")
-            .Select(m => m.Email)
-            .ToListAsync();
-
-        // Helper: send event to all human members (both original + lowercase group)
-        async Task BroadcastToHumans(string eventName, object payload)
+        if (roomType == "bot")
         {
-            foreach (var email in humanMembers)
-            {
-                await Clients.Group(email).SendAsync(eventName, payload);
-                await Clients.Group(email.ToLowerInvariant()).SendAsync(eventName, payload);
-            }
-        }
+            // Capture everything needed BEFORE the scope closes
+            var humanEmailsCopy = memberEmails
+                .Where(e => e != "bot@bgauss.com")
+                .ToList();
+            var roomIdCopy     = roomId;
+            var userEmailCopy  = senderEmail;
+            var bodyCopy       = body;
+            var clientsCopy    = Clients;  // HubCallerClients is safe to pass to background
 
+            // Fire background task — creates its OWN scope so DbContext is never shared
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await TriggerBotResponseAsync(
+                        roomIdCopy, bodyCopy, userEmailCopy,
+                        humanEmailsCopy, clientsCopy);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[Bot] Background task failed for room {RoomId}", roomIdCopy);
+                }
+            });
+        }
+    }
+
+    // ── Bot response — runs in background with its own fresh scope ────────────
+    private async Task TriggerBotResponseAsync(
+        Guid roomId, string userMessage, string userEmail,
+        List<string> humanEmails, IHubCallerClients clients)
+    {
+        _logger.LogInformation("[Bot] Starting for room {RoomId}", roomId);
+
+        // Show typing to all human members
+        var typingOn = new
+        {
+            roomId      = roomId.ToString(),
+            senderEmail = "bot@bgauss.com",
+            senderName  = "BGauss AI",
+            isTyping    = true,
+        };
+        foreach (var email in humanEmails)
+            await clients.Group(email).SendAsync("UserTyping", typingOn);
+
+        // ── Fresh scope for bot response (critical — the outer scope is gone) ─
+        using var botScope = _scopeFactory.CreateScope();
+        var db     = botScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var botSvc = botScope.ServiceProvider.GetRequiredService<IBotService>();
+
+        string botReply;
         try
         {
-            // Show typing indicator
-            await BroadcastToHumans("UserTyping",
-                new { roomId, senderEmail = "bot@bgauss.com", senderName = "BGauss AI", isTyping = true });
-
-            // Build conversation history (last 20 messages for context)
-            var history = await _db.ChatMessages
-                .Where(m => m.RoomId == roomId)
+            // Load 24-hr conversation history
+            var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
+            var history = await db.ChatMessages
+                .Where(m => m.RoomId == roomId && m.SentAt >= cutoff)
                 .OrderByDescending(m => m.SentAt)
-                .Take(20)
+                .Take(40)
                 .OrderBy(m => m.SentAt)
                 .Select(m => new { role = m.IsBot ? "assistant" : "user", content = m.Body })
                 .ToListAsync();
 
-            // Call AI with full DB context
-            var botReply = await _bot.AskAsync(
+            _logger.LogInformation("[Bot] History: {Count} messages, calling AskAsync…", history.Count);
+
+            botReply = await botSvc.AskAsync(
                 history.Select(h => (h.role, h.content)).ToList(),
                 userEmail);
 
-            // Persist bot message
-            var botMessage = new ChatMessage
-            {
-                RoomId      = roomId,
-                SenderEmail = "bot@bgauss.com",
-                SenderName  = "BGauss AI",
-                Body        = botReply,
-                IsBot       = true,
-                SentAt      = DateTimeOffset.UtcNow,
-            };
-            _db.ChatMessages.Add(botMessage);
-            await _db.SaveChangesAsync();
-
-            // Stop typing indicator
-            await BroadcastToHumans("UserTyping",
-                new { roomId, senderEmail = "bot@bgauss.com", senderName = "BGauss AI", isTyping = false });
-
-            // Deliver bot reply to all human members
-            await BroadcastToHumans("ReceiveMessage", new
-            {
-                id          = botMessage.Id,
-                roomId,
-                senderEmail = "bot@bgauss.com",
-                senderName  = "BGauss AI",
-                body        = botReply,
-                isBot       = true,
-                sentAt      = botMessage.SentAt.ToString("o"),
-            });
+            _logger.LogInformation("[Bot] Reply generated ({Len} chars)", botReply?.Length ?? 0);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Chat] Bot response failed for room {RoomId}", roomId);
-            await BroadcastToHumans("UserTyping",
-                new { roomId, senderEmail = "bot@bgauss.com", senderName = "BGauss AI", isTyping = false });
+            _logger.LogError(ex, "[Bot] AskAsync failed");
+            botReply = "⚠ I encountered an error. Please try again.";
         }
+
+        // Persist bot message
+        var botMessage = new ChatMessage
+        {
+            RoomId      = roomId,
+            SenderEmail = "bot@bgauss.com",
+            SenderName  = "BGauss AI",
+            Body        = botReply,
+            IsBot       = true,
+            SentAt      = DateTimeOffset.UtcNow,
+        };
+        db.ChatMessages.Add(botMessage);
+        await db.SaveChangesAsync();
+
+        // Stop typing
+        var typingOff = new
+        {
+            roomId      = roomId.ToString(),
+            senderEmail = "bot@bgauss.com",
+            senderName  = "BGauss AI",
+            isTyping    = false,
+        };
+        foreach (var email in humanEmails)
+            await clients.Group(email).SendAsync("UserTyping", typingOff);
+
+        // Deliver reply
+        var replyPayload = new
+        {
+            id          = botMessage.Id.ToString(),
+            roomId      = roomId.ToString(),
+            senderEmail = "bot@bgauss.com",
+            senderName  = "BGauss AI",
+            body        = botMessage.Body,
+            isBot       = true,
+            sentAt      = botMessage.SentAt.ToString("o"),
+        };
+
+        foreach (var email in humanEmails)
+        {
+            _logger.LogInformation("[Bot] Delivering to group: {Email}", email);
+            await clients.Group(email).SendAsync("ReceiveMessage", replyPayload);
+        }
+
+        _logger.LogInformation("[Bot] Done for room {RoomId}", roomId);
     }
 }

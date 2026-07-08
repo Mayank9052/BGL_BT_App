@@ -110,9 +110,26 @@ export async function stopConnection() {
 }
 
 export async function sendMessage(roomId: string, body: string) {
-  await _connection?.invoke("SendMessage", roomId, body);
+  if (!_connection) throw new Error("Not connected.");
+  if (_connection.state !== signalR.HubConnectionState.Connected)
+    throw new Error("Chat disconnected. Please wait for reconnection.");
+  await _connection.invoke("SendMessage", roomId, body);
 }
 
 export async function sendTyping(roomId: string, isTyping: boolean) {
-  await _connection?.invoke("MarkTyping", roomId, isTyping);
+  // Only send if connected — never throw on transient failures
+  if (_connection?.state !== signalR.HubConnectionState.Connected) return;
+  try {
+    await _connection.invoke("MarkTyping", roomId, isTyping);
+  } catch { /* ignore typing errors — not critical */ }
+}
+
+export async function joinRoom(roomId: string) {
+  if (_connection?.state !== signalR.HubConnectionState.Connected) return;
+  try { await _connection.invoke("JoinRoom", roomId); } catch {}
+}
+
+export async function leaveRoom(roomId: string) {
+  if (_connection?.state !== signalR.HubConnectionState.Connected) return;
+  try { await _connection.invoke("LeaveRoom", roomId); } catch {}
 }

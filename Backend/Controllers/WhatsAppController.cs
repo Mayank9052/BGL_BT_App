@@ -56,7 +56,15 @@ public class WhatsAppController : ControllerBase
             dto.Phone, dto.Body, MyEmail(), MyName(), dto.ContactName);
 
         if (!success)
-            return StatusCode(502, new { message = "WhatsApp delivery failed.", detail = error });
+        {
+            // Check if it's a config issue vs actual send failure
+            var isConfigErr = error?.Contains("not configured") == true;
+            return StatusCode(isConfigErr ? 503 : 502,
+                new { message = isConfigErr
+                    ? "WhatsApp not configured. Set WhatsApp:PhoneNumberId and WhatsApp:AccessToken in appsettings.json."
+                    : "WhatsApp delivery failed.",
+                    detail = error });
+        }
 
         return Ok(new { success = true, waMessageId = waId });
     }
@@ -110,23 +118,31 @@ public class WhatsAppController : ControllerBase
     [Authorize]
     public async Task<IActionResult> GetContacts()
     {
-        var contacts = await _db.WhatsAppMessages
-            .GroupBy(m => m.ToPhone)
-            .Select(g => new
-            {
-                phone       = g.Key,
-                contactName = g.OrderByDescending(m => m.SentAt)
-                               .Select(m => m.ContactName).FirstOrDefault(),
-                lastMessage = g.OrderByDescending(m => m.SentAt)
-                               .Select(m => m.Body).FirstOrDefault(),
-                lastAt      = g.Max(m => m.SentAt).ToString("o"),
-                unread      = g.Count(m => m.Direction == "inbound" && m.Status == "received"),
-            })
-            .OrderByDescending(c => c.lastAt)
-            .AsNoTracking()
-            .ToListAsync();
+        try
+        {
+            var contacts = await _db.WhatsAppMessages
+                .GroupBy(m => m.ToPhone)
+                .Select(g => new
+                {
+                    phone       = g.Key,
+                    contactName = g.OrderByDescending(m => m.SentAt)
+                                   .Select(m => m.ContactName).FirstOrDefault(),
+                    lastMessage = g.OrderByDescending(m => m.SentAt)
+                                   .Select(m => m.Body).FirstOrDefault(),
+                    lastAt      = g.Max(m => m.SentAt).ToString("o"),
+                    unread      = g.Count(m => m.Direction == "inbound" && m.Status == "received"),
+                })
+                .OrderByDescending(c => c.lastAt)
+                .AsNoTracking()
+                .ToListAsync();
 
-        return Ok(contacts);
+            return Ok(contacts);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[WhatsApp] GetContacts failed — table may not exist yet. Run ChatBotKnowledge_Migration.sql.");
+            return Ok(Array.Empty<object>());   // return empty list, not 500
+        }
     }
 
     // ── GET /api/whatsapp/templates ───────────────────────────────────────────

@@ -16,10 +16,20 @@ var builder = WebApplication.CreateBuilder(args);
 
 // ── Database ──────────────────────────────────────────────────────────────────
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseSqlServer(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        sqlOptions => sqlOptions.EnableRetryOnFailure(
+            maxRetryCount:       5,
+            maxRetryDelay:       TimeSpan.FromSeconds(10),
+            errorNumbersToAdd:   null)));
 
 builder.Services.AddDbContext<BaplDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("BaplConnection")));
+    options.UseSqlServer(
+        builder.Configuration.GetConnectionString("BaplConnection"),
+        sqlOptions => sqlOptions.EnableRetryOnFailure(
+            maxRetryCount:       3,
+            maxRetryDelay:       TimeSpan.FromSeconds(6),
+            errorNumbersToAdd:   null)));
 
 // ── Authentication — Azure AD (staff) + Local JWT (dealers) ───────────────────
 var authBuilder = builder.Services.AddAuthentication(options =>
@@ -83,16 +93,21 @@ authBuilder.AddPolicyScheme("MultiScheme", "MultiScheme", options =>
 {
     options.ForwardDefaultSelector = ctx =>
     {
-        // SignalR WebSocket: no Authorization header — check query string
-        var accessToken = ctx.Request.Query["access_token"];
-        if (!string.IsNullOrEmpty(accessToken) &&
-            ctx.Request.Path.StartsWithSegments("/hubs/chat"))
+        // SignalR hub path — always AzureAD (both negotiate and WebSocket)
+        if (ctx.Request.Path.StartsWithSegments("/hubs/chat"))
             return "AzureAD";
 
+        // Check query string access_token (SignalR WebSocket fallback)
+        var accessToken = ctx.Request.Query["access_token"];
+        if (!string.IsNullOrEmpty(accessToken))
+            return "AzureAD";
+
+        // No Authorization header → default to AzureAD (will 401 unauthenticated)
         var authHeader = ctx.Request.Headers["Authorization"].FirstOrDefault();
         if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer "))
             return "AzureAD";
 
+        // Parse token to detect Dealer vs Azure AD
         var token = authHeader["Bearer ".Length..];
         try
         {
