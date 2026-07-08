@@ -8,7 +8,6 @@ import Navbar from "./Navbar";
 import "./AppLayout.css";
 
 const SIDEBAR_KEY = "bgauss_sidebar_collapsed";
-const AUTHORIZED_REPORTS_EMAIL = "oat@bgauss.com";
 
 export default function AppLayout() {
   const { instance } = useMsal();
@@ -50,24 +49,25 @@ export default function AppLayout() {
     instance.logoutRedirect({ postLogoutRedirectUri: "/" }).catch(console.error);
   };
 
-  const isAdmin       = user?.role === "Admin" || user?.role === "Manager";
-  const isReportsUser = user?.email?.toLowerCase() === AUTHORIZED_REPORTS_EMAIL;
+  const isAdmin = user?.role === "Admin" || user?.role === "Manager";
+
+  // Reports access — ALL authenticated users can access reports
+  // Backend (ReportsController) enforces its own auth check
+  const isReportsUser = !!user;
 
   // Click anywhere on the collapsed sidebar to expand it
   const handleSidebarClick = () => {
-    if (collapsed) {
-      setCollapsed(false);
-    }
+    if (collapsed) setCollapsed(false);
   };
 
   return (
     <div className={[
       "app-layout",
-      collapsed   ? "app-layout--collapsed"   : "",
-      mobileOpen  ? "app-layout--mobile-open" : "",
+      collapsed  ? "app-layout--collapsed"   : "",
+      mobileOpen ? "app-layout--mobile-open" : "",
     ].filter(Boolean).join(" ")}>
 
-      {/* Wrapper div catches clicks on collapsed sidebar to expand it */}
+      {/* Wrapper catches clicks on collapsed sidebar to expand it */}
       <div
         onClick={handleSidebarClick}
         style={{ cursor: collapsed ? "pointer" : "default" }}

@@ -8,6 +8,11 @@ import {
   fetchProposals,
   type ProposalResponse,
 } from "../services/proposalService";
+import {
+  downloadExcelReport,
+  downloadPdfReport,
+  type ReportFilters,
+} from "../services/reportService";
 import "./DashboardPage.css";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -71,12 +76,16 @@ export default function DashboardPage() {
   const [loadingData, setLoadingData] = useState(true);
   const [dataError,   setDataError]   = useState<string | null>(null);
 
+  // ── Download state ────────────────────────────────────────────────────────
+  const [downloading, setDownloading] = useState<"excel" | "pdf" | null>(null);
+  const [dlError,     setDlError]     = useState<string | null>(null);
+
   // ── Shared filters ────────────────────────────────────────────────────────
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("All");
   const [stateFilter,  setStateFilter]  = useState("All");
   const [monthFilter,  setMonthFilter]  = useState("All");
 
-  // ── Single shared search — drives BOTH state and dealer tables ────────────
+  // ── Single shared search ──────────────────────────────────────────────────
   const [sharedSearch, setSharedSearch] = useState("");
 
   useEffect(() => {
@@ -95,7 +104,6 @@ export default function DashboardPage() {
     () => ["All", ...Array.from(new Set(proposals.map((p) => p.state))).sort()],
     [proposals],
   );
-
   const months = useMemo(
     () => ["All", ...Array.from(new Set(proposals.map((p) => p.month)))],
     [proposals],
@@ -104,7 +112,7 @@ export default function DashboardPage() {
   const handleKpiClick = (filter: ActiveFilter) =>
     setActiveFilter((prev) => (prev === filter ? "All" : filter));
 
-  // ── Base filtered proposals (dropdown filters only, no text search) ────────
+  // ── Base filtered proposals ───────────────────────────────────────────────
   const baseFiltered = useMemo(() =>
     proposals.filter((p) => {
       if (activeFilter !== "All" && p.status !== activeFilter) return false;
@@ -114,7 +122,7 @@ export default function DashboardPage() {
     }),
   [proposals, activeFilter, stateFilter, monthFilter]);
 
-  // ── Text-search filtered — both tables share this ─────────────────────────
+  // ── Text-search filtered ──────────────────────────────────────────────────
   const searchFiltered = useMemo(() => {
     const q = sharedSearch.toLowerCase().trim();
     if (!q) return baseFiltered;
@@ -123,6 +131,27 @@ export default function DashboardPage() {
         .join(" ").toLowerCase().includes(q)
     );
   }, [baseFiltered, sharedSearch]);
+
+  // ── Build report filters matching current dashboard filters ───────────────
+  const currentReportFilters = useMemo((): ReportFilters => ({
+    period: "monthly",
+    state:  stateFilter  !== "All" ? stateFilter  : undefined,
+    // month filter maps to period — pass as custom range if specific month selected
+  }), [stateFilter]);
+
+  // ── Download handlers — pre-filled with current filters ───────────────────
+  const handleDownload = async (type: "excel" | "pdf") => {
+    setDownloading(type);
+    setDlError(null);
+    try {
+      if (type === "excel") await downloadExcelReport(currentReportFilters, instance);
+      else                  await downloadPdfReport(currentReportFilters, instance);
+    } catch (e) {
+      setDlError(e instanceof Error ? e.message : "Download failed.");
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   // ── State-wise breakdown ──────────────────────────────────────────────────
   const stateBreakdown = useMemo(() => {
@@ -177,11 +206,11 @@ export default function DashboardPage() {
       const totalLead    = d.oldLead + d.newLead + d.nonLead;
       return {
         state,
-        oldRetail: d.oldRetail,  oldCount: d.oldDealers.size, oldBudget: d.oldBudget,
+        oldRetail: d.oldRetail, oldCount: d.oldDealers.size, oldBudget: d.oldBudget,
         oldCac: d.oldRetail > 0 ? d.oldBudget / d.oldRetail : 0,
-        newRetail: d.newRetail,  newCount: d.newDealers.size, newBudget: d.newBudget,
+        newRetail: d.newRetail, newCount: d.newDealers.size, newBudget: d.newBudget,
         newCac: d.newRetail > 0 ? d.newBudget / d.newRetail : 0,
-        nonRetail: d.nonRetail,  nonCount: d.nonDealers.size, nonBudget: d.nonBudget,
+        nonRetail: d.nonRetail, nonCount: d.nonDealers.size, nonBudget: d.nonBudget,
         nonCac: d.nonRetail > 0 ? d.nonBudget / d.nonRetail : 0,
         totalDealers, totalBudget, totalRetail, totalLead,
         overallCac: totalRetail > 0 ? totalBudget / totalRetail : 0,
@@ -251,7 +280,6 @@ export default function DashboardPage() {
     );
   }, [searchFiltered]);
 
-  // ── Search result summary ─────────────────────────────────────────────────
   const searchResultLabel = useMemo(() => {
     if (!sharedSearch.trim()) return null;
     return `${stateBreakdown.length} state${stateBreakdown.length !== 1 ? "s" : ""} · ${dealerRows.length} dealer${dealerRows.length !== 1 ? "s" : ""} matching "${sharedSearch}"`;
@@ -299,7 +327,6 @@ export default function DashboardPage() {
             </div>
           </button>
         )}
-        {/* Download Report — visible to ALL roles */}
         <button className="dash-action-card dash-action-card--report" onClick={() => navigate("/reports")}>
           <span className="dash-action-icon">📊</span>
           <div>
@@ -449,6 +476,14 @@ export default function DashboardPage() {
             )}
           </div>
 
+          {/* ── Download error ── */}
+          {dlError && (
+            <div className="dash-dl-error">
+              ⚠ {dlError}
+              <button onClick={() => setDlError(null)}>✕</button>
+            </div>
+          )}
+
           {/* ══ State-wise Summary ══════════════════════════════════════════ */}
           {stateBreakdown.length > 0 && (
             <section className="dash-section">
@@ -457,6 +492,39 @@ export default function DashboardPage() {
                   State-wise Summary
                   <span className="dash-count-chip">{stateBreakdown.length}</span>
                 </h2>
+                {/* ── Inline download buttons ─────────────────────────────── */}
+                <div className="dash-section-dl-group">
+                  {stateFilter !== "All" && (
+                    <span className="dash-section-filter-hint">
+                      {stateFilter}
+                      {monthFilter !== "All" ? ` · ${monthFilter}` : ""}
+                    </span>
+                  )}
+                  <button
+                    className="dash-dl-btn dash-dl-btn--excel"
+                    onClick={() => handleDownload("excel")}
+                    disabled={downloading !== null}
+                    title="Download Excel with current filters">
+                    {downloading === "excel"
+                      ? <><span className="dash-dl-spinner"/>Generating…</>
+                      : <>⬇ Excel</>}
+                  </button>
+                  <button
+                    className="dash-dl-btn dash-dl-btn--pdf"
+                    onClick={() => handleDownload("pdf")}
+                    disabled={downloading !== null}
+                    title="Download PDF with current filters">
+                    {downloading === "pdf"
+                      ? <><span className="dash-dl-spinner"/>Generating…</>
+                      : <>⬇ PDF</>}
+                  </button>
+                  <button
+                    className="dash-dl-btn dash-dl-btn--full"
+                    onClick={() => navigate("/reports")}
+                    title="Open full report page with more options">
+                    Full Report ↗
+                  </button>
+                </div>
               </div>
 
               <div className="dash-table-wrap dash-table-wrap--wide">
@@ -583,49 +651,63 @@ export default function DashboardPage() {
                 Dealer-wise Data
                 <span className="dash-count-chip">{dealerRows.length}</span>
               </h2>
+              <div className="dash-section-dl-group">
+                <button
+                  className="dash-dl-btn dash-dl-btn--excel"
+                  onClick={() => handleDownload("excel")}
+                  disabled={downloading !== null}
+                  title="Download Excel">
+                  {downloading === "excel" ? <><span className="dash-dl-spinner"/>Generating…</> : <>⬇ Excel</>}
+                </button>
+                <button
+                  className="dash-dl-btn dash-dl-btn--pdf"
+                  onClick={() => handleDownload("pdf")}
+                  disabled={downloading !== null}
+                  title="Download PDF">
+                  {downloading === "pdf" ? <><span className="dash-dl-spinner"/>Generating…</> : <>⬇ PDF</>}
+                </button>
+              </div>
             </div>
 
             {dealerRows.length === 0 ? (
               <div className="dash-no-results">
                 <span>🔍</span>
                 <p>No dealers match your filters.</p>
-                <button className="dash-filter-clear-all" onClick={clearAllFilters}>
-                  Clear all filters
-                </button>
+                <button className="dash-filter-clear-all" onClick={clearAllFilters}>Clear all filters</button>
               </div>
             ) : (
               <div className="dash-table-wrap">
                 <table className="dash-table dash-table--dealer">
                   <thead>
                     <tr>
-                      <th className="dash-th">State</th>
-                      <th className="dash-th">Dealer Name</th>
-                      <th className="dash-th dash-th--right">Month Target</th>
-                      <th className="dash-th">Category (Mar–May)</th>
-                      <th className="dash-th">BTL Category</th>
-                      <th className="dash-th dash-th--right">Activities</th>
-                      <th className="dash-th dash-th--right">Retail Target</th>
-                      <th className="dash-th dash-th--right">Lead Target</th>
-                      <th className="dash-th dash-th--right">Budget for BTL (₹)</th>
-                      <th className="dash-th dash-th--right">Pending</th>
-                      <th className="dash-th dash-th--right">Approved</th>
-                      <th className="dash-th dash-th--right">Rejected</th>
+                      <th className="dash-th" style={{ textAlign:"left" }}>State</th>
+                      <th className="dash-th" style={{ textAlign:"left" }}>Dealer Name</th>
+                      <th className="dash-th" style={{ textAlign:"center" }}>Month Target</th>
+                      <th className="dash-th" style={{ textAlign:"left" }}>Category (Mar–May)</th>
+                      <th className="dash-th" style={{ textAlign:"left" }}>BTL Category</th>
+                      <th className="dash-th" style={{ textAlign:"center" }}>Activities</th>
+                      <th className="dash-th" style={{ textAlign:"center" }}>Retail Target</th>
+                      <th className="dash-th" style={{ textAlign:"center" }}>Lead Target</th>
+                      <th className="dash-th" style={{ textAlign:"center" }}>Budget for BTL (₹)</th>
+                      <th className="dash-th" style={{ textAlign:"center" }}>Pending</th>
+                      <th className="dash-th" style={{ textAlign:"center" }}>Approved</th>
+                      <th className="dash-th" style={{ textAlign:"center" }}>Rejected</th>
                     </tr>
                   </thead>
                   <tbody>
                     {dealerRows.map((row, i) => {
-                      const el    = (row.eligibility ?? "").toLowerCase();
-                      const isNon = el.includes("not") || el.includes("non");
-                      const isNew = row.type?.toLowerCase() === "new";
+                      const el      = (row.eligibility ?? "").toLowerCase();
+                      const isNon   = el.includes("not") || el.includes("non");
+                      const isNew   = row.type?.toLowerCase() === "new";
                       const catBase = isNon ? "Non Eligible" : "BTL Budget Eligible";
-                      const cat = isNon
+                      const cat     = isNon
                         ? "Dealers Non Eligible for BTL"
                         : isNew
                         ? "Budget taken for BTL (New)"
                         : "Budget taken for BTL (Old+New+Special Approval)";
-                      const btlBudget = row.eligibleOldBudget + row.eligibleNewBudget;
-                      const q = sharedSearch.toLowerCase().trim();
-                      const dealerMatch = q && row.dealerName.toLowerCase().includes(q);
+                      const btlBudget    = row.eligibleOldBudget + row.eligibleNewBudget;
+                      const q            = sharedSearch.toLowerCase().trim();
+                      const dealerMatch  = q && row.dealerName.toLowerCase().includes(q);
                       return (
                         <tr key={`${row.dealerName}__${row.state}`}
                           className={i % 2 === 0 ? "dash-row-even" : "dash-row-odd"}>
@@ -635,26 +717,24 @@ export default function DashboardPage() {
                               {row.dealerName}
                             </span>
                           </td>
-                          <td className="dash-td dash-td--right">{Math.round(row.monthTarget).toLocaleString("en-IN")}</td>
+                          <td className="dash-td" style={{ textAlign:"center" }}>{Math.round(row.monthTarget).toLocaleString("en-IN")}</td>
                           <td className="dash-td">
-                            <span className={`dash-cat-tag dash-cat-tag--${isNon ? "non" : "eligible"}`}>
-                              {catBase}
-                            </span>
+                            <span className={`dash-cat-tag dash-cat-tag--${isNon ? "non" : "eligible"}`}>{catBase}</span>
                           </td>
                           <td className="dash-td dash-td--category">{cat}</td>
-                          <td className="dash-td dash-td--right">{row.activities}</td>
-                          <td className="dash-td dash-td--right">{Math.round(row.retailTarget).toLocaleString("en-IN")}</td>
-                          <td className="dash-td dash-td--right">{Math.round(row.leadTarget).toLocaleString("en-IN")}</td>
-                          <td className="dash-td dash-td--right dash-td--mono">
+                          <td className="dash-td" style={{ textAlign:"center" }}>{row.activities}</td>
+                          <td className="dash-td" style={{ textAlign:"center" }}>{Math.round(row.retailTarget).toLocaleString("en-IN")}</td>
+                          <td className="dash-td" style={{ textAlign:"center" }}>{Math.round(row.leadTarget).toLocaleString("en-IN")}</td>
+                          <td className="dash-td dash-td--mono" style={{ textAlign:"center" }}>
                             {btlBudget > 0 ? inr(btlBudget) : <Dash />}
                           </td>
-                          <td className="dash-td dash-td--right">
+                          <td className="dash-td" style={{ textAlign:"center" }}>
                             {row.pending  > 0 ? <span className="dash-badge dash-badge--pending">{row.pending}</span>   : <span className="dash-muted">—</span>}
                           </td>
-                          <td className="dash-td dash-td--right">
+                          <td className="dash-td" style={{ textAlign:"center" }}>
                             {row.approved > 0 ? <span className="dash-badge dash-badge--approved">{row.approved}</span> : <span className="dash-muted">—</span>}
                           </td>
-                          <td className="dash-td dash-td--right">
+                          <td className="dash-td" style={{ textAlign:"center" }}>
                             {row.rejected > 0 ? <span className="dash-badge dash-badge--rejected">{row.rejected}</span> : <span className="dash-muted">—</span>}
                           </td>
                         </tr>

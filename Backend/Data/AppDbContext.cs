@@ -7,35 +7,35 @@ public class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
-    public DbSet<User>             Users             => Set<User>();
-    public DbSet<UserSession>      UserSessions      => Set<UserSession>();
-    public DbSet<Proposal>         Proposals         => Set<Proposal>();
+    // ── Existing tables ───────────────────────────────────────────────────────
+    public DbSet<User>             Users              => Set<User>();
+    public DbSet<UserSession>      UserSessions       => Set<UserSession>();
+    public DbSet<Proposal>         Proposals          => Set<Proposal>();
     public DbSet<ProposalActivity> ProposalActivities => Set<ProposalActivity>();
     public DbSet<ActivityMedia>    ActivityMediaFiles => Set<ActivityMedia>();
-    public DbSet<State>            States            => Set<State>();
-    public DbSet<City>             Cities            => Set<City>();
-    public DbSet<ApprovalDecision> ApprovalDecisions => Set<ApprovalDecision>();
-    public DbSet<ActivityMaster>   ActivityMasters   => Set<ActivityMaster>();
-    public DbSet<VendorMaster>     VendorMasters     => Set<VendorMaster>();
+    public DbSet<State>            States             => Set<State>();
+    public DbSet<City>             Cities             => Set<City>();
+    public DbSet<ApprovalDecision> ApprovalDecisions  => Set<ApprovalDecision>();
+    public DbSet<ActivityMaster>   ActivityMasters    => Set<ActivityMaster>();
+    public DbSet<VendorMaster>     VendorMasters      => Set<VendorMaster>();
+
+    // ── Chat tables (added for in-app messaging + AI bot) ─────────────────────
+    public DbSet<ChatRoom>       ChatRooms       => Set<ChatRoom>();
+    public DbSet<ChatRoomMember> ChatRoomMembers => Set<ChatRoomMember>();
+    public DbSet<ChatMessage>    ChatMessages    => Set<ChatMessage>();
+    public DbSet<WhatsAppMessage> WhatsAppMessages => Set<WhatsAppMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Users
+        // ── Users ─────────────────────────────────────────────────────────────
         modelBuilder.Entity<User>(e =>
         {
             e.ToTable("Users");
             e.HasKey(u => u.Id);
-
-            // AzureObjectId is now NULLABLE — only set for AzureAD-authenticated
-            // staff accounts; Dealer (local-auth) accounts leave this null.
             e.Property(u => u.AzureObjectId).HasMaxLength(100).IsRequired(false);
-
-            // Unique index must be FILTERED so multiple NULLs (dealer accounts)
-            // don't violate uniqueness — only enforce uniqueness when a value exists.
             e.HasIndex(u => u.AzureObjectId)
              .IsUnique()
              .HasFilter("[AzureObjectId] IS NOT NULL");
-
             e.Property(u => u.Email).HasMaxLength(255).IsRequired();
             e.HasIndex(u => u.Email).IsUnique();
             e.Property(u => u.DisplayName).HasMaxLength(255).IsRequired();
@@ -50,7 +50,7 @@ public class AppDbContext : DbContext
             e.Property(u => u.UpdatedAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
-        // UserSessions
+        // ── UserSessions ──────────────────────────────────────────────────────
         modelBuilder.Entity<UserSession>(e =>
         {
             e.ToTable("UserSessions");
@@ -59,6 +59,7 @@ public class AppDbContext : DbContext
             e.Property(s => s.LoginAt).HasDefaultValueSql("GETUTCDATE()");
         });
 
+        // ── Proposals ─────────────────────────────────────────────────────────
         modelBuilder.Entity<Proposal>(e =>
         {
             e.ToTable("Proposals");
@@ -76,6 +77,7 @@ public class AppDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
         });
 
+        // ── ProposalActivities ────────────────────────────────────────────────
         modelBuilder.Entity<ProposalActivity>(e =>
         {
             e.ToTable("ProposalActivities");
@@ -90,6 +92,7 @@ public class AppDbContext : DbContext
              .OnDelete(DeleteBehavior.Cascade);
         });
 
+        // ── ActivityMedia ─────────────────────────────────────────────────────
         modelBuilder.Entity<ActivityMedia>(e =>
         {
             e.ToTable("ActivityMedia");
@@ -100,6 +103,7 @@ public class AppDbContext : DbContext
             e.Property(m => m.UploadedAt).HasDefaultValueSql("GETDATE()");
         });
 
+        // ── ApprovalDecisions ─────────────────────────────────────────────────
         modelBuilder.Entity<ApprovalDecision>(e =>
         {
             e.ToTable("ApprovalDecisions");
@@ -112,6 +116,7 @@ public class AppDbContext : DbContext
             e.HasIndex(d => d.ProposalId);
         });
 
+        // ── ActivityMaster ────────────────────────────────────────────────────
         modelBuilder.Entity<ActivityMaster>(e =>
         {
             e.ToTable("ActivityMaster");
@@ -121,6 +126,7 @@ public class AppDbContext : DbContext
             e.Property(a => a.CreatedAt).HasDefaultValueSql("GETDATE()");
         });
 
+        // ── VendorMaster ──────────────────────────────────────────────────────
         modelBuilder.Entity<VendorMaster>(e =>
         {
             e.ToTable("VendorMaster");
@@ -129,10 +135,69 @@ public class AppDbContext : DbContext
             e.Property(v => v.CreatedAt).HasDefaultValueSql("GETDATE()");
         });
 
+        // ── Location ──────────────────────────────────────────────────────────
         modelBuilder.Entity<City>()
             .HasOne(c => c.State).WithMany(s => s.Cities)
             .HasForeignKey(c => c.StateId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<City>()
             .HasIndex(c => new { c.StateId, c.Name }).IsUnique();
+
+        // ── Chat ──────────────────────────────────────────────────────────────
+        modelBuilder.Entity<ChatRoom>(e =>
+        {
+            e.ToTable("ChatRooms");
+            e.HasKey(r => r.Id);
+            e.Property(r => r.RoomType).HasMaxLength(20).HasDefaultValue("direct");
+            e.Property(r => r.CreatedAt).HasDefaultValueSql("SYSDATETIMEOFFSET()");
+        });
+
+        modelBuilder.Entity<ChatRoomMember>(e =>
+        {
+            e.ToTable("ChatRoomMembers");
+            e.HasKey(m => m.Id);
+            e.Property(m => m.Email).HasMaxLength(255).IsRequired();
+            e.HasOne(m => m.Room)
+             .WithMany(r => r.Members)
+             .HasForeignKey(m => m.RoomId)
+             .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(m => m.RoomId);
+            e.HasIndex(m => m.Email);
+        });
+
+        modelBuilder.Entity<ChatMessage>(e =>
+        {
+            e.ToTable("ChatMessages");
+            e.HasKey(m => m.Id);
+            e.Property(m => m.SenderEmail).HasMaxLength(255).IsRequired();
+            e.Property(m => m.SenderName).HasMaxLength(255).IsRequired();
+            e.Property(m => m.IsBot).HasDefaultValue(false);
+            e.Property(m => m.SentAt).HasDefaultValueSql("SYSDATETIMEOFFSET()");
+            e.HasOne(m => m.Room)
+             .WithMany(r => r.Messages)
+             .HasForeignKey(m => m.RoomId)
+             .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(m => m.RoomId);
+            e.HasIndex(m => m.SentAt);
+        });
+
+        // ── WhatsApp Messages ─────────────────────────────────────────────────
+        modelBuilder.Entity<WhatsAppMessage>(e =>
+        {
+            e.ToTable("WhatsAppMessages");
+            e.HasKey(m => m.Id);
+            e.Property(m => m.SentByEmail).HasMaxLength(255).IsRequired();
+            e.Property(m => m.SentByName).HasMaxLength(255).IsRequired();
+            e.Property(m => m.ToPhone).HasMaxLength(30).IsRequired();
+            e.Property(m => m.ContactName).HasMaxLength(255);
+            e.Property(m => m.MessageType).HasMaxLength(20).HasDefaultValue("text");
+            e.Property(m => m.Direction).HasMaxLength(10).HasDefaultValue("outbound");
+            e.Property(m => m.WaMessageId).HasMaxLength(255);
+            e.Property(m => m.Status).HasMaxLength(30).HasDefaultValue("sent");
+            e.Property(m => m.ErrorMessage).HasMaxLength(500);
+            e.Property(m => m.SentAt).HasDefaultValueSql("SYSDATETIMEOFFSET()");
+            e.HasIndex(m => m.ToPhone);
+            e.HasIndex(m => m.SentAt);
+            e.HasIndex(m => m.WaMessageId).HasFilter("[WaMessageId] IS NOT NULL");
+        });
     }
 }

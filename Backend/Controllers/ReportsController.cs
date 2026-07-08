@@ -1,3 +1,4 @@
+// Backend/Controllers/ReportsController.cs
 using BGL_BT_App.Backend.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -12,32 +13,69 @@ namespace BGL_BT_App.Backend.Controllers;
 
 [ApiController]
 [Route("api/reports")]
-[Authorize(AuthenticationSchemes = "AzureAD")]
+[Authorize]   // ← MultiScheme (not AzureAD-only) so DbRoleClaimsTransformation runs
 public class ReportsController : ControllerBase
 {
     private readonly AppDbContext _db;
-    private const string AuthorizedEmail = "oat@bgauss.com";
+    private readonly ILogger<ReportsController> _logger;
 
-    public ReportsController(AppDbContext db)
+    public ReportsController(AppDbContext db, ILogger<ReportsController> logger)
     {
-        _db = db;
+        _db    = db;
+        _logger = logger;
         ExcelPackage.License.SetNonCommercialPersonal("BGauss BTL App");
     }
 
+    // ── IsAuthorized: any authenticated BGauss staff can access reports ────────
+    // Strategy: skip role-claim inspection entirely (claim names vary by Azure AD
+    // tenant configuration and DbRoleClaimsTransformation timing).
+    // Simply verify the caller's email exists in our Users table and is active.
+    // The [Authorize] attribute already guarantees a valid Azure AD token.
     private bool IsAuthorized()
     {
-        var email = User.FindFirstValue("preferred_username")
-                ?? User.FindFirstValue(ClaimTypes.Email)
-                ?? User.FindFirstValue("email")
-                ?? User.FindFirstValue(ClaimTypes.Upn);
+        if (User?.Identity?.IsAuthenticated != true) return false;
 
-        // Allow the primary authorized email OR Admin role
-        var role = User.FindFirstValue("role") ?? User.FindFirstValue(ClaimTypes.Role) ?? "";
-        var isAdminRole = role.Equals("Admin", StringComparison.OrdinalIgnoreCase)
-                       || role.Equals("Manager", StringComparison.OrdinalIgnoreCase);
+        var email = CurrentUserEmail();
+        if (string.IsNullOrWhiteSpace(email) || email == "unknown")
+        {
+            _logger.LogWarning("[Reports] Could not resolve email from token claims.");
+            return false;
+        }
 
-        return isAdminRole ||
-               string.Equals(email, AuthorizedEmail, StringComparison.OrdinalIgnoreCase);
+        // Any active user in our system may download reports
+        var isActiveUser = _db.Users
+            .AsNoTracking()
+            .Any(u => u.Email == email && u.IsActive);
+
+        if (!isActiveUser)
+            _logger.LogWarning("[Reports] 403 — email '{Email}' not found or inactive in Users table.", email);
+        else
+            _logger.LogInformation("[Reports] Access granted to '{Email}'.", email);
+
+        return isActiveUser;
+    }
+
+    private string CurrentUserEmail()
+    {
+        // Azure AD tokens use various claim names depending on tenant/app config
+        // Try all known variants in priority order
+        var email = User.FindFirstValue("preferred_username")   // most common for AAD
+                 ?? User.FindFirstValue("upn")
+                 ?? User.FindFirstValue(ClaimTypes.Upn)
+                 ?? User.FindFirstValue("email")
+                 ?? User.FindFirstValue(ClaimTypes.Email)
+                 ?? User.FindFirstValue("unique_name")
+                 ?? User.FindFirstValue("signInNames.emailAddress")
+                 ?? User.Identity?.Name;
+
+        // Log all available claims in dev so we can debug if 403 persists
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            _logger.LogWarning("[Reports] No email claim found. Available claims: {Claims}",
+                string.Join(", ", User.Claims.Select(c => $"{c.Type}={c.Value}")));
+        }
+
+        return email ?? "unknown";
     }
 
     // ── GET /api/reports/data ─────────────────────────────────────────────────
@@ -65,27 +103,25 @@ public class ReportsController : ControllerBase
             .AsNoTracking()
             .ToListAsync();
 
-        // ── Full activity rows (includes all new fields) ──────────────────
         var rows = proposals.SelectMany(p => p.Activities.Select(a => new
         {
             p.TokenNumber, p.DealerName, p.State, p.Location,
             p.RsmName, p.Month, p.Status,
-            ActivityType     = a.ActivityType,
-            Category         = a.Category,
-            Subcategory      = a.Subcategory,           // ← NEW
-            Qty              = a.Qty,                   // ← NEW
-            SalesPercent     = a.SalesPercent,          // ← NEW
+            ActivityType = a.ActivityType,
+            Category     = a.Category,
+            Subcategory  = a.Subcategory,
+            Qty          = a.Qty,
+            SalesPercent = a.SalesPercent,
             a.LeadTarget, a.RetailTarget,
             a.Budget, a.AdditionalBudget,
-            Total            = a.Budget + a.AdditionalBudget,
-            BGaussShare      = a.BGaussShare,           // ← NEW
-            BGaussAmount     = Math.Round((a.Budget + a.AdditionalBudget) * (a.BGaussShare / 100m), 0),
-            StartDate        = a.StartDate,
-            EndDate          = a.EndDate,
+            Total        = a.Budget + a.AdditionalBudget,
+            BGaussShare  = a.BGaussShare,
+            BGaussAmount = Math.Round((a.Budget + a.AdditionalBudget) * (a.BGaussShare / 100m), 0),
+            StartDate    = a.StartDate,
+            EndDate      = a.EndDate,
             p.CreatedAt,
         })).ToList();
 
-        // ── State-wise summary ────────────────────────────────────────────
         var stateSummary = proposals
             .GroupBy(p => p.State)
             .Select(g =>
@@ -110,7 +146,6 @@ public class ReportsController : ControllerBase
             .OrderBy(s => s.State)
             .ToList();
 
-        // ── Dealer-wise summary ───────────────────────────────────────────
         var dealerSummary = proposals
             .GroupBy(p => new { p.State, p.DealerName })
             .Select(g =>
@@ -189,36 +224,31 @@ public class ReportsController : ControllerBase
             cell.Style.Font.Color.SetColor(white);
         }
 
-        // ══ Sheet 1: BTL Report — full activity detail ════════════════════
+        // ══ Sheet 1: BTL Report ════════════════════════════════════════════
         var sheet = package.Workbook.Worksheets.Add("BTL Report");
         string[] headers = {
-            "Token",    "Dealer",   "State",   "City",
-            "RSM",      "Month",    "Status",
-            // Activity fields
-            "Activity Type", "Type (ATL/BTL)", "Subcategory", "QTY",   // ← NEW cols
-            "Sales %",                                                   // ← NEW
-            "Lead Target", "Retail Target",
+            "Token", "Dealer", "State", "City", "RSM", "Month", "Status",
+            "Activity Type", "Type (ATL/BTL)", "Subcategory", "QTY",
+            "Sales %", "Lead Target", "Retail Target",
             "Budget (₹)", "Add. Budget (₹)", "Total (₹)",
-            "BGauss %",    "BGauss Amt (₹)",                             // ← NEW
-            "CPL (₹)",     "CAC (₹)",
+            "BGauss %", "BGauss Amt (₹)", "CPL (₹)", "CAC (₹)",
             "Start Date", "End Date", "Submitted",
         };
         for (int i = 0; i < headers.Length; i++)
-            StyleHeader(sheet.Cells[1, i + 1]);
-
-        // Write headers
-        for (int i = 0; i < headers.Length; i++)
+        {
             sheet.Cells[1, i + 1].Value = headers[i];
+            StyleHeader(sheet.Cells[1, i + 1]);
+        }
 
         int row = 2;
         foreach (var p in proposals)
         {
             foreach (var a in p.Activities)
             {
-                var total    = a.Budget + a.AdditionalBudget;
-                var bgAmt    = Math.Round(total * (a.BGaussShare / 100m), 0);
-                var cpl      = a.LeadTarget   > 0 ? total / a.LeadTarget   : 0m;
-                var cac      = a.RetailTarget > 0 ? total / a.RetailTarget : 0m;
+                var total = a.Budget + a.AdditionalBudget;
+                var bgAmt = Math.Round(total * (a.BGaussShare / 100m), 0);
+                var cpl   = a.LeadTarget   > 0 ? total / a.LeadTarget   : 0m;
+                var cac   = a.RetailTarget > 0 ? total / a.RetailTarget : 0m;
 
                 sheet.Cells[row, 1].Value  = p.TokenNumber;
                 sheet.Cells[row, 2].Value  = p.DealerName;
@@ -229,24 +259,24 @@ public class ReportsController : ControllerBase
                 sheet.Cells[row, 7].Value  = p.Status;
                 sheet.Cells[row, 8].Value  = a.ActivityType;
                 sheet.Cells[row, 9].Value  = a.Category    ?? "";
-                sheet.Cells[row, 10].Value = a.Subcategory ?? "";      // ← NEW
-                sheet.Cells[row, 11].Value = a.Qty;                    // ← NEW
-                sheet.Cells[row, 12].Value = a.SalesPercent.HasValue   // ← NEW
+                sheet.Cells[row, 10].Value = a.Subcategory ?? "";
+                sheet.Cells[row, 11].Value = a.Qty;
+                sheet.Cells[row, 12].Value = a.SalesPercent.HasValue
                                              ? (double)a.SalesPercent.Value : (object)"";
                 sheet.Cells[row, 13].Value = a.LeadTarget;
                 sheet.Cells[row, 14].Value = a.RetailTarget;
                 sheet.Cells[row, 15].Value = (double)a.Budget;
                 sheet.Cells[row, 16].Value = (double)a.AdditionalBudget;
                 sheet.Cells[row, 17].Value = (double)total;
-                sheet.Cells[row, 18].Value = (double)a.BGaussShare;   // ← NEW
-                sheet.Cells[row, 19].Value = (double)bgAmt;           // ← NEW
+                sheet.Cells[row, 18].Value = (double)a.BGaussShare;
+                sheet.Cells[row, 19].Value = (double)bgAmt;
                 sheet.Cells[row, 20].Value = (double)cpl;
                 sheet.Cells[row, 21].Value = (double)cac;
                 sheet.Cells[row, 22].Value = a.StartDate?.ToString("dd-MM-yyyy") ?? "";
                 sheet.Cells[row, 23].Value = a.EndDate?.ToString("dd-MM-yyyy")   ?? "";
                 sheet.Cells[row, 24].Value = p.CreatedAt.ToString("dd-MM-yyyy HH:mm");
 
-                // Highlight rows by status
+                // Status row colours
                 var fillColor = p.Status switch
                 {
                     "Approved" => System.Drawing.Color.FromArgb(220, 252, 231),
@@ -255,16 +285,16 @@ public class ReportsController : ControllerBase
                 };
                 if (fillColor != System.Drawing.Color.White)
                 {
-                    sheet.Cells[row, 1, row, headers.Length].Style.Fill.PatternType =
-                        OfficeOpenXml.Style.ExcelFillStyle.Solid;
-                    sheet.Cells[row, 1, row, headers.Length].Style.Fill.BackgroundColor.SetColor(fillColor);
+                    var range = sheet.Cells[row, 1, row, headers.Length];
+                    range.Style.Fill.PatternType = OfficeOpenXml.Style.ExcelFillStyle.Solid;
+                    range.Style.Fill.BackgroundColor.SetColor(fillColor);
                 }
                 row++;
             }
         }
         sheet.Cells[sheet.Dimension?.Address ?? "A1"].AutoFitColumns();
 
-        // ══ Sheet 2: State-wise Summary ═══════════════════════════════════
+        // ══ Sheet 2: State Summary ═════════════════════════════════════════
         var stateSheet = package.Workbook.Worksheets.Add("State Summary");
         string[] stateHdrs = {
             "State", "Dealers", "Total Budget (₹)",
@@ -277,7 +307,6 @@ public class ReportsController : ControllerBase
             stateSheet.Cells[1, i + 1].Value = stateHdrs[i];
             StyleHeader(stateSheet.Cells[1, i + 1]);
         }
-
         int sr = 2;
         foreach (var g in proposals.GroupBy(p => p.State))
         {
@@ -298,7 +327,7 @@ public class ReportsController : ControllerBase
         }
         stateSheet.Cells[stateSheet.Dimension?.Address ?? "A1"].AutoFitColumns();
 
-        // ══ Sheet 3: Dealer-wise Summary ══════════════════════════════════
+        // ══ Sheet 3: Dealer Summary ════════════════════════════════════════
         var dealerSheet = package.Workbook.Worksheets.Add("Dealer Summary");
         string[] dealerHdrs = {
             "State", "Dealer", "Activities",
@@ -311,7 +340,6 @@ public class ReportsController : ControllerBase
             dealerSheet.Cells[1, i + 1].Value = dealerHdrs[i];
             StyleHeader(dealerSheet.Cells[1, i + 1]);
         }
-
         int dr = 2;
         foreach (var g in proposals.GroupBy(p => new { p.State, p.DealerName }))
         {
@@ -368,8 +396,8 @@ public class ReportsController : ControllerBase
             p.TokenNumber, p.DealerName, p.State, p.RsmName, p.Month, p.Status,
             a.ActivityType,
             Category    = a.Category    ?? "—",
-            Subcategory = a.Subcategory ?? "—",         // ← NEW
-            Qty         = a.Qty,                        // ← NEW
+            Subcategory = a.Subcategory ?? "—",
+            Qty         = a.Qty,
             a.LeadTarget, a.RetailTarget,
             Total       = a.Budget + a.AdditionalBudget,
             BGaussAmt   = Math.Round((a.Budget + a.AdditionalBudget) * (a.BGaussShare / 100m), 0),
@@ -390,11 +418,11 @@ public class ReportsController : ControllerBase
                 var tl = g.Sum(p => p.TotalLeadTarget);
                 return new
                 {
-                    State   = g.Key,
-                    Dealers = g.Select(p => p.DealerName).Distinct().Count(),
+                    State       = g.Key,
+                    Dealers     = g.Select(p => p.DealerName).Distinct().Count(),
                     TotalBudget = tb,
-                    Cac     = tr > 0 ? Math.Round(tb / tr, 0) : 0m,
-                    Cpl     = tl > 0 ? Math.Round(tb / tl, 0) : 0m,
+                    Cac         = tr > 0 ? Math.Round(tb / tr, 0) : 0m,
+                    Cpl         = tl > 0 ? Math.Round(tb / tl, 0) : 0m,
                 };
             })
             .OrderBy(s => s.State)
@@ -413,7 +441,9 @@ public class ReportsController : ControllerBase
                 {
                     col.Item().Text($"BGauss BTL Report — {start:dd-MMM-yyyy} to {end:dd-MMM-yyyy}")
                         .FontSize(14).Bold().FontColor("#0a2540");
-                    col.Item().Text($"Total Activities: {rows.Count}  ·  Total Budget: ₹{totalBudget:N0}  ·  Overall CAC: ₹{overallCac:N0}  ·  Overall CPL: ₹{overallCpl:N0}")
+                    col.Item().Text(
+                        $"Activities: {rows.Count}  ·  Budget: ₹{totalBudget:N0}" +
+                        $"  ·  CAC: ₹{overallCac:N0}  ·  CPL: ₹{overallCpl:N0}")
                         .FontSize(9).FontColor("#64748b");
                 });
 
@@ -427,12 +457,12 @@ public class ReportsController : ControllerBase
                         cols.RelativeColumn(1.4f); // RSM
                         cols.RelativeColumn(1.6f); // Activity
                         cols.RelativeColumn(0.7f); // Type
-                        cols.RelativeColumn(1.4f); // Subcategory ← NEW
-                        cols.RelativeColumn(0.5f); // QTY ← NEW
+                        cols.RelativeColumn(1.4f); // Subcategory
+                        cols.RelativeColumn(0.5f); // QTY
                         cols.RelativeColumn(0.7f); // Lead
                         cols.RelativeColumn(0.7f); // Retail
                         cols.RelativeColumn(1.1f); // Total
-                        cols.RelativeColumn(1.1f); // BGauss Amt ← NEW
+                        cols.RelativeColumn(1.1f); // BGauss Amt
                         cols.RelativeColumn(0.8f); // Status
                     });
 
@@ -459,12 +489,12 @@ public class ReportsController : ControllerBase
                         table.Cell().Background(bg).Padding(3).Text(r.RsmName).FontSize(7);
                         table.Cell().Background(bg).Padding(3).Text(r.ActivityType).FontSize(7);
                         table.Cell().Background(bg).Padding(3).Text(r.Category).FontSize(7);
-                        table.Cell().Background(bg).Padding(3).Text(r.Subcategory).FontSize(7);  // ← NEW
-                        table.Cell().Background(bg).Padding(3).Text(r.Qty.ToString()).FontSize(7); // ← NEW
+                        table.Cell().Background(bg).Padding(3).Text(r.Subcategory).FontSize(7);
+                        table.Cell().Background(bg).Padding(3).Text(r.Qty.ToString()).FontSize(7);
                         table.Cell().Background(bg).Padding(3).Text(r.LeadTarget.ToString()).FontSize(7);
                         table.Cell().Background(bg).Padding(3).Text(r.RetailTarget.ToString()).FontSize(7);
                         table.Cell().Background(bg).Padding(3).Text($"₹{r.Total:N0}").FontSize(7);
-                        table.Cell().Background(bg).Padding(3).Text($"₹{r.BGaussAmt:N0}").FontSize(7); // ← NEW
+                        table.Cell().Background(bg).Padding(3).Text($"₹{r.BGaussAmt:N0}").FontSize(7);
                         table.Cell().Background(bg).Padding(3).Text(r.Status).FontSize(7);
                     }
                 });
@@ -478,7 +508,8 @@ public class ReportsController : ControllerBase
             {
                 page.Size(PageSizes.A4.Landscape());
                 page.Margin(24);
-                page.Header().Text("State-wise Summary").FontSize(14).Bold().FontColor("#0a2540");
+                page.Header().Text("State-wise Summary")
+                    .FontSize(14).Bold().FontColor("#0a2540");
 
                 page.Content().Table(table =>
                 {
@@ -493,7 +524,8 @@ public class ReportsController : ControllerBase
 
                     table.Header(header =>
                     {
-                        foreach (var h in new[] { "State", "Dealers", "Total Budget (₹)", "CAC (₹)", "CPL (₹)" })
+                        foreach (var h in new[]
+                            { "State", "Dealers", "Total Budget (₹)", "CAC (₹)", "CPL (₹)" })
                             header.Cell().Background("#0a2540").Padding(4)
                                 .Text(h).FontColor("#fff").Bold().FontSize(9);
                     });

@@ -920,9 +920,9 @@ export default function RSMProposalForm() {
                     <th className="rsm-th" style={{ width:80 }}>Type<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>ATL/BTL</div></th>
                     <th className="rsm-th" style={{ width:160 }}>Subcategory <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:62 }}>QTY</th>
-                    <th className="rsm-th" style={{ width:82 }}>Lead <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:82 }}>Lead Target <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:78 }}>Sales %<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
-                    <th className="rsm-th" style={{ width:82 }}>Retail <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:82 }}>Retail Target <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:120 }}>Start Date <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:120 }}>End Date <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th rsm-th--right" style={{ width:100 }}>Budget (₹) <span style={{ color:"#f87171" }}>*</span></th>
@@ -1087,8 +1087,8 @@ export default function RSMProposalForm() {
 
             <div className="rsm-totals-strip">
               <TotalCell label="Activities"    value={String(activities.length)}/>
-              <TotalCell label="Lead"          value={String(Math.round(totalLeadTarget))}/>
-              <TotalCell label="Retail"        value={String(Math.round(totalRetailTarget))}/>
+              <TotalCell label="Lead Target"   value={String(Math.round(totalLeadTarget))}/>
+              <TotalCell label="Retail Target" value={String(Math.round(totalRetailTarget))}/>
               <TotalCell label="Total Budget"  value={`₹ ${inr(totalBudget)}`} accent/>
               <TotalCell label="BGauss Budget" value={`₹ ${inr(totalBgauss)}`} bgauss/>
               <TotalCell label="CAC"           value={`₹ ${cac.toLocaleString("en-IN",{maximumFractionDigits:0})}`} bgauss warn={cacBlocking}/>
@@ -1143,8 +1143,8 @@ export default function RSMProposalForm() {
                   <tr className="rsm-thead-row">
                     <th className="rsm-th">#</th><th className="rsm-th">Activity Name</th>
                     <th className="rsm-th">Type</th><th className="rsm-th">Subcategory</th>
-                    <th className="rsm-th">QTY</th><th className="rsm-th">Lead</th>
-                    <th className="rsm-th">Sales %</th><th className="rsm-th">Retail</th>
+                    <th className="rsm-th">QTY</th><th className="rsm-th">Lead Target</th>
+                    <th className="rsm-th">Sales %</th><th className="rsm-th">Retail Target</th>
                     <th className="rsm-th">Dates</th>
                     <th className="rsm-th rsm-th--right">Budget</th>
                     <th className="rsm-th rsm-th--right">BGauss%</th>
