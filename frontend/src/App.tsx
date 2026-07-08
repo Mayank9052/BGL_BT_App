@@ -45,12 +45,18 @@ export default function App() {
     <BrowserRouter>
       {dealer ? (
         <Routes>
-          <Route element={<DealerLayout onLogout={refreshDealer} />}>
-            <Route path="/dealer-dashboard" element={<DealerDashboard onLogout={refreshDealer} />} />
+          {/* Dealer uses the same AppLayout and DashboardPage as staff */}
+          <Route element={<AppLayout />}>
+            <Route path="/dashboard"  element={<DashboardPage />} />
+            <Route path="/rsm-form"   element={<RSMProposalForm />} />
+            <Route path="/reports"    element={<ReportsPage />} />
+            <Route path="/chat"       element={<ChatTestPage />} />
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Route>
           <Route path="/forgot-password"  element={<ForgotPasswordPage />} />
           <Route path="/reset-password"   element={<ResetPasswordPage />} />
-          <Route path="*" element={<Navigate to="/dealer-dashboard" replace />} />
+          {/* <Route path="*" element={<Navigate to="/dealer-dashboard" replace />} /> */}
         </Routes>
       ) : isAuthenticated ? (
         <Routes>

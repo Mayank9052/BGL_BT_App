@@ -8,6 +8,7 @@ import {
   fetchProposals,
   type ProposalResponse,
 } from "../services/proposalService";
+import { fetchDealerStateCounts, type DealerStateCount } from "../services/dealerService";
 import {
   downloadExcelReport,
   downloadPdfReport,
@@ -75,6 +76,8 @@ export default function DashboardPage() {
   const [proposals,   setProposals]   = useState<ProposalResponse[]>([]);
   const [loadingData, setLoadingData] = useState(true);
   const [dataError,   setDataError]   = useState<string | null>(null);
+  // BaplFinal dealer counts per state (eligible old / new / non-eligible)
+  const [baplCounts,  setBaplCounts]  = useState<DealerStateCount[]>([]);
 
   // ── Download state ────────────────────────────────────────────────────────
   const [downloading, setDownloading] = useState<"excel" | "pdf" | null>(null);
@@ -92,8 +95,15 @@ export default function DashboardPage() {
     if (loading) return;
     setLoadingData(true);
     const loader = isAdmin ? fetchProposals(instance) : fetchMyProposals(instance);
-    loader
-      .then(setProposals)
+    // Fetch proposals and BaplFinal state counts in parallel
+    Promise.all([
+      loader,
+      fetchDealerStateCounts(instance).catch(() => [] as DealerStateCount[]),
+    ])
+      .then(([props, counts]) => {
+        setProposals(props);
+        setBaplCounts(counts);
+      })
       .catch((e) => setDataError(e instanceof Error ? e.message : "Failed to load."))
       .finally(() => setLoadingData(false));
   }, [loading, instance, isAdmin]);
@@ -199,27 +209,58 @@ export default function DashboardPage() {
       if (p.remarks) r.remarks = p.remarks;
     }
 
+    // Build a lookup for BaplFinal counts by state name
+    const baplByState = Object.fromEntries(
+      baplCounts.map(c => [c.state.toLowerCase(), c])
+    );
+
+    // Also add states that exist in BaplFinal but have NO proposals yet
+    for (const bc of baplCounts) {
+      const key = bc.state;
+      if (!map[key]) {
+        map[key] = {
+          oldDealers: new Set(), oldRetail: 0, oldLead: 0, oldBudget: 0,
+          newDealers: new Set(), newRetail: 0, newLead: 0, newBudget: 0,
+          nonDealers: new Set(), nonRetail: 0, nonLead: 0, nonBudget: 0,
+          pending: 0, approved: 0, rejected: 0, remarks: "",
+        };
+      }
+    }
+
     return Object.entries(map).map(([state, d]) => {
-      const totalDealers = d.oldDealers.size + d.newDealers.size + d.nonDealers.size;
+      // Merge BaplFinal non-eligible count (actual DB count, not just from proposals)
+      const bapl = baplByState[state.toLowerCase()];
+      // Use the HIGHER of: proposal-derived count OR BaplFinal count
+      const nonCountFromBapl = bapl?.nonEligible ?? 0;
+      const nonCountFinal    = Math.max(d.nonDealers.size, nonCountFromBapl);
+      // For old/new eligible - use BaplFinal if larger (covers dealers who haven't submitted yet)
+      const oldCountFinal    = Math.max(d.oldDealers.size, bapl?.eligibleOld ?? 0);
+      const newCountFinal    = Math.max(d.newDealers.size, bapl?.eligibleNew ?? 0);
+
+      const totalDealers = oldCountFinal + newCountFinal + nonCountFinal;
       const totalBudget  = d.oldBudget + d.newBudget;
       const totalRetail  = d.oldRetail + d.newRetail + d.nonRetail;
       const totalLead    = d.oldLead + d.newLead + d.nonLead;
       return {
         state,
-        oldRetail: d.oldRetail, oldCount: d.oldDealers.size, oldBudget: d.oldBudget,
+        oldRetail: d.oldRetail, oldCount: oldCountFinal, oldBudget: d.oldBudget,
         oldCac: d.oldRetail > 0 ? d.oldBudget / d.oldRetail : 0,
-        newRetail: d.newRetail, newCount: d.newDealers.size, newBudget: d.newBudget,
+        newRetail: d.newRetail, newCount: newCountFinal, newBudget: d.newBudget,
         newCac: d.newRetail > 0 ? d.newBudget / d.newRetail : 0,
-        nonRetail: d.nonRetail, nonCount: d.nonDealers.size, nonBudget: d.nonBudget,
+        nonRetail: d.nonRetail, nonCount: nonCountFinal, nonBudget: d.nonBudget,
         nonCac: d.nonRetail > 0 ? d.nonBudget / d.nonRetail : 0,
         totalDealers, totalBudget, totalRetail, totalLead,
         overallCac: totalRetail > 0 ? totalBudget / totalRetail : 0,
         overallCpl: totalLead   > 0 ? totalBudget / totalLead   : 0,
         pending: d.pending, approved: d.approved, rejected: d.rejected,
         remarks: d.remarks,
+        // BaplFinal raw counts for tooltip
+        baplEligibleOld: bapl?.eligibleOld ?? 0,
+        baplEligibleNew: bapl?.eligibleNew ?? 0,
+        baplNonEligible: nonCountFromBapl,
       };
     }).sort((a, b) => a.state.localeCompare(b.state));
-  }, [searchFiltered]);
+  }, [searchFiltered, baplCounts]);
 
   const stateGrandTotal = useMemo(() => {
     if (!stateBreakdown.length) return null;
@@ -248,6 +289,7 @@ export default function DashboardPage() {
       retailTarget: number; leadTarget: number; activities: number;
       eligibility: string; type: string;
       pending: number; approved: number; rejected: number;
+      activityNames: Set<string>;
     }> = {};
 
     for (const p of searchFiltered) {
@@ -258,6 +300,7 @@ export default function DashboardPage() {
         retailTarget: 0, leadTarget: 0, activities: 0,
         eligibility: p.eligibility ?? "", type: p.type ?? "",
         pending: 0, approved: 0, rejected: 0,
+        activityNames: new Set<string>(),   // collect unique activity names
       };
       const d  = map[key];
       const ty = (p.type ?? "").toLowerCase();
@@ -266,6 +309,10 @@ export default function DashboardPage() {
       d.retailTarget += p.totalRetailTarget;
       d.leadTarget   += p.totalLeadTarget;
       d.activities   += p.activities.length;
+      // Collect actual activity type names
+      p.activities.forEach(a => {
+        if (a.activityType) (d.activityNames as Set<string>).add(a.activityType);
+      });
       if (el.includes("not") || el.includes("non")) d.nonBudget         += p.totalBudget;
       else if (ty === "new")                         d.eligibleNewBudget += p.totalBudget;
       else                                           d.eligibleOldBudget += p.totalBudget;
@@ -535,7 +582,7 @@ export default function DashboardPage() {
                       <th className="dash-th dash-th--group dash-th--old" colSpan={4}>Eligible Old Dealer</th>
                       <th className="dash-th dash-th--group dash-th--new" colSpan={4}>Eligible New Dealer</th>
                       <th className="dash-th dash-th--group dash-th--non" colSpan={4}>Non Eligible Dealer</th>
-                      <th className="dash-th dash-th--group dash-th--tot" colSpan={5}>Totals</th>
+                      <th className="dash-th dash-th--group dash-th--tot" colSpan={6}>Totals</th>
                       <th className="dash-th dash-th--group" colSpan={3}>Status</th>
                       <th className="dash-th" rowSpan={2}>Remarks</th>
                     </tr>
@@ -555,6 +602,7 @@ export default function DashboardPage() {
                       <th className="dash-th dash-th--tot dash-th--right">Dealers for BTL</th>
                       <th className="dash-th dash-th--tot dash-th--right">Total Budget (₹)</th>
                       <th className="dash-th dash-th--tot dash-th--right">Total Retail</th>
+                      <th className="dash-th dash-th--tot dash-th--right">Total Lead</th>
                       <th className="dash-th dash-th--tot dash-th--right">Overall CAC</th>
                       <th className="dash-th dash-th--tot dash-th--right">Overall CPL</th>
                       <th className="dash-th dash-th--right" style={{ background:"#f59e0b22", color:"#92400e" }}>Pending</th>
@@ -579,12 +627,20 @@ export default function DashboardPage() {
                         <td className="dash-td dash-td--right dash-td--mono">{row.newBudget > 0 ? inr(row.newBudget) : <Dash />}</td>
                         <td className="dash-td dash-td--right dash-td--mono">{row.newCac > 0 ? `₹${Math.round(row.newCac).toLocaleString("en-IN")}` : <Dash />}</td>
                         <td className="dash-td dash-td--right">{row.nonRetail > 0 ? row.nonRetail : <Dash />}</td>
-                        <td className="dash-td dash-td--right">{row.nonCount  > 0 ? row.nonCount  : <Dash />}</td>
+                        <td className="dash-td dash-td--right"
+                          title={row.baplNonEligible > 0
+                            ? `${row.baplNonEligible} non-eligible dealers from BaplFinal DB`
+                            : "Count from submitted proposals"}>
+                          {row.nonCount > 0
+                            ? <span className="dash-non-count">{row.nonCount}</span>
+                            : <Dash />}
+                        </td>
                         <td className="dash-td dash-td--right dash-td--mono">{row.nonBudget > 0 ? inr(row.nonBudget) : <Dash />}</td>
                         <td className="dash-td dash-td--right dash-td--mono">{row.nonCac > 0 ? `₹${Math.round(row.nonCac).toLocaleString("en-IN")}` : <Dash />}</td>
                         <td className="dash-td dash-td--right dash-td--bold">{row.totalDealers}</td>
                         <td className="dash-td dash-td--right dash-td--mono dash-td--bold">{inr(row.totalBudget)}</td>
                         <td className="dash-td dash-td--right dash-td--bold">{Math.round(row.totalRetail).toLocaleString("en-IN")}</td>
+                        <td className="dash-td dash-td--right dash-td--bold">{Math.round(row.totalLead).toLocaleString("en-IN")}</td>
                         <td className="dash-td dash-td--right dash-td--mono dash-td--bold">
                           {row.overallCac > 0 ? `₹${Math.round(row.overallCac).toLocaleString("en-IN")}` : <Dash />}
                         </td>
@@ -629,6 +685,7 @@ export default function DashboardPage() {
                         <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.totalDealers}</td>
                         <td className="dash-td dash-td--right dash-td--grand dash-td--mono">{inr(stateGrandTotal.totalBudget)}</td>
                         <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.totalRetail.toLocaleString("en-IN")}</td>
+                        <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.totalLead.toLocaleString("en-IN")}</td>
                         <td className="dash-td dash-td--right dash-td--grand dash-td--mono">
                           {stateGrandTotal.totalRetail > 0 ? `₹${Math.round(stateGrandTotal.totalBudget / stateGrandTotal.totalRetail).toLocaleString("en-IN")}` : "—"}
                         </td>
@@ -721,7 +778,12 @@ export default function DashboardPage() {
                           <td className="dash-td">
                             <span className={`dash-cat-tag dash-cat-tag--${isNon ? "non" : "eligible"}`}>{catBase}</span>
                           </td>
-                          <td className="dash-td dash-td--category">{cat}</td>
+                          <td className="dash-td dash-td--category">
+                            {/* Show actual activity names if available, else fallback text */}
+                            {row.activityNames && row.activityNames.size > 0
+                              ? Array.from(row.activityNames).join(", ")
+                              : cat}
+                          </td>
                           <td className="dash-td" style={{ textAlign:"center" }}>{row.activities}</td>
                           <td className="dash-td" style={{ textAlign:"center" }}>{Math.round(row.retailTarget).toLocaleString("en-IN")}</td>
                           <td className="dash-td" style={{ textAlign:"center" }}>{Math.round(row.leadTarget).toLocaleString("en-IN")}</td>

@@ -180,6 +180,14 @@ export default function ApproverDashboard() {
   const account   = accounts[0];
   const { user }  = useAuthStore();
   const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
+  // Final approver can Approve/Reject directly; managers only Forward + Send back
+  const myEmail         = (account?.username ?? user?.email ?? "").toLowerCase();
+  // Final approver is ONLY vijay.maurya — determined by email, NOT by role
+  // Mayank (Admin/Manager) can only Forward + Send back, not Approve/Reject
+  const FINAL_APPROVER  = "vijay.maurya@bgauss.com";
+  const isFinalApprover = myEmail === FINAL_APPROVER;
+  // isForwardOnly = any admin/manager who is NOT the final approver
+  const isForwardOnly   = isAdmin && !isFinalApprover;
 
   const [proposals,        setProposals]        = useState<ProposalResponse[]>([]);
   const [selected,         setSelected]         = useState<ProposalResponse | null>(null);
@@ -576,7 +584,7 @@ export default function ApproverDashboard() {
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
             </div>
 
-            {isAdmin&&selectedIds.size>0&&(
+            {isAdmin&&isFinalApprover&&selectedIds.size>0&&(
               <div style={{ background:"#0a2540",borderRadius:10,padding:"12px 18px",
                 marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
                 <span style={{ color:"#e2e8f0",fontSize:13,fontWeight:600 }}>
@@ -622,7 +630,7 @@ export default function ApproverDashboard() {
               <table className="ap-table">
                 <thead>
                   <tr>
-                    {isAdmin&&(
+                    {isAdmin&&isFinalApprover&&(
                       <th style={{ width:44,textAlign:"center",padding:"8px 6px" }}>
                         <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
                           <input type="checkbox" checked={allPendingSelected}
@@ -662,7 +670,7 @@ export default function ApproverDashboard() {
                     return (
                       <tr key={p.id} className={`ap-row${isChecked?" ap-row--selected":""}`}
                         onClick={()=>openModal(p)}>
-                        {isAdmin&&(
+                        {isAdmin&&isFinalApprover&&(
                           <td style={{ textAlign:"center",padding:"8px 6px" }}
                             onClick={(e)=>e.stopPropagation()}>
                             {isPending
@@ -898,7 +906,7 @@ export default function ApproverDashboard() {
                         <th style={{ padding:"9px 10px",textAlign:"left",  width:isEditing?155:145, fontSize:11,fontWeight:700,color:"#374151" }}>Subcategory</th>
                         <th style={{ padding:"9px 10px",textAlign:"center",width:60,  fontSize:11,fontWeight:700,color:"#374151" }}>QTY</th>
                         <th style={{ padding:"9px 10px",textAlign:"right", width:68,  fontSize:11,fontWeight:700,color:"#374151" }}>Lead</th>
-                        <th style={{ padding:"9px 10px",textAlign:"center",width:72,  fontSize:11,fontWeight:700,color:"#374151" }}>Sales %<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
+                        <th style={{ padding:"9px 10px",textAlign:"center",width:72,  fontSize:11,fontWeight:700,color:"#374151" }}>Sales %<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>locks Retail</div></th>
                         <th style={{ padding:"9px 10px",textAlign:"right", width:68,  fontSize:11,fontWeight:700,color:"#374151" }}>Retail</th>
                         <th style={{ padding:"9px 10px",textAlign:"left",  width:isEditing?250:170, fontSize:11,fontWeight:700,color:"#374151" }}>Dates</th>
                         <th style={{ padding:"9px 10px",textAlign:"right", width:105, fontSize:11,fontWeight:700,color:"#374151" }}>Budget (₹)</th>
@@ -1120,7 +1128,7 @@ export default function ApproverDashboard() {
                           /* ── MEDIA SUB-ROW ── */
                           <tr key={`media-${i}`} style={{ background:i%2===0?"#fff":"#f8fafc",borderBottom:"2px solid #f1f5f9" }}>
                             <td></td>
-                            {/* <td colSpan={12} style={{ padding:"0 8px 10px" }}>
+                            <td colSpan={12} style={{ padding:"0 8px 10px" }}>
                               <div style={{ display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
                                 <label style={{ display:"inline-flex",alignItems:"center",gap:5,
                                   background:"#f1f5f9",border:"1px dashed #cbd5e1",borderRadius:6,
@@ -1154,7 +1162,7 @@ export default function ApproverDashboard() {
                                   );
                                 })}
                               </div>
-                            </td> */}
+                            </td>
                             <td></td>
                           </tr>
                         ]):(
@@ -1350,73 +1358,159 @@ export default function ApproverDashboard() {
               </div>
 
               {(()=>{
-                // Compute live BGauss CAC warning for the approver panel
+                // ── Compute live CAC — used by BOTH warning banner AND button disable logic ──
                 const bgAmt = isEditing
                   ? editTotals.totalBgauss
                   : selected.activities.reduce((s,a)=>s+calcBgAmt(a.budget,a.additionalBudget,a.bgaussShare),0);
-                const retail = isEditing ? editTotals.totalRetailTarget : selected.totalRetailTarget;
-                const liveCAC = retail > 0 ? bgAmt / retail : 0;
+                const retail     = isEditing ? editTotals.totalRetailTarget : selected.totalRetailTarget;
+                const liveCAC    = retail > 0 ? bgAmt / retail : 0;
                 const allowedCac = selected.allowedCac ?? 4000;
-                const showWarn = liveCAC > allowedCac && retail > 0;
-                return showWarn ? (
-                  <div style={{ background:"#fef2f2",border:"1px solid #fecaca",borderLeft:"3px solid #ef4444",
-                    borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:13,color:"#991b1b",fontWeight:500 }}>
-                    ⚠ CAC ₹{Math.round(liveCAC).toLocaleString("en-IN")} exceeds allowed ₹{allowedCac.toLocaleString("en-IN")}/vehicle for {selected.type} dealer.
-                    <span style={{ fontWeight:400,marginLeft:6 }}>Deviation approval required.</span>
-                  </div>
-                ) : selected.cacWarning ? (
-                  <div style={{ background:"#fefce8",border:"1px solid #fde68a",borderLeft:"3px solid #f59e0b",
-                    borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:13,color:"#92400e" }}>
-                    ⚠ {selected.cacWarning}
-                  </div>
-                ) : null;
-              })()}
+                const cacExceedsLimit = liveCAC > allowedCac && retail > 0;
 
-              {/* Admin decision panel */}
-              {isAdmin&&selected.status==="Pending"&&!isEditing&&(
-                <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"20px",marginBottom:20 }}>
-                  <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:16 }}>Actions</p>
-                  <div style={{ marginBottom:20,paddingBottom:20,borderBottom:"1px solid #e2e8f0" }}>
-                    <p style={{ fontSize:13,color:"#6b7280",margin:"0 0 10px" }}>Forward to <strong>Vijay Maurya</strong> for final approval:</p>
-                    {selected.checkedByEmail&&(
-                      <div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:10 }}>
-                        ✓ Already forwarded by {selected.checkedByEmail}{selected.checkedAt&&` on ${fmtDate(selected.checkedAt)}`}
+                return (
+                  <>
+                    {/* ── CAC Warning Banner ── */}
+                    {cacExceedsLimit ? (
+                      <div style={{ background:"#fef2f2",border:"1px solid #fecaca",
+                        borderLeft:"4px solid #ef4444",borderRadius:8,
+                        padding:"12px 16px",marginBottom:16,fontSize:13 }}>
+                        <div style={{ fontWeight:700,color:"#991b1b",marginBottom:4,fontSize:14 }}>
+                          ⚠ CAC Limit Exceeded — Deviation Approval Required
+                        </div>
+                        <div style={{ color:"#7f1d1d",fontSize:13 }}>
+                          Live CAC <strong>₹{Math.round(liveCAC).toLocaleString("en-IN")}</strong> exceeds the allowed{" "}
+                          <strong>₹{allowedCac.toLocaleString("en-IN")}/vehicle</strong> for a{" "}
+                          <strong>{selected.type} dealer</strong>.
+                        </div>
+                        <div style={{ color:"#991b1b",fontSize:12,marginTop:6,fontWeight:500 }}>
+                          🔒 Approve / Reject / Send back are disabled.{" "}
+                          <strong>Forward to Vijay Maurya</strong> for deviation approval before deciding.
+                        </div>
+                      </div>
+                    ) : selected.cacWarning ? (
+                      <div style={{ background:"#fefce8",border:"1px solid #fde68a",
+                        borderLeft:"3px solid #f59e0b",borderRadius:8,
+                        padding:"10px 14px",marginBottom:16,fontSize:13,color:"#92400e" }}>
+                        ⚠ {selected.cacWarning}
+                      </div>
+                    ) : null}
+
+                    {/* ══ Admin Decision Panel ══════════════════════════════════ */}
+                    {isAdmin && selected.status === "Pending" && !isEditing && (
+                      <div style={{ background:"#fff",border:"1px solid #e2e8f0",
+                        borderRadius:10,padding:"20px",marginBottom:20 }}>
+                        <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:4 }}>Actions</p>
+                        <p style={{ fontSize:12,color:"#64748b",marginBottom:16 }}>
+                          {isForwardOnly
+                            ? "You are reviewing as Manager. Forward to Vijay Maurya for final decision."
+                            : "You are the Final Approver. Review the proposal and make a decision below."}
+                        </p>
+
+                        {/* ── Forward section — only for non-final approvers (e.g. Mayank) ── */}
+                        {!isFinalApprover && (
+                          <div style={{ marginBottom:20,paddingBottom:20,borderBottom:"1px solid #e2e8f0" }}>
+                            <p style={{ fontSize:13,color:"#6b7280",margin:"0 0 10px" }}>
+                              Forward to <strong>Vijay Maurya</strong> for final approval
+                              {cacExceedsLimit && (
+                                <span style={{ marginLeft:6,fontSize:12,color:"#ef4444",fontWeight:600 }}>
+                                  ← Required (CAC exceeds limit)
+                                </span>
+                              )}:
+                            </p>
+                            {selected.checkedByEmail && (
+                              <div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",
+                                borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:10 }}>
+                                ✓ Already forwarded by {selected.checkedByEmail}
+                                {selected.checkedAt && ` on ${fmtDate(selected.checkedAt)}`}
+                              </div>
+                            )}
+                            <button onClick={handleForward} disabled={forwardLoading}
+                              style={{ background: cacExceedsLimit ? "#dc2626" : "#1e3a5f",
+                                color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,
+                                fontWeight:600,fontSize:14,
+                                cursor:forwardLoading?"not-allowed":"pointer",
+                                opacity:forwardLoading?0.7:1,
+                                boxShadow: cacExceedsLimit ? "0 0 0 3px rgba(239,68,68,0.3)" : "none" }}>
+                              {forwardLoading ? "Forwarding…" : cacExceedsLimit
+                                ? "📤 Forward for Deviation Approval (Required)"
+                                : "📤 Forward to Final Approver"}
+                            </button>
+                          </div>
+                        )}
+
+                        {/* ── Send back — visible to both Mayank and Vijay ── */}
+                        <div className="ap-sendback-row" style={{ marginBottom: isForwardOnly ? 0 : 16 }}>
+                          <button className="ap-sendback-trigger"
+                            disabled={cacExceedsLimit}
+                            onClick={()=>setShowSendBack((v)=>!v)}
+                            title={cacExceedsLimit ? "Forward to Final Approver first (CAC exceeds limit)" : ""}>
+                            ↩ Send back for revision
+                          </button>
+                        </div>
+                        {showSendBack && (
+                          <div className="ap-sendback-box">
+                            <p className="ap-sendback-label">Explain what needs to be revised:</p>
+                            <textarea className="ap-note-input" rows={3}
+                              placeholder="e.g. Please increase target for Road Show…"
+                              value={sendBackNote} onChange={(e)=>setSendBackNote(e.target.value)}/>
+                            <div className="ap-btn-row">
+                              <button className="ap-sendback-btn" disabled={actionLoading} onClick={handleSendBack}>
+                                {actionLoading ? "Sending…" : "↩ Send for revision"}
+                              </button>
+                              <button className="ap-discard-btn"
+                                onClick={()=>{setShowSendBack(false);setSendBackNote("");}}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ── Final Approve / Reject — ONLY for Vijay Maurya ── */}
+                        {isFinalApprover && (
+                          <div style={{ marginTop:20,paddingTop:20,borderTop:"1px solid #e2e8f0",
+                            opacity: cacExceedsLimit ? 0.4 : 1,
+                            pointerEvents: cacExceedsLimit ? "none" : "auto" }}>
+                            {cacExceedsLimit && (
+                              <div style={{ background:"#f1f5f9",border:"1px solid #e2e8f0",
+                                borderRadius:7,padding:"10px 14px",marginBottom:14,
+                                fontSize:12,color:"#64748b",textAlign:"center",fontWeight:500 }}>
+                                🔒 Approve / Reject locked — CAC exceeds limit (deviation review needed)
+                              </div>
+                            )}
+                            <p style={{ fontSize:13,color:"#6b7280",margin:"0 0 8px" }}>Final decision:</p>
+                            <textarea className="ap-note-input" rows={3}
+                              placeholder="Add a note for Mayank &amp; RSM (optional)…"
+                              value={note} onChange={(e)=>setNote(e.target.value)}
+                              disabled={cacExceedsLimit}/>
+                            <div className="ap-btn-row">
+                              <button className="ap-approve-btn"
+                                disabled={actionLoading || cacExceedsLimit}
+                                onClick={()=>decide("Approved")}>
+                                {actionLoading ? "Processing…" : "✓  Approve"}
+                              </button>
+                              <button className="ap-reject-btn"
+                                disabled={actionLoading || cacExceedsLimit}
+                                onClick={()=>decide("Rejected")}>
+                                {actionLoading ? "Processing…" : "✕  Reject"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ── Mayank: hint that Vijay will decide ── */}
+                        {isForwardOnly && (
+                          <div style={{ marginTop:16,background:"#f8fafc",border:"1px solid #e2e8f0",
+                            borderRadius:8,padding:"12px 16px",fontSize:12,color:"#64748b" }}>
+                            <span style={{ fontSize:16,marginRight:6 }}>ℹ️</span>
+                            After forwarding, <strong>Vijay Maurya</strong> will give the final Approve / Reject decision.
+                            You can send back for revision if changes are needed before forwarding.
+                          </div>
+                        )}
                       </div>
                     )}
-                    <button onClick={handleForward} disabled={forwardLoading}
-                      style={{ background:"#1e3a5f",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,
-                        cursor:forwardLoading?"not-allowed":"pointer",opacity:forwardLoading?0.7:1 }}>
-                      {forwardLoading?"Forwarding…":"📤 Forward to Final Approver"}
-                    </button>
-                  </div>
-                  <p style={{ fontSize:13,color:"#6b7280",margin:"0 0 8px" }}>Final decision:</p>
-                  <textarea className="ap-note-input" rows={3}
-                    placeholder="Add a note for Mayank &amp; RSM (optional)…"
-                    value={note} onChange={(e)=>setNote(e.target.value)}/>
-                  <div className="ap-btn-row">
-                    <button className="ap-approve-btn" disabled={actionLoading} onClick={()=>decide("Approved")}>
-                      {actionLoading?"Processing…":"✓  Approve"}</button>
-                    <button className="ap-reject-btn" disabled={actionLoading} onClick={()=>decide("Rejected")}>
-                      {actionLoading?"Processing…":"✕  Reject"}</button>
-                  </div>
-                  <div className="ap-sendback-row">
-                    <button className="ap-sendback-trigger" onClick={()=>setShowSendBack((v)=>!v)}>↩ Send back for revision</button>
-                  </div>
-                  {showSendBack&&(
-                    <div className="ap-sendback-box">
-                      <p className="ap-sendback-label">Explain what needs to be revised:</p>
-                      <textarea className="ap-note-input" rows={3}
-                        placeholder="e.g. Please increase target for Road Show…"
-                        value={sendBackNote} onChange={(e)=>setSendBackNote(e.target.value)}/>
-                      <div className="ap-btn-row">
-                        <button className="ap-sendback-btn" disabled={actionLoading} onClick={handleSendBack}>
-                          {actionLoading?"Sending…":"↩ Send for revision"}</button>
-                        <button className="ap-discard-btn" onClick={()=>{setShowSendBack(false);setSendBackNote("");}}>Cancel</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
+                  </>
+                );
+              })()}
 
               {/* Notify Dealer */}
               {isAdmin&&selected.status==="Approved"&&(

@@ -33,7 +33,8 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
     try {
       await dealerLogin(email, password);
       onDealerLogin?.();
-      navigate("/dealer-dashboard", { replace: true });
+      // Dealers now redirect to /dashboard (same as staff)
+      navigate("/dashboard", { replace: true });
     } catch (err) {
       setDealerError(err instanceof Error ? err.message : "Login failed.");
     } finally {
@@ -46,7 +47,6 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
       {/* Left panel – brand */}
       <div className="login-brand">
         <div className="login-brand-inner">
-          {/* Logo — white version on dark navy background, no background box */}
           <div className="login-logo">
             <img
               src="/BGauss_Logo.png"
@@ -62,7 +62,6 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
 
       {/* Right panel – login card */}
       <div className="login-card-panel">
-        {/* Card logo — navy version (transparent bg) on white card */}
         <div className="login-card-logo-top">
           <img
             src="/login/BGauss_Logo_transparent.png"
