@@ -71,46 +71,12 @@ public class GraphEmailService : IEmailService
     }
 
     public Task<(bool Sent, string? Error)> SendDealerSendBackMailAsync(
-        Proposal p, string dealerEmail, string requestNote, string graphToken)
-    {
-        // Dealer sends budget add-on request → Mayank  (CC: RSM)
-        return SendAsync(graphToken,
+        Proposal p, string dealerEmail, string requestNote, string graphToken) =>
+        SendAsync(graphToken,
             to:      _settings.ApproverEmail,
             cc:      p.SubmittedBy,
             subject: BuildSubject("Budget Add-On Request from Dealer", p),
             body:    BuildDealerSendBackBody(p, dealerEmail, requestNote));
-    }
-
-    private string BuildDealerSendBackBody(Proposal p, string dealerEmail, string requestNote)
-    {
-        return Shell("#92400e", "Dealer Budget Add-On Request", p.TokenNumber ?? "",
-            $"""
-            <p style="margin:0 0 12px;font-size:13px;">Hi Mayank,<br/>
-              The dealer <strong>{p.DealerName}</strong> has reviewed the approved activity plan
-              and is requesting a budget addition. Details below.</p>
-
-            <div style="background:#fef9c3;border-left:3px solid #f59e0b;border-radius:4px;
-                        padding:10px 14px;margin-bottom:12px;font-size:13px;">
-              <strong>Dealer's Request:</strong><br/>
-              <span style="color:#78350f;white-space:pre-wrap;">{requestNote}</span>
-            </div>
-
-            {BuildProposalInfoTable(p)}
-            {BuildActivityTable(p)}
-
-            <div style="background:#fef2f2;border-left:3px solid #dc2626;border-radius:4px;
-                        padding:6px 10px;margin-bottom:10px;font-size:12px;color:#991b1b;">
-              <strong>Action Required</strong> — Please review this request and coordinate with the dealer
-              ({dealerEmail}) and RSM ({p.RsmName}, {p.SubmittedBy}).
-            </div>
-
-            <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">
-              Dealer contact: <strong>{p.DealerName}</strong>
-              (<a href="mailto:{dealerEmail}" style="color:#1e3a5f;">{dealerEmail}</a>)<br/>
-              RSM contact: {p.RsmName} ({p.SubmittedBy})
-            </p>
-            """);
-    }
 
     // ── Core send ─────────────────────────────────────────────────────────────
 
@@ -246,7 +212,7 @@ public class GraphEmailService : IEmailService
             """;
     }
 
-    // ── Compact flat activity table (used for Mayank / RSM emails) ────────────
+    // ── Flat activity table — From | To | Days columns ────────────────────────
     private static string BuildActivityTable(Proposal p)
     {
         var rows       = new System.Text.StringBuilder();
@@ -261,11 +227,14 @@ public class GraphEmailService : IEmailService
             var cac    = a.RetailTarget > 0 ? Math.Round(total / (decimal)a.RetailTarget, 0) : 0;
             var cpl    = a.LeadTarget   > 0 ? Math.Round(total / (decimal)a.LeadTarget,   0) : 0;
             var cacCol = cac > 4000 ? "#dc2626" : "#374151";
+            var fromDt = a.StartDate?.ToString("dd-MMM-yyyy") ?? "—";
+            var toDt   = a.EndDate?.ToString("dd-MMM-yyyy")   ?? "—";
 
             rows.Append(
                 "<tr>" +
                 $"<td style='padding:5px 8px;font-weight:600;color:#0a2540;border-bottom:1px solid #f1f5f9;white-space:nowrap;'>{a.ActivityType}</td>" +
-                $"<td style='padding:5px 8px;color:#374151;border-bottom:1px solid #f1f5f9;white-space:nowrap;'>{a.StartDate?.ToString("dd-MMM") ?? "—"} – {a.EndDate?.ToString("dd-MMM-yyyy") ?? "—"}</td>" +
+                $"<td style='padding:5px 8px;text-align:center;color:#374151;border-bottom:1px solid #f1f5f9;white-space:nowrap;'>{fromDt}</td>" +
+                $"<td style='padding:5px 8px;text-align:center;color:#374151;border-bottom:1px solid #f1f5f9;white-space:nowrap;'>{toDt}</td>" +
                 $"<td style='padding:5px 8px;text-align:center;border-bottom:1px solid #f1f5f9;'>{days}d</td>" +
                 $"<td style='padding:5px 8px;text-align:center;border-bottom:1px solid #f1f5f9;'>{a.LeadTarget}</td>" +
                 $"<td style='padding:5px 8px;text-align:center;border-bottom:1px solid #f1f5f9;'>{a.RetailTarget}</td>" +
@@ -275,10 +244,10 @@ public class GraphEmailService : IEmailService
                 "</tr>");
         }
 
-        // Totals footer row
+        // Totals footer row (colspan 4 to cover Activity+From+To+Days)
         rows.Append(
             "<tr style='background:#f0fdf4;'>" +
-            "<td style='padding:5px 8px;font-weight:700;color:#166534;' colspan='3'>Totals</td>" +
+            "<td style='padding:5px 8px;font-weight:700;color:#166534;' colspan='4'>Totals</td>" +
             $"<td style='padding:5px 8px;text-align:center;font-weight:700;color:#166534;'>{p.TotalLeadTarget}</td>" +
             $"<td style='padding:5px 8px;text-align:center;font-weight:700;color:#166534;'>{p.TotalRetailTarget}</td>" +
             $"<td style='padding:5px 8px;text-align:right;font-weight:700;color:#0a2540;'>Rs.{p.TotalBudget:N0}/-</td>" +
@@ -294,10 +263,11 @@ public class GraphEmailService : IEmailService
               <thead>
                 <tr style="background:#0a2540;">
                   <th style="padding:6px 8px;text-align:left;color:#e2e8f0;font-size:10px;white-space:nowrap;">Activity</th>
-                  <th style="padding:6px 8px;text-align:left;color:#e2e8f0;font-size:10px;">Dates</th>
+                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">From</th>
+                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">To</th>
                   <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Days</th>
-                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Leads</th>
-                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Retail</th>
+                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Lead Target</th>
+                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Retail Target</th>
                   <th style="padding:6px 8px;text-align:right;color:#e2e8f0;font-size:10px;">Budget</th>
                   <th style="padding:6px 8px;text-align:right;color:#e2e8f0;font-size:10px;">CPL</th>
                   <th style="padding:6px 8px;text-align:right;color:#e2e8f0;font-size:10px;">CAC</th>
@@ -308,8 +278,7 @@ public class GraphEmailService : IEmailService
             """;
     }
 
-    // ── Cross-tab table: Parameter rows × Activity columns (screenshot format) ──
-    // Used for Vijay forward mail and dealer notification mail.
+    // ── Cross-tab table: Parameter rows × Activity columns (Vijay / dealer emails) ──
     private static string BuildCrossTabActivityTable(Proposal p)
     {
         var overallCac = p.TotalRetailTarget > 0
@@ -317,12 +286,11 @@ public class GraphEmailService : IEmailService
         var overallCpl = p.TotalLeadTarget   > 0
             ? Math.Round(p.TotalBudget / (decimal)p.TotalLeadTarget,   0) : 0;
 
-        // ── Precompute per-activity values ────────────────────────────────────
-        var acts = p.Activities.ToList();
-        char ltr = 'A';
+        var acts   = p.Activities.ToList();
+        char ltr   = 'A';
         var letters = acts.Select(_ => ltr++).ToList();
         var totals  = acts.Select(a => a.Budget + a.AdditionalBudget).ToList();
-        var days    = acts.Select(a =>
+        var daysList = acts.Select(a =>
             (a.EndDate.HasValue && a.StartDate.HasValue)
             ? (a.EndDate.Value.DayNumber - a.StartDate.Value.DayNumber + 1) : 0).ToList();
         var cacs = acts.Select((a, i) =>
@@ -330,7 +298,7 @@ public class GraphEmailService : IEmailService
         var cpls = acts.Select((a, i) =>
             a.LeadTarget > 0   ? Math.Round(totals[i] / (decimal)a.LeadTarget,   0) : 0).ToList();
 
-        // ── Header row: Parameter + one column per activity ───────────────────
+        // Header columns — one per activity
         var headerCols = new System.Text.StringBuilder();
         for (int i = 0; i < acts.Count; i++)
         {
@@ -340,30 +308,37 @@ public class GraphEmailService : IEmailService
                 $"<span style='font-weight:700;color:#0a2540;'>{letters[i]}) </span>{acts[i].ActivityType}</th>");
         }
 
-        // ── Helper: one data row ──────────────────────────────────────────────
+        // Helper: build one parameter row
         static string DataRow(string param, IEnumerable<string> values, bool alt)
         {
-            var rowBg = alt ? "background:#fff;" : "background:#f8fafc;";
+            var bg    = alt ? "background:#fff;" : "background:#f8fafc;";
             var cells = string.Join("", values.Select(v =>
-                $"<td style='padding:6px 12px;font-size:12px;{rowBg}" +
+                $"<td style='padding:6px 12px;font-size:12px;{bg}" +
                 $"border-left:1px solid #e2e8f0;border-bottom:1px solid #f1f5f9;'>{v}</td>"));
             return
                 $"<tr>" +
-                $"<td style='padding:6px 12px;{rowBg}color:#6b7280;font-size:11px;white-space:nowrap;" +
+                $"<td style='padding:6px 12px;{bg}color:#6b7280;font-size:11px;white-space:nowrap;" +
                 $"font-weight:500;border-bottom:1px solid #f1f5f9;border-right:2px solid #d1d9e0;'>{param}</td>" +
                 cells + "</tr>";
         }
 
-        // ── Build all parameter rows ──────────────────────────────────────────
         var rows = new System.Text.StringBuilder();
 
-        rows.Append(DataRow("No. of Days",
-            days.Select(d => $"{d} days"), false));
+        // From date row
+        rows.Append(DataRow("From",
+            acts.Select(a => a.StartDate?.ToString("dd-MMM-yyyy") ?? "—"), false));
 
-        rows.Append(DataRow("Expected Leads",
+        // To date row
+        rows.Append(DataRow("To",
+            acts.Select(a => a.EndDate?.ToString("dd-MMM-yyyy") ?? "—"), true));
+
+        rows.Append(DataRow("No. of Days",
+            daysList.Select(d => $"{d} days"), false));
+
+        rows.Append(DataRow("Lead Target",
             acts.Select(a => a.LeadTarget.ToString()), true));
 
-        rows.Append(DataRow("Expected Retail",
+        rows.Append(DataRow("Retail Target",
             acts.Select(a => a.RetailTarget.ToString()), false));
 
         rows.Append(DataRow("Total Budget (Incl. Taxes)",
@@ -381,7 +356,7 @@ public class GraphEmailService : IEmailService
         });
         rows.Append(DataRow("CAC (from total amount)", cacValues, true));
 
-        // ── Amount for Consideration box (matches screenshot) ─────────────────
+        // Amount for Consideration summary box
         var cacColor   = overallCac > 4000 ? "#fca5a5" : "#e2e8f0";
         var cacNote    = overallCac > 4000 ? " ⚠ exceeds limit" : " (from total amount)";
         var budgetBold = $"<strong style='color:#ffffff;'>Rs. {p.TotalBudget:N0}/- (incl. of taxes)</strong>";
@@ -461,7 +436,7 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // Step 2 — Mayank forwards to Vijay (cross-tab screenshot format)
+    // Step 2 — Mayank forwards to Vijay (cross-tab format)
     private string BuildCheckerForwardBody(Proposal p)
     {
         var link    = $"{_settings.PortalBaseUrl}/approver?id={p.Id}";
@@ -485,7 +460,7 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // Step 3a — Vijay decides → Mayank + CC RSM (flat table)
+    // Step 3a — Vijay decides → Mayank + CC RSM
     private string BuildDecisionBody(Proposal p, ApprovalDecision decision)
     {
         var ok     = decision.Status == "Approved";
@@ -525,7 +500,7 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // Step 3b — Vijay sends back → Mayank + CC RSM (flat table)
+    // Step 3b — Vijay sends back → Mayank + CC RSM
     private string BuildRevisionBody(Proposal p, string? note)
     {
         var editLink = $"{_settings.PortalBaseUrl}/rsm-form?edit={p.Id}";
@@ -548,7 +523,7 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // Step 3c — RSM resubmits → Mayank (flat table)
+    // Step 3c — RSM resubmits → Mayank
     private string BuildResubmissionBody(Proposal p)
     {
         var sender  = p.SubmittedByDisplayName ?? p.RsmName ?? p.SubmittedBy;
@@ -572,7 +547,7 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // Step 4 — Mayank notifies dealer (cross-tab screenshot format)
+    // Step 4 — Dealer notification (cross-tab format)
     private string BuildDealerNotificationBody(Proposal p)
     {
         return Shell("#0a2540", "Approved BTL Activity Plan — Action Required", p.TokenNumber ?? "",
@@ -595,6 +570,38 @@ public class GraphEmailService : IEmailService
             <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">
               Thanks &amp; Regards · <strong>Mayank Maheshwari</strong> · BGauss Auto Pvt. Ltd.<br/>
               <span style="color:#9ca3af;">RSM contact: {p.RsmName} ({p.SubmittedBy})</span></p>
+            """);
+    }
+
+    // Dealer budget add-on request → Mayank
+    private string BuildDealerSendBackBody(Proposal p, string dealerEmail, string requestNote)
+    {
+        return Shell("#92400e", "Dealer Budget Add-On Request", p.TokenNumber ?? "",
+            $"""
+            <p style="margin:0 0 12px;font-size:13px;">Hi Mayank,<br/>
+              The dealer <strong>{p.DealerName}</strong> has reviewed the approved activity plan
+              and is requesting a budget addition. Details below.</p>
+
+            <div style="background:#fef9c3;border-left:3px solid #f59e0b;border-radius:4px;
+                        padding:10px 14px;margin-bottom:12px;font-size:13px;">
+              <strong>Dealer's Request:</strong><br/>
+              <span style="color:#78350f;white-space:pre-wrap;">{requestNote}</span>
+            </div>
+
+            {BuildProposalInfoTable(p)}
+            {BuildActivityTable(p)}
+
+            <div style="background:#fef2f2;border-left:3px solid #dc2626;border-radius:4px;
+                        padding:6px 10px;margin-bottom:10px;font-size:12px;color:#991b1b;">
+              <strong>Action Required</strong> — Please review this request and coordinate with the dealer
+              ({dealerEmail}) and RSM ({p.RsmName}, {p.SubmittedBy}).
+            </div>
+
+            <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">
+              Dealer contact: <strong>{p.DealerName}</strong>
+              (<a href="mailto:{dealerEmail}" style="color:#1e3a5f;">{dealerEmail}</a>)<br/>
+              RSM contact: {p.RsmName} ({p.SubmittedBy})
+            </p>
             """);
     }
 }

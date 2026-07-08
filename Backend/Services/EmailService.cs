@@ -248,8 +248,8 @@ public class EmailService : IEmailService
                   <th style="padding:6px 8px;text-align:left;color:#e2e8f0;font-size:10px;white-space:nowrap;">Activity</th>
                   <th style="padding:6px 8px;text-align:left;color:#e2e8f0;font-size:10px;">Dates</th>
                   <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Days</th>
-                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Leads</th>
-                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Retail</th>
+                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Leads Target</th>
+                  <th style="padding:6px 8px;text-align:center;color:#e2e8f0;font-size:10px;">Retail Target</th>
                   <th style="padding:6px 8px;text-align:right;color:#e2e8f0;font-size:10px;">Budget</th>
                   <th style="padding:6px 8px;text-align:right;color:#e2e8f0;font-size:10px;">CPL</th>
                   <th style="padding:6px 8px;text-align:right;color:#e2e8f0;font-size:10px;">CAC</th>
