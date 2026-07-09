@@ -11,6 +11,37 @@ import {
 } from "../../services/chatService";
 import "./ChatPanel.css";
 
+// ── Notification sounds — shared AudioContext (avoids autoplay block) ─────────
+let _audioCtx: AudioContext | null = null;
+function getAudioCtx(): AudioContext | null {
+  try {
+    if (!_audioCtx)
+      _audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    // Resume if suspended (browser autoplay policy)
+    if (_audioCtx.state === "suspended") _audioCtx.resume();
+    return _audioCtx;
+  } catch { return null; }
+}
+function playTone(freqStart: number, freqEnd: number, duration: number, volume: number) {
+  const ctx = getAudioCtx(); if (!ctx) return;
+  try {
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(freqStart, ctx.currentTime);
+    if (freqEnd !== freqStart)
+      osc.frequency.exponentialRampToValueAtTime(freqEnd, ctx.currentTime + duration);
+    gain.gain.setValueAtTime(volume, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + duration + 0.01);
+  } catch {}
+}
+// Incoming — crisp single "ting" (high C, 80ms, instant decay)
+function playNotificationSound() { playTone(1046, 1046, 0.08, 0.22); }
+// Outgoing — soft click (short ascending, 100ms)
+function playSentSound()         { playTone(600, 780, 0.09, 0.14); }
+
 // ── Avatar ───────────────────────────────────────────────────────────────────
 function Avatar({ name, isBot = false, size = 36 }: { name: string; isBot?: boolean; size?: number }) {
   const initials = isBot ? "AI"
@@ -41,9 +72,16 @@ export default function ChatPanel() {
   const { instance, accounts } = useMsal();
   const { user }               = useAuthStore();
 
-  // Always use the currently logged-in user's identity
-  const myEmail = accounts[0]?.username ?? user?.email ?? "";
-  const myName  = accounts[0]?.name     ?? user?.displayName ?? "Me";
+  // Identity: Azure AD staff OR dealer JWT from localStorage
+  const dealerUser = (() => {
+    try {
+      const raw = localStorage.getItem("bgauss_dealer_user");
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  })();
+  const myEmail = accounts[0]?.username ?? user?.email ?? dealerUser?.email ?? "";
+  const myName  = accounts[0]?.name     ?? user?.displayName
+                  ?? dealerUser?.dealerName ?? dealerUser?.displayName ?? "Me";
 
   const [open,       setOpen]       = useState(false);
   const [view,       setView]       = useState<"rooms"|"employees"|"thread">("rooms");
@@ -66,7 +104,14 @@ export default function ChatPanel() {
 
   // ── Init SignalR ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!accounts[0]) return;
+    // Allow both MSAL staff (accounts[0]) and dealer JWT (localStorage)
+    const hasDealerToken = (() => {
+      try {
+        const raw = localStorage.getItem("bgauss_dealer_user");
+        return !!(raw && JSON.parse(raw)?.token);
+      } catch { return false; }
+    })();
+    if (!accounts[0] && !hasDealerToken) return;
     const conn = initChatConnection(instance);
 
     conn.onreconnecting(() => setConnState("connecting"));
@@ -82,6 +127,10 @@ export default function ChatPanel() {
       const normalizeId = (id: string) => id?.toLowerCase().replace(/-/g, "");
       const sameRoom = currentRoom &&
         normalizeId(msg.roomId) === normalizeId(currentRoom.id);
+
+      // Play sound for any incoming message NOT sent by self
+      const fromSelf = msg.senderEmail?.toLowerCase() === myEmail.toLowerCase();
+      if (!fromSelf) playNotificationSound();
 
       if (sameRoom) {
         setMessages((prev) => {
@@ -104,11 +153,22 @@ export default function ChatPanel() {
         });
         scrollBottom();
       } else if (msg.isBot) {
-        // Bot reply for a room we may have navigated away from — still show it
-        // if the room matches, force-add (user may have clicked back quickly)
         if (currentRoom) setUnread((n) => n + 1);
       } else {
-        setUnread((n) => n + 1);
+        setUnread((n) => {
+          const next = n + 1;
+          // Dispatch event so Navbar bell icon can update
+          window.dispatchEvent(new CustomEvent("chat-unread", { detail: { count: next } }));
+          return next;
+        });
+        // Browser notification when tab/panel is not focused
+        if (document.hidden && Notification.permission === "granted") {
+          new Notification("BGauss Chat", {
+            body: `${msg.senderName}: ${msg.body.slice(0, 80)}`,
+            icon: "/BGauss_Logo.png",
+            tag:  "chat-msg",       // replaces previous if still shown
+          });
+        }
       }
       reloadRooms();
     });
@@ -137,7 +197,17 @@ export default function ChatPanel() {
       .catch(() => setConnState("disconnected"));
 
     return () => { stopConnection(); };
-  }, [accounts[0]?.username]);
+  // Re-init if MSAL account OR dealer token changes
+  }, [accounts[0]?.username, myEmail]);
+
+  // ── Bell icon click → open chat panel ────────────────────────────────────
+  useEffect(() => {
+    const handler = () => { setOpen(true); setUnread(0);
+      window.dispatchEvent(new CustomEvent("chat-unread", { detail: { count: 0 } }));
+    };
+    window.addEventListener("chat-open-panel", handler);
+    return () => window.removeEventListener("chat-open-panel", handler);
+  }, []);
 
   const reloadRooms = useCallback(async () => {
     try { setRooms(await fetchRooms(instance)); }
@@ -234,6 +304,7 @@ export default function ChatPanel() {
     };
     setMessages((prev) => [...prev, temp]);
     scrollBottom();
+    playSentSound();   // play immediately on send
     try { await sendMessage(activeRoom.id, body); }
     catch (e) { console.error(e); }
   };
@@ -248,6 +319,7 @@ export default function ChatPanel() {
     };
     setMessages((prev) => [...prev, temp]);
     scrollBottom();
+    playSentSound();   // play immediately on send
     try {
       await sendMessage(activeRoom.id, body);
     } catch (e) {
@@ -342,7 +414,14 @@ export default function ChatPanel() {
     <>
       {/* ── Floating bubble ── */}
       <button className="chat-bubble"
-        onClick={() => { setOpen((v) => !v); setUnread(0); }}
+        onClick={() => {
+          setOpen((v) => !v);
+          setUnread(0);
+          window.dispatchEvent(new CustomEvent("chat-unread", { detail: { count: 0 } }));
+          // Request browser notification permission on first open
+          if (Notification.permission === "default")
+            Notification.requestPermission().catch(() => {});
+        }}
         title="Open BGauss Chat">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
           stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

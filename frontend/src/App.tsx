@@ -44,37 +44,43 @@ export default function App() {
   return (
     <BrowserRouter>
       {dealer ? (
+        // ── Dealer login — DealerLayout with own sidebar ──────────────────────
         <Routes>
-          {/* Dealer uses the same AppLayout and DashboardPage as staff */}
-          <Route element={<AppLayout />}>
-            <Route path="/dashboard"  element={<DashboardPage />} />
-            <Route path="/rsm-form"   element={<RSMProposalForm />} />
-            <Route path="/reports"    element={<ReportsPage />} />
-            <Route path="/chat"       element={<ChatTestPage />} />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route element={<DealerLayout onLogout={refreshDealer} />}>
+            {/* Dashboard — proposal history, KPIs, send-back */}
+            <Route path="/dealer-dashboard" element={<DealerDashboard onLogout={refreshDealer} />} />
+            {/* New Proposal — same RSMForm but under dealer route */}
+            <Route path="/dealer-proposal"  element={<RSMProposalForm />} />
+            <Route path="/" element={<Navigate to="/dealer-dashboard" replace />} />
+            <Route path="*" element={<Navigate to="/dealer-dashboard" replace />} />
           </Route>
-          <Route path="/forgot-password"  element={<ForgotPasswordPage />} />
-          <Route path="/reset-password"   element={<ResetPasswordPage />} />
-          {/* <Route path="*" element={<Navigate to="/dealer-dashboard" replace />} /> */}
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password"  element={<ResetPasswordPage />} />
         </Routes>
       ) : isAuthenticated ? (
+        // ── Staff login — AppLayout (RSM / Manager / Admin) ───────────────────
         <Routes>
           <Route element={<AppLayout />}>
-            <Route path="/dashboard"  element={<DashboardPage />} />
-            <Route path="/rsm-form"   element={<RSMProposalForm />} />
+            {/* Dashboard — state-wise, dealer-wise summary */}
+            <Route path="/dashboard"   element={<DashboardPage />} />
+            {/* RSM proposal submission form */}
+            <Route path="/rsm-form"    element={<RSMProposalForm />} />
+            {/* Approver / review portal */}
+            <Route path="/approver"    element={<ApproverDashboard />} />
+            {/* Reports — Excel / PDF downloads */}
+            <Route path="/reports"     element={<ReportsPage />} />
+            {/* Chat — AI assistant + team chat */}
+            <Route path="/chat"        element={<ChatTestPage />} />
+            {/* Admin — user management */}
             <Route element={<AdminRoute />}>
               <Route path="/admin/users" element={<AdminUsersPage />} />
             </Route>
-            <Route path="/approver"   element={<ApproverDashboard />} />
-            <Route path="/reports"    element={<ReportsPage />} />
-            {/* ── Chat test page — accessible at /chat ── */}
-            <Route path="/chat"       element={<ChatTestPage />} />
             <Route path="/"  element={<Navigate to="/dashboard" replace />} />
             <Route path="*"  element={<Navigate to="/dashboard" replace />} />
           </Route>
         </Routes>
       ) : (
+        // ── Not logged in ─────────────────────────────────────────────────────
         <Routes>
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password"  element={<ResetPasswordPage />} />

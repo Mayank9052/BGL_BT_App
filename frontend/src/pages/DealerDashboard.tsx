@@ -159,14 +159,26 @@ export default function DealerDashboard({ onLogout }: DealerDashboardProps) {
     <div className="dash-root">
 
       {/* ── Page header ── */}
-      <div style={{ marginBottom:20 }}>
-        <h1 style={{ fontSize:22,color:"#0a2540",margin:0,fontWeight:800 }}>
-          {dealerUser.dealerName||dealerUser.displayName}
-        </h1>
-        <p style={{ fontSize:13,color:"#64748b",margin:"4px 0 0" }}>
-          Dealer Code: <strong>{dealerUser.dealerCode??"—"}</strong>
-          {" · "}Logged in as: <strong>{dealerEmail}</strong>
-        </p>
+      <div style={{ marginBottom:20,display:"flex",alignItems:"flex-start",
+        justifyContent:"space-between",flexWrap:"wrap",gap:12 }}>
+        <div>
+          <h1 style={{ fontSize:22,color:"#0a2540",margin:0,fontWeight:800 }}>
+            {dealerUser.dealerName||dealerUser.displayName}
+          </h1>
+          <p style={{ fontSize:13,color:"#64748b",margin:"4px 0 0" }}>
+            Dealer Code: <strong>{dealerUser.dealerCode??"—"}</strong>
+            {" · "}Logged in as: <strong>{dealerEmail}</strong>
+          </p>
+        </div>
+        {/* Quick action buttons */}
+        <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
+          <button onClick={()=>navigate("/dealer-proposal")}
+            style={{ background:"#0a2540",color:"#fff",border:"none",
+              padding:"10px 20px",borderRadius:8,fontWeight:600,fontSize:13,
+              cursor:"pointer",display:"flex",alignItems:"center",gap:6 }}>
+            📋 New Proposal
+          </button>
+        </div>
       </div>
 
       {loadingData?(

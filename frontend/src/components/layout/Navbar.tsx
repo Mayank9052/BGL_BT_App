@@ -14,9 +14,11 @@ interface NavbarProps {
 
 export default function Navbar({ user, onMenuClick, onBrandClick }: NavbarProps) {
   const { instance } = useMsal();
-  const [open, setOpen] = useState(false);
+  const [open,        setOpen]       = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
 
+  // ── Close dropdown on outside click ──────────────────────────────────────
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
@@ -25,12 +27,21 @@ export default function Navbar({ user, onMenuClick, onBrandClick }: NavbarProps)
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  // ── Listen for unread count from ChatPanel ────────────────────────────────
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const count = (e as CustomEvent<{ count: number }>).detail?.count ?? 0;
+      setUnreadCount(count);
+    };
+    window.addEventListener("chat-unread", handler);
+    return () => window.removeEventListener("chat-unread", handler);
+  }, []);
+
   const initials = user
     ? ((user.firstName?.[0] ?? "") + (user.lastName?.[0] ?? user.displayName?.[0] ?? "")).toUpperCase()
     : "?";
 
-  const handleLogout = () =>
-    instance.logoutRedirect().catch(console.error);
+  const handleLogout = () => instance.logoutRedirect().catch(console.error);
 
   return (
     <>
@@ -56,6 +67,21 @@ export default function Navbar({ user, onMenuClick, onBrandClick }: NavbarProps)
               {user.role}
             </span>
           )}
+
+          {/* ── Notification bell ── */}
+          <div className="nav-bell-wrap">
+            <button className="nav-bell-btn" aria-label="Chat notifications"
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("chat-open-panel"))
+              }>
+              <i className="ti ti-bell" />
+              {unreadCount > 0 && (
+                <span className="nav-bell-badge">
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
+            </button>
+          </div>
 
           {/* Avatar */}
           <button className="nav-avatar-btn" onClick={() => setOpen((o) => !o)}
@@ -93,7 +119,7 @@ export default function Navbar({ user, onMenuClick, onBrandClick }: NavbarProps)
       {/* ── Chat bubbles — rendered outside <header> so they float freely ── */}
       {/* Both panels are portal-style fixed elements — they don't affect layout */}
       <ChatPanel />
-      <WhatsAppPanel />
+      {/* <WhatsAppPanel /> */}
     </>
   );
 }

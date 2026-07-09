@@ -34,7 +34,7 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
       await dealerLogin(email, password);
       onDealerLogin?.();
       // Dealers now redirect to /dashboard (same as staff)
-      navigate("/dashboard", { replace: true });
+      navigate("/dealer-dashboard", { replace: true });
     } catch (err) {
       setDealerError(err instanceof Error ? err.message : "Login failed.");
     } finally {

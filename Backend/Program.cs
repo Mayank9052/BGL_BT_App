@@ -93,31 +93,40 @@ authBuilder.AddPolicyScheme("MultiScheme", "MultiScheme", options =>
 {
     options.ForwardDefaultSelector = ctx =>
     {
-        // SignalR hub path — always AzureAD (both negotiate and WebSocket)
+        // ── Helper: detect whether a raw JWT string is a DealerJwt ────────────
+        static string DetectScheme(string token, string dealerIssuer)
+        {
+            try
+            {
+                var handler = new JwtSecurityTokenHandler();
+                var jwt     = handler.ReadJwtToken(token);
+                return jwt.Issuer == dealerIssuer ? "DealerJwt" : "AzureAD";
+            }
+            catch { return "AzureAD"; }
+        }
+
+        var dealerIssuer = builder.Configuration["DealerJwt:Issuer"] ?? "";
+
+        // ── SignalR hub path — check query string token first, then header ─────
+        // WebSocket/SSE sends access_token in query string
         if (ctx.Request.Path.StartsWithSegments("/hubs/chat"))
-            return "AzureAD";
+        {
+            var qs = ctx.Request.Query["access_token"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(qs))
+                return DetectScheme(qs, dealerIssuer);   // dealer OR azure
+            // Negotiate request has Authorization header
+            var hdr = ctx.Request.Headers["Authorization"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(hdr) && hdr.StartsWith("Bearer "))
+                return DetectScheme(hdr["Bearer ".Length..], dealerIssuer);
+            return "AzureAD"; // fallback
+        }
 
-        // Check query string access_token (SignalR WebSocket fallback)
-        var accessToken = ctx.Request.Query["access_token"];
-        if (!string.IsNullOrEmpty(accessToken))
-            return "AzureAD";
-
-        // No Authorization header → default to AzureAD (will 401 unauthenticated)
+        // ── All other routes — parse Authorization header ─────────────────────
         var authHeader = ctx.Request.Headers["Authorization"].FirstOrDefault();
         if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer "))
             return "AzureAD";
 
-        // Parse token to detect Dealer vs Azure AD
-        var token = authHeader["Bearer ".Length..];
-        try
-        {
-            var handler = new JwtSecurityTokenHandler();
-            var jwt     = handler.ReadJwtToken(token);
-            return jwt.Issuer == builder.Configuration["DealerJwt:Issuer"]
-                ? "DealerJwt"
-                : "AzureAD";
-        }
-        catch { return "AzureAD"; }
+        return DetectScheme(authHeader["Bearer ".Length..], dealerIssuer);
     };
 });
 

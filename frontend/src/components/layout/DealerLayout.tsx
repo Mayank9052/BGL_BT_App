@@ -1,6 +1,6 @@
 // src/components/layout/DealerLayout.tsx
 import { useEffect, useState } from "react";
-import { Outlet, useNavigate } from "react-router-dom";
+import { Outlet, useNavigate, useLocation } from "react-router-dom";
 import { getDealerUser, dealerLogout } from "../../services/dealerAuthService";
 import DealerSidebar from "./DealerSidebar";
 import DealerNavbar from "./DealerNavbar";
@@ -14,6 +14,7 @@ interface DealerLayoutProps {
 
 export default function DealerLayout({ onLogout }: DealerLayoutProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const dealer   = getDealerUser();
 
   const [collapsed,  setCollapsed]  = useState(
@@ -21,12 +22,19 @@ export default function DealerLayout({ onLogout }: DealerLayoutProps) {
   );
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // Persist collapsed state
+  // ── Persist desktop collapsed state ──────────────────────────────────────
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, String(collapsed));
   }, [collapsed]);
 
-  // Auto-close mobile sidebar on resize to desktop
+  // ── Auto-collapse sidebar on every route change (same as AppLayout) ──────
+  useEffect(() => {
+    setCollapsed(true);
+    localStorage.setItem(SIDEBAR_KEY, "true");
+    setMobileOpen(false);
+  }, [location.pathname]);
+
+  // ── Close mobile sidebar on resize to desktop ─────────────────────────────
   useEffect(() => {
     const handler = () => {
       if (window.innerWidth > 768) setMobileOpen(false);
@@ -35,19 +43,14 @@ export default function DealerLayout({ onLogout }: DealerLayoutProps) {
     return () => window.removeEventListener("resize", handler);
   }, []);
 
-  // Auto-collapse sidebar when viewport is narrow (e.g. 900–1100px range)
-  // so the proposal full-page view has enough room
+  // ── Auto-collapse on narrow viewport ─────────────────────────────────────
   useEffect(() => {
     const checkWidth = () => {
-      if (window.innerWidth < 1100 && !collapsed) {
-        setCollapsed(true);
-      }
+      if (window.innerWidth < 1100) setCollapsed(true);
     };
-    // Check on mount
     checkWidth();
     window.addEventListener("resize", checkWidth);
     return () => window.removeEventListener("resize", checkWidth);
-  // Only run on mount — don't re-run when collapsed changes (would create loop)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -57,6 +60,11 @@ export default function DealerLayout({ onLogout }: DealerLayoutProps) {
     navigate("/", { replace: true });
   };
 
+  // ── Click collapsed sidebar to expand (same as AppLayout) ────────────────
+  const handleSidebarClick = () => {
+    if (collapsed) setCollapsed(false);
+  };
+
   return (
     <div className={[
       "app-layout",
@@ -64,15 +72,20 @@ export default function DealerLayout({ onLogout }: DealerLayoutProps) {
       mobileOpen ? "app-layout--mobile-open" : "",
     ].filter(Boolean).join(" ")}>
 
-      <DealerSidebar
-        collapsed={collapsed}
-        mobileOpen={mobileOpen}
-        onToggle={()    => setCollapsed((c) => !c)}
-        onMobileClose={() => setMobileOpen(false)}
-        onLogout={handleLogout}
-        dealerName={dealer?.dealerName || dealer?.displayName}
-        dealerCode={dealer?.dealerCode}
-      />
+      <div
+        onClick={handleSidebarClick}
+        style={{ cursor: collapsed ? "pointer" : "default" }}
+      >
+        <DealerSidebar
+          collapsed={collapsed}
+          mobileOpen={mobileOpen}
+          onToggle={() => setCollapsed((c) => !c)}
+          onMobileClose={() => setMobileOpen(false)}
+          onLogout={handleLogout}
+          dealerName={dealer?.dealerName || dealer?.displayName}
+          dealerCode={dealer?.dealerCode}
+        />
+      </div>
 
       <div className="app-layout-body">
         <DealerNavbar

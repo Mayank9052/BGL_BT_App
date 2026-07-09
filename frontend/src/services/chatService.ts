@@ -34,10 +34,21 @@ export interface Employee {
 
 // ── Token helper ─────────────────────────────────────────────────────────────
 async function getToken(instance: IPublicClientApplication): Promise<string> {
+  // Try Azure AD (staff) first
   const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
-  if (!account) throw new Error("Not signed in.");
-  const result = await instance.acquireTokenSilent({ ...apiRequest, account });
-  return result.accessToken;
+  if (account) {
+    const result = await instance.acquireTokenSilent({ ...apiRequest, account });
+    return result.accessToken;
+  }
+  // Fallback: dealer JWT from localStorage
+  try {
+    const raw = localStorage.getItem("bgauss_dealer_user");
+    if (raw) {
+      const dealer = JSON.parse(raw);
+      if (dealer?.token) return dealer.token as string;
+    }
+  } catch {}
+  throw new Error("Not signed in.");
 }
 
 // ── REST helpers ─────────────────────────────────────────────────────────────
