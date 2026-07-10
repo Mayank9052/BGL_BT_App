@@ -8,16 +8,33 @@ namespace BGL_BT_App.Backend.Services;
 
 public class SmtpSettings
 {
-    public string Host               { get; set; } = string.Empty;
-    public int    Port               { get; set; } = 587;
-    public string User               { get; set; } = string.Empty;
-    public string Password           { get; set; } = string.Empty;
-    public string From               { get; set; } = string.Empty;
-    public bool   EnableSsl          { get; set; } = true;
-    public string ApproverEmail      { get; set; } = string.Empty;
-    public string ApproverEmail2     { get; set; } = string.Empty;
-    public string FinalApproverEmail { get; set; } = string.Empty;
-    public string PortalBaseUrl      { get; set; } = "https://44.210.115.237";
+    public string Host                    { get; set; } = string.Empty;
+    public int    Port                    { get; set; } = 587;
+    public string User                    { get; set; } = string.Empty;
+    public string Password                { get; set; } = string.Empty;
+    public string From                    { get; set; } = string.Empty;
+    public bool   EnableSsl               { get; set; } = true;
+    public string ApproverEmail           { get; set; } = string.Empty;
+    public string ApproverEmail2          { get; set; } = string.Empty;
+    public string FinalApproverEmail      { get; set; } = string.Empty;
+    public string PortalBaseUrl           { get; set; } = "https://44.210.115.237";
+
+    // ── Derived: first name from email local-part ─────────────────────────
+    // e.g. "seema.shakya@bgauss.com"  → "Seema"
+    //      "durgesh.guptaa@bgauss.com" → "Durgesh"
+    public string ApproverFirstName =>
+        FirstName(ApproverEmail);
+
+    public string FinalApproverFirstName =>
+        FirstName(FinalApproverEmail);
+
+    private static string FirstName(string email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return "Team";
+        var local = email.Split('@')[0];          // "seema.shakya"
+        var first = local.Split('.')[0];          // "seema"
+        return char.ToUpper(first[0]) + first[1..]; // "Seema"
+    }
 }
 
 public class GraphEmailService : IEmailService
@@ -244,7 +261,6 @@ public class GraphEmailService : IEmailService
                 "</tr>");
         }
 
-        // Totals footer row (colspan 4 to cover Activity+From+To+Days)
         rows.Append(
             "<tr style='background:#f0fdf4;'>" +
             "<td style='padding:5px 8px;font-weight:700;color:#166534;' colspan='4'>Totals</td>" +
@@ -278,7 +294,7 @@ public class GraphEmailService : IEmailService
             """;
     }
 
-    // ── Cross-tab table: Parameter rows × Activity columns (Vijay / dealer emails) ──
+    // ── Cross-tab table: Parameter rows × Activity columns ────────────────────
     private static string BuildCrossTabActivityTable(Proposal p)
     {
         var overallCac = p.TotalRetailTarget > 0
@@ -286,10 +302,10 @@ public class GraphEmailService : IEmailService
         var overallCpl = p.TotalLeadTarget   > 0
             ? Math.Round(p.TotalBudget / (decimal)p.TotalLeadTarget,   0) : 0;
 
-        var acts   = p.Activities.ToList();
-        char ltr   = 'A';
-        var letters = acts.Select(_ => ltr++).ToList();
-        var totals  = acts.Select(a => a.Budget + a.AdditionalBudget).ToList();
+        var acts     = p.Activities.ToList();
+        char ltr     = 'A';
+        var letters  = acts.Select(_ => ltr++).ToList();
+        var totals   = acts.Select(a => a.Budget + a.AdditionalBudget).ToList();
         var daysList = acts.Select(a =>
             (a.EndDate.HasValue && a.StartDate.HasValue)
             ? (a.EndDate.Value.DayNumber - a.StartDate.Value.DayNumber + 1) : 0).ToList();
@@ -298,7 +314,6 @@ public class GraphEmailService : IEmailService
         var cpls = acts.Select((a, i) =>
             a.LeadTarget > 0   ? Math.Round(totals[i] / (decimal)a.LeadTarget,   0) : 0).ToList();
 
-        // Header columns — one per activity
         var headerCols = new System.Text.StringBuilder();
         for (int i = 0; i < acts.Count; i++)
         {
@@ -308,7 +323,6 @@ public class GraphEmailService : IEmailService
                 $"<span style='font-weight:700;color:#0a2540;'>{letters[i]}) </span>{acts[i].ActivityType}</th>");
         }
 
-        // Helper: build one parameter row
         static string DataRow(string param, IEnumerable<string> values, bool alt)
         {
             var bg    = alt ? "background:#fff;" : "background:#f8fafc;";
@@ -323,29 +337,13 @@ public class GraphEmailService : IEmailService
         }
 
         var rows = new System.Text.StringBuilder();
-
-        // From date row
-        rows.Append(DataRow("From",
-            acts.Select(a => a.StartDate?.ToString("dd-MMM-yyyy") ?? "—"), false));
-
-        // To date row
-        rows.Append(DataRow("To",
-            acts.Select(a => a.EndDate?.ToString("dd-MMM-yyyy") ?? "—"), true));
-
-        rows.Append(DataRow("No. of Days",
-            daysList.Select(d => $"{d} days"), false));
-
-        rows.Append(DataRow("Lead Target",
-            acts.Select(a => a.LeadTarget.ToString()), true));
-
-        rows.Append(DataRow("Retail Target",
-            acts.Select(a => a.RetailTarget.ToString()), false));
-
-        rows.Append(DataRow("Total Budget (Incl. Taxes)",
-            totals.Select(t => $"Rs. {t:N0}/-"), true));
-
-        rows.Append(DataRow("CPL (from total amount)",
-            cpls.Select(c => $"Rs. {c:N0}/-"), false));
+        rows.Append(DataRow("From",       acts.Select(a => a.StartDate?.ToString("dd-MMM-yyyy") ?? "—"), false));
+        rows.Append(DataRow("To",         acts.Select(a => a.EndDate?.ToString("dd-MMM-yyyy")   ?? "—"), true));
+        rows.Append(DataRow("No. of Days",daysList.Select(d => $"{d} days"), false));
+        rows.Append(DataRow("Lead Target",acts.Select(a => a.LeadTarget.ToString()), true));
+        rows.Append(DataRow("Retail Target", acts.Select(a => a.RetailTarget.ToString()), false));
+        rows.Append(DataRow("Total Budget (Incl. Taxes)", totals.Select(t => $"Rs. {t:N0}/-"), true));
+        rows.Append(DataRow("CPL (from total amount)", cpls.Select(c => $"Rs. {c:N0}/-"), false));
 
         var cacValues = cacs.Select((c, i) =>
         {
@@ -360,8 +358,6 @@ public class GraphEmailService : IEmailService
         var cacColor   = overallCac > 4000 ? "#fca5a5" : "#e2e8f0";
         var cacNote    = overallCac > 4000 ? " ⚠ exceeds limit" : " (from total amount)";
         var budgetBold = $"<strong style='color:#ffffff;'>Rs. {p.TotalBudget:N0}/- (incl. of taxes)</strong>";
-        var cplVal     = $"Rs. {overallCpl:N0}/- (from total amount)";
-        var cacVal     = $"Rs. {overallCac:N0}/-{cacNote}";
 
         var amountBox = $"""
             <div style="background:#0a2540;border-radius:8px;padding:16px 20px;margin-bottom:12px;">
@@ -375,11 +371,11 @@ public class GraphEmailService : IEmailService
                 </tr>
                 <tr>
                   <td style="padding:5px 0;color:#94a3b8;font-size:13px;">Total CPL</td>
-                  <td style="padding:5px 0;color:#e2e8f0;font-size:13px;">{cplVal}</td>
+                  <td style="padding:5px 0;color:#e2e8f0;font-size:13px;">Rs. {overallCpl:N0}/- (from total amount)</td>
                 </tr>
                 <tr>
                   <td style="padding:5px 0;color:#94a3b8;font-size:13px;">Total CAC</td>
-                  <td style="padding:5px 0;color:{cacColor};font-size:13px;">{cacVal}</td>
+                  <td style="padding:5px 0;color:{cacColor};font-size:13px;">Rs. {overallCac:N0}/-{cacNote}</td>
                 </tr>
               </table>
             </div>
@@ -400,33 +396,33 @@ public class GraphEmailService : IEmailService
                   {headerCols}
                 </tr>
               </thead>
-              <tbody>
-                {rows}
-              </tbody>
+              <tbody>{rows}</tbody>
             </table>
             {amountBox}
             """;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Body builders
+    // Body builders — all greetings use config-derived first names
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Step 1 — RSM submits → Mayank (flat table)
+    // Step 1 — RSM submits → Approver (e.g. Seema)
     private string BuildSubmissionBody(Proposal p)
     {
-        var sender  = p.SubmittedByDisplayName ?? p.RsmName ?? p.SubmittedBy;
-        var link    = $"{_settings.PortalBaseUrl}/approver?id={p.Id}";
-        var remarks = string.IsNullOrWhiteSpace(p.Remarks) ? "" :
+        var approver = _settings.ApproverFirstName;
+        var final    = _settings.FinalApproverFirstName;
+        var sender   = p.SubmittedByDisplayName ?? p.RsmName ?? p.SubmittedBy;
+        var link     = $"{_settings.PortalBaseUrl}/approver?id={p.Id}";
+        var remarks  = string.IsNullOrWhiteSpace(p.Remarks) ? "" :
             $"<div style='background:#fefce8;border-left:3px solid #f59e0b;border-radius:4px;" +
             $"padding:6px 10px;margin-bottom:10px;font-size:12px;'>" +
             $"<strong>RSM Remarks:</strong> {p.Remarks}</div>";
 
         return Shell("#0a2540", "New Proposal — Awaiting Your Review", p.TokenNumber ?? "",
             $"""
-            <p style="margin:0 0 12px;font-size:13px;">Hi Mayank,<br/>
+            <p style="margin:0 0 12px;font-size:13px;">Hi {approver},<br/>
               New BTL proposal submitted by <strong>{sender}</strong> —
-              please review before forwarding to Vijay.</p>
+              please review before forwarding to {final}.</p>
             {BuildProposalInfoTable(p)}
             {BuildActivityTable(p)}
             {remarks}
@@ -436,43 +432,47 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // Step 2 — Mayank forwards to Vijay (cross-tab format)
+    // Step 2 — Approver forwards → Final Approver (e.g. Durgesh)
     private string BuildCheckerForwardBody(Proposal p)
     {
-        var link    = $"{_settings.PortalBaseUrl}/approver?id={p.Id}";
-        var remarks = string.IsNullOrWhiteSpace(p.Remarks) ? "" :
+        var approver = _settings.ApproverFirstName;
+        var final    = _settings.FinalApproverFirstName;
+        var link     = $"{_settings.PortalBaseUrl}/approver?id={p.Id}";
+        var remarks  = string.IsNullOrWhiteSpace(p.Remarks) ? "" :
             $"<div style='background:#fefce8;border-left:3px solid #f59e0b;border-radius:4px;" +
             $"padding:6px 10px;margin-bottom:10px;font-size:12px;'>" +
             $"<strong>RSM Remarks:</strong> {p.Remarks}</div>";
 
-        return Shell("#1e3a5f", "Forwarded for Final Approval — Reviewed by Mayank", p.TokenNumber ?? "",
+        return Shell("#1e3a5f", $"Forwarded for Final Approval — Reviewed by {approver}", p.TokenNumber ?? "",
             $"""
-            <p style="margin:0 0 12px;font-size:13px;">Hi Vijay,<br/>
-              Please find below the working for CN reviewed and forwarded by Mayank Maheshwari.</p>
+            <p style="margin:0 0 12px;font-size:13px;">Hi {final},<br/>
+              Please find below the working for CN reviewed and forwarded by {approver}.</p>
             {BuildProposalInfoTable(p)}
             {BuildCrossTabActivityTable(p)}
             {remarks}
             <p style="margin:0 0 8px;font-size:12px;color:#374151;">
-              @Vijay Maurya — please approve/reject this proposal in the portal.</p>
+              @{final} — please approve/reject this proposal in the portal.</p>
             {LinkBtn(link, "✅ Click Here to Review", "#166534")}
             <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">
-              Thanks &amp; Regards · <strong>Mayank Maheshwari</strong> · BGauss Auto Pvt. Ltd.</p>
+              Thanks &amp; Regards · <strong>{approver}</strong> · BGauss Auto Pvt. Ltd.</p>
             """);
     }
 
-    // Step 3a — Vijay decides → Mayank + CC RSM
+    // Step 3a — Final Approver decides → Approver + CC RSM
     private string BuildDecisionBody(Proposal p, ApprovalDecision decision)
     {
-        var ok     = decision.Status == "Approved";
-        var color  = ok ? "#166534" : "#991B1B";
-        var bg     = ok ? "#f0fdf4" : "#fef2f2";
-        var border = ok ? "#bbf7d0" : "#fecaca";
-        var link   = $"{_settings.PortalBaseUrl}/approver?id={p.Id}";
-        var note   = string.IsNullOrWhiteSpace(decision.ApproverNote) ? "" :
+        var approver = _settings.ApproverFirstName;
+        var final    = _settings.FinalApproverFirstName;
+        var ok       = decision.Status == "Approved";
+        var color    = ok ? "#166534" : "#991B1B";
+        var bg       = ok ? "#f0fdf4" : "#fef2f2";
+        var border   = ok ? "#bbf7d0" : "#fecaca";
+        var link     = $"{_settings.PortalBaseUrl}/approver?id={p.Id}";
+        var note     = string.IsNullOrWhiteSpace(decision.ApproverNote) ? "" :
             $"<div style='background:#fef9c3;border-left:3px solid #f59e0b;border-radius:4px;" +
             $"padding:6px 10px;margin-bottom:10px;font-size:12px;'>" +
-            $"<strong>Vijay's Note:</strong> {decision.ApproverNote}</div>";
-        var hint   = ok
+            $"<strong>{final}'s Note:</strong> {decision.ApproverNote}</div>";
+        var hint     = ok
             ? $"<div style='background:#eff6ff;border-left:3px solid #3b82f6;border-radius:4px;" +
               $"padding:6px 10px;margin-bottom:10px;font-size:12px;color:#1e40af;'>" +
               $"ℹ Next step: use the <strong>Notify Dealer</strong> button in the portal to send " +
@@ -481,8 +481,8 @@ public class GraphEmailService : IEmailService
         return Shell(ok ? "#166534" : "#991B1B",
             $"Final Decision — Proposal {decision.Status}", p.TokenNumber ?? "",
             $"""
-            <p style="margin:0 0 10px;font-size:13px;">Hi Mayank,<br/>
-              Vijay Maurya has <strong>{decision.Status.ToLower()}</strong> the proposal below.
+            <p style="margin:0 0 10px;font-size:13px;">Hi {approver},<br/>
+              {final} has <strong>{decision.Status.ToLower()}</strong> the proposal below.
               RSM is CC'd on this mail.</p>
             <div style="background:{bg};border:1px solid {border};border-left:3px solid {color};
                          border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:13px;">
@@ -500,19 +500,21 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // Step 3b — Vijay sends back → Mayank + CC RSM
+    // Step 3b — Final Approver sends back → Approver + CC RSM
     private string BuildRevisionBody(Proposal p, string? note)
     {
+        var approver = _settings.ApproverFirstName;
+        var final    = _settings.FinalApproverFirstName;
         var editLink = $"{_settings.PortalBaseUrl}/rsm-form?edit={p.Id}";
         var noteHtml = string.IsNullOrWhiteSpace(note) ? "" :
             $"<div style='background:#fef9c3;border-left:3px solid #f59e0b;border-radius:4px;" +
             $"padding:6px 10px;margin-bottom:10px;font-size:12px;'>" +
-            $"<strong>Vijay's Note:</strong> {note}</div>";
+            $"<strong>{final}'s Note:</strong> {note}</div>";
 
         return Shell("#92400e", "Revision Requested by Final Approver", p.TokenNumber ?? "",
             $"""
-            <p style="margin:0 0 10px;font-size:13px;">Hi Mayank,<br/>
-              Vijay Maurya has requested revisions. Please coordinate with RSM
+            <p style="margin:0 0 10px;font-size:13px;">Hi {approver},<br/>
+              {final} has requested revisions. Please coordinate with RSM
               <strong>{p.SubmittedByDisplayName ?? p.RsmName}</strong>.</p>
             {BuildProposalInfoTable(p)}
             {noteHtml}
@@ -523,21 +525,23 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // Step 3c — RSM resubmits → Mayank
+    // Step 3c — RSM resubmits → Approver
     private string BuildResubmissionBody(Proposal p)
     {
-        var sender  = p.SubmittedByDisplayName ?? p.RsmName ?? p.SubmittedBy;
-        var link    = $"{_settings.PortalBaseUrl}/approver?id={p.Id}";
-        var remarks = string.IsNullOrWhiteSpace(p.Remarks) ? "" :
+        var approver = _settings.ApproverFirstName;
+        var final    = _settings.FinalApproverFirstName;
+        var sender   = p.SubmittedByDisplayName ?? p.RsmName ?? p.SubmittedBy;
+        var link     = $"{_settings.PortalBaseUrl}/approver?id={p.Id}";
+        var remarks  = string.IsNullOrWhiteSpace(p.Remarks) ? "" :
             $"<div style='background:#fefce8;border-left:3px solid #f59e0b;border-radius:4px;" +
             $"padding:6px 10px;margin-bottom:10px;font-size:12px;'>" +
             $"<strong>RSM Remarks:</strong> {p.Remarks}</div>";
 
         return Shell("#1e3a5f", "Resubmitted — Awaiting Your Review", p.TokenNumber ?? "",
             $"""
-            <p style="margin:0 0 12px;font-size:13px;">Hi Mayank,<br/>
+            <p style="margin:0 0 12px;font-size:13px;">Hi {approver},<br/>
               <strong>{sender}</strong> has resubmitted after revisions —
-              please review and forward to Vijay.</p>
+              please review and forward to {final}.</p>
             {BuildProposalInfoTable(p)}
             {BuildActivityTable(p)}
             {remarks}
@@ -550,6 +554,7 @@ public class GraphEmailService : IEmailService
     // Step 4 — Dealer notification (cross-tab format)
     private string BuildDealerNotificationBody(Proposal p)
     {
+        var approver = _settings.ApproverFirstName;
         return Shell("#0a2540", "Approved BTL Activity Plan — Action Required", p.TokenNumber ?? "",
             $"""
             <p style="margin:0 0 10px;font-size:13px;">Dear <strong>{p.DealerName}</strong> Team,<br/>
@@ -568,17 +573,18 @@ public class GraphEmailService : IEmailService
               <strong>Action Required</strong> — Activities begin only after your confirmation.
             </div>
             <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">
-              Thanks &amp; Regards · <strong>Mayank Maheshwari</strong> · BGauss Auto Pvt. Ltd.<br/>
+              Thanks &amp; Regards · <strong>{approver}</strong> · BGauss Auto Pvt. Ltd.<br/>
               <span style="color:#9ca3af;">RSM contact: {p.RsmName} ({p.SubmittedBy})</span></p>
             """);
     }
 
-    // Dealer budget add-on request → Mayank
+    // Dealer budget add-on request → Approver
     private string BuildDealerSendBackBody(Proposal p, string dealerEmail, string requestNote)
     {
+        var approver = _settings.ApproverFirstName;
         return Shell("#92400e", "Dealer Budget Add-On Request", p.TokenNumber ?? "",
             $"""
-            <p style="margin:0 0 12px;font-size:13px;">Hi Mayank,<br/>
+            <p style="margin:0 0 12px;font-size:13px;">Hi {approver},<br/>
               The dealer <strong>{p.DealerName}</strong> has reviewed the approved activity plan
               and is requesting a budget addition. Details below.</p>
 

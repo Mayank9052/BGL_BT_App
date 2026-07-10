@@ -272,7 +272,7 @@ public class EmailService : IEmailService
             $"<div style='background:#fefce8;border-left:3px solid #f59e0b;border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:12px;'><strong>RSM Remarks:</strong> {p.Remarks}</div>";
 
         return Shell("#0a2540", "New Proposal — Awaiting Review", p.TokenNumber ?? "", $"""
-            <p style="margin:0 0 12px;font-size:13px;">Hi Mayank,<br/>
+            <p style="margin:0 0 12px;font-size:13px;">Hi Seema,<br/>
               New BTL proposal submitted by <strong>{sender}</strong> —
               please review before forwarding to Vijay.</p>
             {BuildProposalInfoTable(p)}
@@ -295,7 +295,7 @@ public class EmailService : IEmailService
             $"<div style='background:#fef9c3;border-left:3px solid #f59e0b;border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:12px;'><strong>Approver Note:</strong> {decision.ApproverNote}</div>";
 
         return Shell(ok ? "#166534" : "#991B1B", $"Proposal {decision.Status}", p.TokenNumber ?? "", $"""
-            <p style="margin:0 0 10px;font-size:13px;">Hi Mayank,<br/>
+            <p style="margin:0 0 10px;font-size:13px;">Hi Seema,<br/>
               The following proposal has been <strong>{decision.Status.ToLower()}</strong>.
               RSM is CC'd on this mail.</p>
             <div style="background:{bg};border:1px solid {border};border-left:3px solid {color};
@@ -323,7 +323,7 @@ public class EmailService : IEmailService
             $"<div style='background:#fef9c3;border-left:3px solid #f59e0b;border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:12px;'><strong>Reviewer Note:</strong> {note}</div>";
 
         return Shell("#92400e", "Revision Requested", p.TokenNumber ?? "", $"""
-            <p style="margin:0 0 10px;font-size:13px;">Hi Mayank,<br/>
+            <p style="margin:0 0 10px;font-size:13px;">Hi Seema,<br/>
               Revision requested for <strong>{p.DealerName}</strong>
               ({p.Location}, {p.State}) — <strong>{p.Month}</strong>.
               Please coordinate with RSM <strong>{sender}</strong>.</p>
