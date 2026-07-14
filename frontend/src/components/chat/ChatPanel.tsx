@@ -485,9 +485,9 @@ export default function ChatPanel() {
                 <button className="chat-action-btn chat-action-btn--bot" onClick={openBot}>
                   🤖 Ask AI Assistant
                 </button>
-                <button className="chat-action-btn" onClick={openEmployees}>
+                {/* <button className="chat-action-btn" onClick={openEmployees}>
                   👥 New Chat
-                </button>
+                </button> */}
               </div>
 
               {/* Logged in as banner */}
