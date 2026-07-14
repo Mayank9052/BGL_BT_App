@@ -7,6 +7,7 @@ import {
   fetchProposals, fetchMyProposals, decideProposal, updateProposal,
   sendBackProposal, updateProposalActuals, uploadActivityMedia,
   forwardProposalToApprover, notifyDealer,
+  addActivityMedia, removeActivityMedia,  // ← NEW: multi-file proof upload for Post-Activity
   type ActivityResponse, type ActivityMediaResponse, type ProposalResponse,
 } from "../services/proposalService";
 import {
@@ -48,6 +49,13 @@ const BGAUSS_OPTS = ["100","70","50"];
 // ── Start/End Date restriction: cannot pick a date from last year or earlier ──
 // (min = 1st Jan of the current year — mirrors the same rule added in RSMForm.tsx)
 const MIN_ACTIVITY_DATE = `${new Date().getFullYear()}-01-01`;
+// ── NEW: Year dropdown (mirrors RSMForm.tsx) — auto-selects the current year ──
+const CURRENT_YEAR = new Date().getFullYear();
+const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
+// ── NEW: default Start Date = today, End Date = 7 days later (mirrors RSMForm.tsx) ──
+const isoDate = (d: Date) => d.toISOString().split("T")[0];
+const TODAY_ISO = isoDate(new Date());
+const DEFAULT_END_ISO = isoDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
 
 const safeBgaussShare = (v: number | null | undefined): string => {
   if (v == null || v === 0) return "100";
@@ -147,20 +155,24 @@ interface EditActivity {
 }
 interface EditableProposal {
   dealerName:string; location:string; state:string; type:string;
-  rsmName:string; tsmName:string; commandoName:string; month:string;
+  rsmName:string; tsmName:string; commandoName:string; month:string; year:string;
   eligibility:string; remarks:string; vendorId:string; vendorName:string;
   activities:EditActivity[];
 }
 interface ActualEntry {
   actualStartDate:string; actualEndDate:string;
+  // mediaFile:File|null; mediaFileUrl:string|null;                    // ← OLD (single proof file) — kept for reference, do not delete
+  // mediaFileName:string|null; mediaFileType:string|null;             // ← OLD — kept for reference, do not delete
   mediaFile:File|null; mediaFileUrl:string|null;
   mediaFileName:string|null; mediaFileType:string|null; uploading:boolean;
+  mediaFiles: { id:string; fileUrl:string; fileName:string; fileType:string }[]; // ← NEW: multi-file proof list
 }
 
 function toEditable(p: ProposalResponse): EditableProposal {
   return {
     dealerName:p.dealerName, location:p.location, state:p.state, type:p.type,
     rsmName:p.rsmName, tsmName:(p as any).tsmName ?? "", commandoName:p.commandoName ?? "", month:p.month,
+    year:(p as any).year ?? String(CURRENT_YEAR), // ← backend has no Year field yet; defaults to current year
     eligibility:p.eligibility, remarks:p.remarks??"",
     vendorId:String(p.vendorId??""), vendorName:p.vendorName??"",
     activities: p.activities.map((a) => ({
@@ -201,6 +213,9 @@ export default function ApproverDashboard() {
   const [selected,         setSelected]         = useState<ProposalResponse | null>(null);
   const [editData,         setEditData]         = useState<EditableProposal | null>(null);
   const [isEditing,        setIsEditing]        = useState(false);
+  // ── NEW: true once RSM/TSM/Commando were auto-filled from the CSV team mapping.
+  // While true, those 3 fields render locked (read-only) — only Activities stay editable.
+  const [teamAutoFilled,   setTeamAutoFilled]    = useState(false);
   const [note,             setNote]             = useState("");
   const [sendBackNote,     setSendBackNote]     = useState("");
   const [showSendBack,     setShowSendBack]     = useState(false);
@@ -276,6 +291,7 @@ export default function ApproverDashboard() {
       tsmName:      csvTeam.tsm      || d.tsmName,
       commandoName: csvTeam.commando || d.commandoName,
     } : d);
+    setTeamAutoFilled(true); // ← NEW: lock RSM/TSM/Commando now that they're auto-filled
     // Only run once per time edit mode is opened for a given dealer — not on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEditing]);
@@ -317,7 +333,9 @@ export default function ApproverDashboard() {
       init[a.id]={ actualStartDate:a.actualStartDate?.split("T")[0]??"",
         actualEndDate:a.actualEndDate?.split("T")[0]??"",
         mediaFile:null, mediaFileUrl:a.mediaFileUrl??null,
-        mediaFileName:a.mediaFileName??null, mediaFileType:a.mediaFileType??null, uploading:false };
+        mediaFileName:a.mediaFileName??null, mediaFileType:a.mediaFileType??null, uploading:false,
+        mediaFiles:(a.mediaFiles??[]).map((m)=>({id:m.id,fileUrl:m.fileUrl,fileName:m.fileName,fileType:m.fileType})), // ← NEW
+      };
     });
     setActualsData(init);
   },[]);
@@ -335,6 +353,45 @@ export default function ApproverDashboard() {
     } catch(err){
       setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:false}}));
       showToast(err instanceof Error?err.message:"Upload failed.",false);
+    }
+  };
+
+  // ── NEW: multi-file Post-Activity proof upload — each selected file is uploaded
+  // then immediately persisted onto the activity's media list via addActivityMedia
+  // (a separate, already-existing endpoint — not part of the actuals PATCH payload),
+  // so uploads land right away without needing "Save Actuals" first.
+  const handleActualMediaMultiUpload = async (activityId:string, files:FileList) => {
+    if (!selected) return;
+    setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:true}}));
+    try {
+      for (const file of Array.from(files)) {
+        const uploaded = await uploadActivityMedia(file, instance);
+        const media = await addActivityMedia(selected.id, activityId,
+          { fileUrl: uploaded.url, fileName: uploaded.fileName, fileType: uploaded.fileType }, instance);
+        setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
+          mediaFiles:[...prev[activityId].mediaFiles, media]}}));
+        setSelected((s)=>s?{...s,activities:s.activities.map((a)=>a.id===activityId
+          ?{...a,mediaFiles:[...(a.mediaFiles??[]),media]}:a)}:s);
+      }
+      showToast("File(s) uploaded.",true);
+    } catch(err){
+      showToast(err instanceof Error?err.message:"Upload failed.",false);
+    } finally {
+      setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:false}}));
+    }
+  };
+
+  // ── NEW: remove one proof file from the multi-file list ──────────────────
+  const removeActualMediaFile = async (activityId:string, mediaId:string) => {
+    if (!selected) return;
+    try {
+      await removeActivityMedia(selected.id, activityId, mediaId, instance);
+      setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
+        mediaFiles:prev[activityId].mediaFiles.filter((m)=>m.id!==mediaId)}}));
+      setSelected((s)=>s?{...s,activities:s.activities.map((a)=>a.id===activityId
+        ?{...a,mediaFiles:(a.mediaFiles??[]).filter((m)=>m.id!==mediaId)}:a)}:s);
+    } catch(err){
+      showToast(err instanceof Error?err.message:"Failed to remove file.",false);
     }
   };
 
@@ -380,10 +437,12 @@ export default function ApproverDashboard() {
     setNote(p.approverNote??""); setSendBackNote("");
     setShowNotifyDealer(false); setDealerEmailMode("dealer");
     setDealerEmailInput(p.dealerEmail??""); initActuals(p); setOpenActualsId(null);
+    setTeamAutoFilled(false); // ← NEW: reset lock state for the newly opened proposal
   };
   const closeModal=()=>{
     setSelected(null); setEditData(null); setIsEditing(false); setShowSendBack(false);
     setShowNotifyDealer(false); setDealerEmailInput(""); setActualsData({}); setOpenActualsId(null);
+    setTeamAutoFilled(false); // ← NEW
   };
 
   const setF=(key:keyof Omit<EditableProposal,"activities">,v:string)=>
@@ -393,7 +452,8 @@ export default function ApproverDashboard() {
 
   const addRow=()=>setEditData((d)=>d?{...d,activities:[...d.activities,
     {activityType:"",category:"",categoryLocked:false,subcategory:"",qty:"1",
-     leadTarget:"",salesPercent:"",retailTarget:"",retailLocked:false,startDate:"",endDate:"",
+     // leadTarget:"",salesPercent:"",retailTarget:"",retailLocked:false,startDate:"",endDate:"",   // ← OLD (blank dates) — kept for reference, do not delete
+     leadTarget:"",salesPercent:"",retailTarget:"",retailLocked:false,startDate:TODAY_ISO,endDate:DEFAULT_END_ISO, // ← NEW: auto Start=today, End=today+7 days
      budget:"",additionalBudget:"0",bgaussShare:"100",vendorId:"",remarks:"",mediaFiles:[]}]}:d);
   const removeRow=(idx:number)=>setEditData((d)=>(!d||d.activities.length<=1)?d:
     {...d,activities:d.activities.filter((_,i)=>i!==idx)});
@@ -433,7 +493,7 @@ export default function ApproverDashboard() {
       const payload={
         dealerName:editData.dealerName, location:editData.location, state:editData.state,
         type:editData.type, rsmName:editData.rsmName, tsmName:editData.tsmName||"", commandoName:editData.commandoName||null,
-        month:editData.month, eligibility:editData.eligibility, remarks:editData.remarks,
+        month:editData.month, year:editData.year, eligibility:editData.eligibility, remarks:editData.remarks, // ← year added (backend can ignore until it has a Year column)
         vendorId:editData.vendorId?Number(editData.vendorId):null, vendorName:editData.vendorName||null,
         activities:editData.activities.map((a)=>({
           activityType:a.activityType, category:a.category||null,
@@ -501,7 +561,7 @@ export default function ApproverDashboard() {
     try {
       const updated=await forwardProposalToApprover(selected.id,instance);
       setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
-      setSelected(updated); showToast("Forwarded to Vijay Maurya.",true);
+      setSelected(updated); showToast("Forwarded to Final Approver.",true);
     } catch(err){ showToast(err instanceof Error?err.message:"Forward failed.",false); }
     finally { setForwardLoading(false); }
   };
@@ -794,7 +854,7 @@ export default function ApproverDashboard() {
                 </button>
               )}
               {isEditing&&(
-                <button onClick={()=>{ setEditData(toEditable(selected)); setIsEditing(false); }}
+                <button onClick={()=>{ setEditData(toEditable(selected)); setIsEditing(false); setTeamAutoFilled(false); }}
                   style={{ background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",
                     color:"#94a3b8",borderRadius:7,padding:"6px 14px",fontSize:13,cursor:"pointer" }}>
                   ✕ Cancel edit
@@ -871,6 +931,7 @@ export default function ApproverDashboard() {
                         rsmName:csvTeam.rsm||d.rsmName,
                         tsmName:csvTeam.tsm||d.tsmName,
                         commandoName:csvTeam.commando||d.commandoName}:d);
+                      setTeamAutoFilled(true); // ← NEW: lock RSM/TSM/Commando now that they're auto-filled
                       showToast("RSM / TSM / Commando auto-filled from team mapping.", true);
                     }}
                     style={{ background:"#eff6ff",border:"1px solid #bfdbfe",color:"#1e40af",
@@ -883,9 +944,11 @@ export default function ApproverDashboard() {
                 {([
                   {key:"rsmName",      label:"RSM / TSM",   edit:"text"},
                   {key:"tsmName",      label:"TSM Name",    edit:"text"},
+                  {key:"commandoName", label:"Commando Name", edit:"text"},
                   {key:"type",         label:"Dealer Type", edit:"select", opts:LOC_TYPES},
                   {key:"eligibility",  label:"Eligibility", edit:"select", opts:ELIGIBILITY},
                   {key:"month",        label:"Month",       edit:"select", opts:MONTHS},
+                  {key:"year",         label:"Year",        edit:"select", opts:YEARS},
                   {key:"dealerName",   label:"Dealer Name", edit:"text"},
                   {key:"location",     label:"City",        edit:"text"},
                   {key:"state",        label:"State",       edit:"text"},
@@ -893,7 +956,25 @@ export default function ApproverDashboard() {
                   <div key={key} style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,padding:"10px 12px" }}>
                     <div style={{ fontSize:10,color:"#6b7280",fontWeight:700,
                       textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4 }}>{label}</div>
-                    {isAdmin&&isEditing?(
+                    {isAdmin&&isEditing&&teamAutoFilled&&["rsmName","tsmName","commandoName"].includes(key)?(
+                      // ── NEW: RSM/TSM/Commando show LOCKED once auto-filled from the team
+                      // mapping — only Activities stay editable. "Edit manually" unlocks them.
+                      <div>
+                        <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",
+                          border:"1.5px solid #e2e8f0",borderRadius:6,padding:"5px 8px",fontSize:13,
+                          color:"#0a2540",minHeight:30 }}>
+                          <span style={{ flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
+                            {(editData as any)[key] || <span style={{ color:"#9ca3af" }}>—</span>}
+                          </span>
+                          <span style={{ fontSize:11,color:"#9ca3af" }} title="Auto-filled from team mapping">🔒</span>
+                        </div>
+                        <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>
+                          Auto-filled · <button type="button"
+                            style={{ fontSize:10,color:"#2563eb",background:"none",border:"none",cursor:"pointer",padding:0 }}
+                            onClick={() => setTeamAutoFilled(false)}>Edit manually</button>
+                        </span>
+                      </div>
+                    ):isAdmin&&isEditing?(
                       edit==="select"&&opts
                         ?<select style={{ width:"100%",border:"1px solid #d1d5db",borderRadius:6,
                             padding:"5px 8px",fontSize:13,outline:"none",background:"#fff" }}
@@ -918,7 +999,7 @@ export default function ApproverDashboard() {
               </div>
               
               {/* AI Review */}
-              <ProposalAiReviewPanel proposalId={selected.id} />
+              {/* <ProposalAiReviewPanel proposalId={selected.id} /> */}
 
               {/* RSM Remarks */}
               {(selected.remarks||(isAdmin&&isEditing))&&(
@@ -1113,12 +1194,13 @@ export default function ApproverDashboard() {
                             {/* 7. Dates */}
                             <td style={{ padding:"8px 8px" }}>
                               <div style={{ display:"flex",gap:4,alignItems:"center" }}>
-                                <input type="date"
+                                {/* lang="en-GB" makes Chromium/Edge date pickers display dd-mm-yyyy instead of mm-dd-yyyy */}
+                                <input type="date" lang="en-GB"
                                   style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }}
                                   value={(a as EditActivity).startDate} min={MIN_ACTIVITY_DATE}
                                   onChange={(e)=>setAF(i,"startDate",e.target.value)}/>
                                 <span style={{ color:"#6b7280" }}>→</span>
-                                <input type="date"
+                                <input type="date" lang="en-GB"
                                   style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }}
                                   value={(a as EditActivity).endDate}
                                   min={(a as EditActivity).startDate||MIN_ACTIVITY_DATE}
@@ -1183,7 +1265,7 @@ export default function ApproverDashboard() {
                             <td></td>
                             <td colSpan={12} style={{ padding:"0 8px 10px" }}>
                               <div style={{ display:"flex",alignItems:"center",gap:8,flexWrap:"wrap" }}>
-                                <label style={{ display:"inline-flex",alignItems:"center",gap:5,
+                                {/* <label style={{ display:"inline-flex",alignItems:"center",gap:5,
                                   background:"#f1f5f9",border:"1px dashed #cbd5e1",borderRadius:6,
                                   padding:"4px 10px",cursor:"pointer",fontSize:11,color:"#1e3a5f",
                                   fontWeight:600,whiteSpace:"nowrap" }}>
@@ -1194,7 +1276,7 @@ export default function ApproverDashboard() {
                                     style={{ display:"none" }}
                                     disabled={!!uploadingMedia[(a as EditActivity).id??String(i)]}
                                     onChange={(e)=>{ if(e.target.files) handleEditMediaUpload(i,e.target.files); e.target.value=""; }}/>
-                                </label>
+                                </label> */}
                                 {(a as EditActivity).mediaFiles.map((m)=>{
                                   const fu=resolveUrl(m.fileUrl);
                                   return (
@@ -1321,18 +1403,19 @@ export default function ApproverDashboard() {
                                 <div style={{ display:"flex",gap:16,flexWrap:"wrap",alignItems:"flex-start",marginBottom:14 }}>
                                   <div style={{ display:"flex",flexDirection:"column",gap:4,minWidth:160 }}>
                                     <label style={{ fontSize:11,fontWeight:600,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em" }}>Actual Start Date</label>
-                                    <input type="date" value={d.actualStartDate}
+                                    <input type="date" lang="en-GB" value={d.actualStartDate}
                                       onChange={(e)=>setActualField(a.id,"actualStartDate",e.target.value)}
                                       style={{ border:"1px solid #bbf7d0",borderRadius:7,padding:"8px 10px",fontSize:13,outline:"none",background:"#fff",boxSizing:"border-box" as const }}/>
                                   </div>
                                   <div style={{ display:"flex",flexDirection:"column",gap:4,minWidth:160 }}>
                                     <label style={{ fontSize:11,fontWeight:600,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em" }}>Actual End Date</label>
-                                    <input type="date" value={d.actualEndDate} min={d.actualStartDate||undefined}
+                                    <input type="date" lang="en-GB" value={d.actualEndDate} min={d.actualStartDate||undefined}
                                       onChange={(e)=>setActualField(a.id,"actualEndDate",e.target.value)}
                                       style={{ border:"1px solid #bbf7d0",borderRadius:7,padding:"8px 10px",fontSize:13,outline:"none",background:"#fff",boxSizing:"border-box" as const }}/>
                                   </div>
                                   <div style={{ display:"flex",flexDirection:"column",gap:4,flex:1,minWidth:200 }}>
                                     <label style={{ fontSize:11,fontWeight:600,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em" }}>Upload Proof / Media</label>
+                                    {/* ── OLD (single-file swap) — kept for reference, do not delete ──
                                     {d.mediaFileName ? (
                                       <div style={{ display:"flex",alignItems:"center",gap:8,background:"#fff",border:"1px solid #bbf7d0",borderRadius:7,padding:"8px 10px" }}>
                                         <span style={{ fontSize:18 }}>{d.mediaFileType?.startsWith("image")?"🖼":d.mediaFileType?.includes("pdf")?"📄":"🎬"}</span>
@@ -1354,6 +1437,33 @@ export default function ApproverDashboard() {
                                           onChange={(e)=>{const f=e.target.files?.[0];if(f)handleActualMedia(a.id,f);e.target.value="";}}/>
                                       </label>
                                     )}
+                                    ── end OLD ── */}
+
+                                    {/* ── NEW: multiple proof files, with a "+" to add more ── */}
+                                    <div style={{ display:"flex",flexWrap:"wrap",gap:6,alignItems:"center" }}>
+                                      {d.mediaFiles.map((m)=>{
+                                        const fu = resolveUrl(m.fileUrl);
+                                        return (
+                                          <div key={m.id} style={{ display:"flex",alignItems:"center",gap:6,
+                                            background:"#fff",border:"1px solid #bbf7d0",borderRadius:7,padding:"5px 9px" }}>
+                                            <span style={{ fontSize:16 }}>{m.fileType?.startsWith("image")?"🖼":m.fileType?.includes("pdf")?"📄":"🎬"}</span>
+                                            <a href={fu} target="_blank" rel="noreferrer"
+                                              style={{ fontSize:11,color:"#1e40af",fontWeight:600,whiteSpace:"nowrap",maxWidth:120,
+                                                overflow:"hidden",textOverflow:"ellipsis" }}>{m.fileName}</a>
+                                            <button type="button" onClick={()=>removeActualMediaFile(a.id,m.id)}
+                                              style={{ background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:13,padding:"0 2px" }}>×</button>
+                                          </div>
+                                        );
+                                      })}
+                                      <label style={{ display:"inline-flex",alignItems:"center",gap:6,
+                                        background:"#fff",border:"2px dashed #86efac",borderRadius:7,padding:"8px 14px",
+                                        cursor:"pointer",fontSize:12,color:"#16a34a",fontWeight:600,whiteSpace:"nowrap" }}>
+                                        {d.uploading?<><span className="ap-spin-sm" style={{ marginRight:4 }}/> Uploading…</>:<>＋ Add proof / media file</>}
+                                        <input type="file" multiple accept="image/*,.pdf,.mp4,.mov,.avi" style={{ display:"none" }}
+                                          disabled={d.uploading}
+                                          onChange={(e)=>{ if(e.target.files && e.target.files.length) handleActualMediaMultiUpload(a.id, e.target.files); e.target.value=""; }}/>
+                                      </label>
+                                    </div>
                                   </div>
                                 </div>
                                 {(a.actualStartDate||a.actualEndDate)&&(
@@ -1444,7 +1554,7 @@ export default function ApproverDashboard() {
                         </div>
                         <div style={{ color:"#991b1b",fontSize:12,marginTop:6,fontWeight:500 }}>
                           🔒 Approve / Reject / Send back are disabled.{" "}
-                          <strong>Forward to Vijay Maurya</strong> for deviation approval before deciding.
+                          <strong>Forward to Final Approver</strong> for deviation approval before deciding.
                         </div>
                       </div>
                     ) : selected.cacWarning ? (
@@ -1462,7 +1572,7 @@ export default function ApproverDashboard() {
                         <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:4 }}>Actions</p>
                         <p style={{ fontSize:12,color:"#64748b",marginBottom:16 }}>
                           {isForwardOnly
-                            ? "You are reviewing as Manager. Forward to Vijay Maurya for final decision."
+                            ? "You are reviewing as Manager. Forward to Final Approver for final decision."
                             : "You are the Final Approver. Review the proposal and make a decision below."}
                         </p>
 
@@ -1470,7 +1580,7 @@ export default function ApproverDashboard() {
                         {!isFinalApprover && (
                           <div style={{ marginBottom:20,paddingBottom:20,borderBottom:"1px solid #e2e8f0" }}>
                             <p style={{ fontSize:13,color:"#6b7280",margin:"0 0 10px" }}>
-                              Forward to <strong>Vijay Maurya</strong> for final approval
+                              Forward to <strong>Final Approver</strong> for deviation approval before deciding.
                               {cacExceedsLimit && (
                                 <span style={{ marginLeft:6,fontSize:12,color:"#ef4444",fontWeight:600 }}>
                                   ← Required (CAC exceeds limit)
@@ -1562,7 +1672,7 @@ export default function ApproverDashboard() {
                           <div style={{ marginTop:16,background:"#f8fafc",border:"1px solid #e2e8f0",
                             borderRadius:8,padding:"12px 16px",fontSize:12,color:"#64748b" }}>
                             <span style={{ fontSize:16,marginRight:6 }}>ℹ️</span>
-                            After forwarding, <strong>Vijay Maurya</strong> will give the final Approve / Reject decision.
+                            After forwarding, <strong>Final Approver</strong> will give the final Approve / Reject decision.
                             You can send back for revision if changes are needed before forwarding.
                           </div>
                         )}
@@ -1573,7 +1683,7 @@ export default function ApproverDashboard() {
               })()}
 
               {/* Notify Dealer */}
-              {isAdmin&&selected.status==="Approved"&&(
+              {/* {isAdmin&&selected.status==="Approved"&&(
                 <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"20px",marginBottom:20 }}>
                   <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:8 }}>Notify Dealer</p>
                   <p style={{ fontSize:12,color:"#6b7280",margin:"0 0 14px" }}>Send the approved activity plan to the dealer.</p>
@@ -1653,7 +1763,7 @@ export default function ApproverDashboard() {
                     </div>
                   )}
                 </div>
-              )}
+              )} */}
 
               {/* RSM decision banner */}
               {!isAdmin&&selected.status!=="Pending"&&(
@@ -1709,7 +1819,7 @@ export default function ApproverDashboard() {
             <div style={{ background:"#fff",borderTop:"2px solid #e2e8f0",padding:"12px 24px",flexShrink:0,
               display:"flex",justifyContent:"flex-end",alignItems:"center",gap:12 }}>
               <span style={{ fontSize:12,color:"#f59e0b",fontWeight:600 }}>⚠ Unsaved changes</span>
-              <button onClick={()=>{ setEditData(toEditable(selected)); setIsEditing(false); }}
+              <button onClick={()=>{ setEditData(toEditable(selected)); setIsEditing(false); setTeamAutoFilled(false); }}
                 style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",borderRadius:7,padding:"9px 20px",fontWeight:500,fontSize:14,cursor:"pointer" }}>
                 Discard
               </button>

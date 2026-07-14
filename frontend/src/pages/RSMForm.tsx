@@ -47,6 +47,12 @@ const CURRENT_MONTH = MONTHS[new Date().getMonth()];
 // (min = 1st Jan of the current year, so any date belonging to a previous year is blocked)
 const CURRENT_YEAR = new Date().getFullYear();
 const MIN_ACTIVITY_DATE = `${CURRENT_YEAR}-01-01`;
+// ── NEW: Year dropdown next to Month — auto-selects the current year ──────
+const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
+// ── NEW: default Start Date = today, End Date = 7 days later (ISO yyyy-mm-dd) ──
+const isoDate = (d: Date) => d.toISOString().split("T")[0];
+const TODAY_ISO = isoDate(new Date());
+const DEFAULT_END_ISO = isoDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
 
 interface ActivityRow {
   id: string; activityType: string; category: string;
@@ -61,12 +67,12 @@ interface MediaFile { id: string; fileUrl: string; fileName: string; fileType: s
 interface ProposalHeader {
   dealerId: string; dealerName: string; vendorId: string; vendorName: string;
   state: string; stateId: number | null; location: string; type: string;
-  rsmName: string; tsmName: string; commandoName: string; month: string;
+  rsmName: string; tsmName: string; commandoName: string; month: string; year: string;
   eligibility: string; remarks: string;
 }
 interface FieldErrors {
   dealerName?: string; state?: string; location?: string; type?: string;
-  rsmName?: string; month?: string; eligibility?: string;
+  rsmName?: string; month?: string; year?: string; eligibility?: string;
 }
 interface ActivityErrors {
   [rowId: string]: {
@@ -100,13 +106,15 @@ const emptyActivity = (): ActivityRow => ({
   id: crypto.randomUUID(), activityType: "", category: "", categoryLocked: false,
   subcategory: "", qty: "1", _maxQty: 5, leadTarget: "", salesPercent: "",
   retailTarget: "", retailLocked: false,
-  startDate: "", endDate: "", budget: "", additionalBudget: "0",
+  // startDate: "", endDate: "",                          // ← OLD (blank by default) — kept for reference, do not delete
+  startDate: TODAY_ISO, endDate: DEFAULT_END_ISO,          // ← NEW: auto Start=today, End=today+7 days
+  budget: "", additionalBudget: "0",
   bgaussShare: "100", remarks: "", mediaFiles: [],
 });
 const emptyHeader = (): ProposalHeader => ({
   dealerId: "", dealerName: "", vendorId: "", vendorName: "",
   state: "", stateId: null, location: "", type: "",
-  rsmName: "", tsmName: "", commandoName: "", month: CURRENT_MONTH,
+  rsmName: "", tsmName: "", commandoName: "", month: CURRENT_MONTH, year: String(CURRENT_YEAR),
   eligibility: "", remarks: "",
 });
 
@@ -117,6 +125,7 @@ function validateDetails(h: ProposalHeader): FieldErrors {
   if (!h.location.trim())    e.location    = "City is required.";
   if (!h.type.trim())        e.type        = "Location type is required.";
   if (!h.month.trim())       e.month       = "Month is required.";
+  if (!h.year.trim())        e.year        = "Year is required.";
   if (!h.eligibility.trim()) e.eligibility = "Eligibility is required.";
   return e;
 }
@@ -228,7 +237,7 @@ export default function RSMProposalForm() {
           vendorName: p.vendorName ?? "", state: titleCase(p.state), stateId: null,
           location: titleCase(p.location), type: p.type, rsmName: titleCase(p.rsmName),
           tsmName:      titleCase(p.tsmName ?? p.commandoName ?? ""),
-          commandoName: p.commandoName ?? "", month: p.month,
+          commandoName: p.commandoName ?? "", month: p.month, year: String(CURRENT_YEAR), // ← year defaults to current year (backend has no Year field yet)
           eligibility: p.eligibility, remarks: p.remarks ?? "",
         });
         setActivities(p.activities.map((a) => ({
@@ -344,6 +353,7 @@ export default function RSMProposalForm() {
         tsmName:       titleCase(csvTeam?.tsm || dealer.tsmName || dealer.tsmCode || ""),
         commandoName:  titleCase(csvTeam?.commando || dealer.commandoName || ""),
         month:         h.month || CURRENT_MONTH,   // preserve month selection
+        year:          h.year || String(CURRENT_YEAR), // preserve year selection
         vendorId:      h.vendorId,                 // preserve vendor selection
         vendorName:    h.vendorName,
       }));
@@ -663,7 +673,7 @@ export default function RSMProposalForm() {
         dealerName: header.dealerName, dealerCode: header.dealerId || null,
         vendorId: header.vendorId ? Number(header.vendorId) : null, vendorName: header.vendorName || null,
         rsmName: header.rsmName, tsmName: header.tsmName, commandoName: header.commandoName || null,
-        month: header.month, eligibility: header.eligibility, remarks: header.remarks,
+        month: header.month, year: header.year, eligibility: header.eligibility, remarks: header.remarks, // ← year added (backend can ignore until it has a Year column)
         submittedBy: account?.username ?? null, docNumber: generateDocNumber(),
         activities: activityPayload,
         totalBudget, totalLeadTarget: Math.round(totalLeadTarget),
@@ -781,8 +791,8 @@ export default function RSMProposalForm() {
               </div>
             )}
 
-            {/* Row 1 — Dealer, Vendor, Month */}
-            <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(3,1fr)" }}>
+            {/* Row 1 — Dealer, Vendor, Month, Year */}
+            <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(4,1fr)" }}>
               <div className="rsm-field">
                 <Label text="Dealer" required/>
                 {dealerError && <span className="rsm-field-error">{dealerError}</span>}
@@ -820,7 +830,18 @@ export default function RSMProposalForm() {
                   className={fieldErrors.month?"rsm-select-error-wrap":""}/>
                 {fieldErrors.month && <span className="rsm-field-error">{fieldErrors.month}</span>}
               </div>
+
+              {/* NEW: Year — auto-selects the current year */}
+              <div className="rsm-field">
+                <Label text="Year" required/>
+                <select className={`rsm-select${fieldErrors.year?" rsm-input--error":""}`}
+                  value={header.year} onChange={(e) => setField("year", e.target.value)}>
+                  {YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
+                </select>
+                {fieldErrors.year && <span className="rsm-field-error">{fieldErrors.year}</span>}
+              </div>
             </div>
+
 
             {/* Row 2 — State, City, Dealer Type, Eligibility */}
             <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(4,1fr)", marginTop:0 }}>
@@ -898,8 +919,8 @@ export default function RSMProposalForm() {
                 <div className="rsm-dealer-contacts">
                   {selectedDealer.contactPerson && <span className="rsm-dealer-contact">👤 {titleCase(selectedDealer.contactPerson)}</span>}
                   {selectedDealer.mobile        && <span className="rsm-dealer-contact">📞 {selectedDealer.mobile}</span>}
-                  {selectedDealer.rsmName       && <span className="rsm-dealer-contact">👔 RSM: {titleCase(selectedDealer.rsmName)}</span>}
-                  {selectedDealer.tsmName       && <span className="rsm-dealer-contact">🧑‍💼 TSM: {titleCase(selectedDealer.tsmName)}</span>}
+                  {/* {selectedDealer.rsmName       && <span className="rsm-dealer-contact">👔 RSM: {titleCase(selectedDealer.rsmName)}</span>}
+                  {selectedDealer.tsmName       && <span className="rsm-dealer-contact">🧑‍💼 TSM: {titleCase(selectedDealer.tsmName)}</span>} */}
                   {!selectedDealer.rsmName && !selectedDealer.tsmName && (
                     <span className="rsm-dealer-contact" style={{ color:"#9ca3af" }}>No RSM/TSM assigned in ERP</span>
                   )}
@@ -1096,9 +1117,9 @@ export default function RSMProposalForm() {
                     <th className="rsm-th" style={{ width:120 }}>Start Date <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:120 }}>End Date <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th rsm-th--right" style={{ width:100 }}>Budget (₹) <span style={{ color:"#f87171" }}>*</span></th>
-                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>Special Approval<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>bypasses CAC limit</div></th>
-                    <th className="rsm-th" style={{ width:90 }}>BGauss%<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>% of total</div></th>
-                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>BGauss Amt<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>auto calc</div></th>
+                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>Special Approval<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
+                    <th className="rsm-th" style={{ width:90 }}>BGauss%<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
+                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>BGauss Amt<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
                     <th className="rsm-th rsm-th--right" style={{ width:90 }}>Total (₹)</th>
                     <th className="rsm-th" style={{ width:110 }}>Remarks</th>
                     {/* <th className="rsm-th" style={{ width:80 }}>Files</th> */}
@@ -1190,13 +1211,14 @@ export default function RSMProposalForm() {
                           {rowErr?.retailTarget && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.retailTarget}</span>}
                         </td>
                         <td className="rsm-td">
-                          <input type="date" className={`rsm-input-sm${rowErr?.startDate?" rsm-input-sm--error":""}`}
+                          {/* lang="en-GB" makes Chromium/Edge date pickers display dd-mm-yyyy instead of the US mm-dd-yyyy default */}
+                          <input type="date" lang="en-GB" className={`rsm-input-sm${rowErr?.startDate?" rsm-input-sm--error":""}`}
                             style={{ width:112 }} value={a.startDate} min={MIN_ACTIVITY_DATE}
                             onChange={(e) => setActivity(a.id,"startDate",e.target.value)}/>
                           {rowErr?.startDate && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.startDate}</span>}
                         </td>
                         <td className="rsm-td">
-                          <input type="date" className={`rsm-input-sm${rowErr?.endDate?" rsm-input-sm--error":""}`}
+                          <input type="date" lang="en-GB" className={`rsm-input-sm${rowErr?.endDate?" rsm-input-sm--error":""}`}
                             style={{ width:112 }} value={a.endDate} min={a.startDate||MIN_ACTIVITY_DATE}
                             onChange={(e) => setActivity(a.id,"endDate",e.target.value)}/>
                           {rowErr?.endDate && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.endDate}</span>}
@@ -1229,7 +1251,7 @@ export default function RSMProposalForm() {
                           <input type="text" className="rsm-input-sm" style={{ width:100 }}
                             placeholder="Note…" value={a.remarks} onChange={(e) => setActivity(a.id,"remarks",e.target.value)}/>
                         </td>
-                        <td className="rsm-td">
+                        {/* <td className="rsm-td">
                           <label className="rsm-table-upload-btn">
                             {uploadingMedia[a.id] ? "⏳" : `📎${a.mediaFiles.length>0?" "+a.mediaFiles.length:""}`}
                             <input type="file" multiple accept="image/*,application/pdf,video/*" style={{ display:"none" }}
@@ -1250,7 +1272,7 @@ export default function RSMProposalForm() {
                               })}
                             </div>
                           )}
-                        </td>
+                        </td> */}
                         <td className="rsm-td">
                           <button className="rsm-remove-btn" onClick={() => removeActivity(a.id)}
                             disabled={activities.length===1} type="button">×</button>
@@ -1296,6 +1318,7 @@ export default function RSMProposalForm() {
                 <ReviewRow label="Location"     value={header.location?`${header.location}, ${header.state}`:"—"}/>
                 <ReviewRow label="Type"         value={header.type||"—"}/>
                 <ReviewRow label="Month"        value={header.month||"—"}/>
+                <ReviewRow label="Year"         value={header.year||"—"}/>
                 <ReviewRow label="Eligibility"  value={header.eligibility||"—"}/>
                 <ReviewRow label="RSM Name"    value={header.rsmName||"—"}/>
                 <ReviewRow label="TSM Name"    value={header.tsmName||"—"}/>
@@ -1328,7 +1351,7 @@ export default function RSMProposalForm() {
                     <th className="rsm-th rsm-th--right">BGauss%</th>
                     <th className="rsm-th rsm-th--right">BGauss Amt</th>
                     <th className="rsm-th rsm-th--right">Total</th>
-                    <th className="rsm-th">Files</th>
+                    {/* <th className="rsm-th">Files</th> */}
                   </tr>
                 </thead>
                 <tbody>
@@ -1358,7 +1381,7 @@ export default function RSMProposalForm() {
                         ₹{inr(bgaussAmount(a.budget,a.additionalBudget,a.bgaussShare))}
                       </td>
                       <td className="rsm-td rsm-td--total">₹{inr(num(a.budget)+num(a.additionalBudget))}</td>
-                      <td className="rsm-td">{a.mediaFiles.length>0?`${a.mediaFiles.length} file(s)`:"—"}</td>
+                      {/* <td className="rsm-td">{a.mediaFiles.length>0?`${a.mediaFiles.length} file(s)`:"—"}</td> */}
                     </tr>
                   ))}
                 </tbody>
