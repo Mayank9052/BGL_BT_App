@@ -14,6 +14,11 @@ import {
   type ActivityType, type ActivityGroup,
 } from "../services/activityService";
 import "./ApproverDashboard.css";
+import ProposalAiReviewPanel from "../components/ProposalAiReviewPanel";
+// ── TEMPORARY: static RSM/TSM/Sales Commando lookup from the team-mapping CSV.
+// Same stopgap as in RSMForm.tsx — see comments below at its usages. Remove
+// this import once the backend reliably returns these 3 fields for every dealer.
+import { findDealerTeam } from "../data/dealerTeamMap";
 
 const inr     = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
 const num     = (v: string | number) => { const n = parseFloat(String(v)); return Number.isFinite(n) ? n : 0; };
@@ -40,6 +45,9 @@ const MONTHS      = ["January","February","March","April","May","June","July","A
 const ELIGIBILITY = ["Eligible","Not Eligible","Pending Approval"];
 const LOC_TYPES   = ["Old","New"];
 const BGAUSS_OPTS = ["100","70","50"];
+// ── Start/End Date restriction: cannot pick a date from last year or earlier ──
+// (min = 1st Jan of the current year — mirrors the same rule added in RSMForm.tsx)
+const MIN_ACTIVITY_DATE = `${new Date().getFullYear()}-01-01`;
 
 const safeBgaussShare = (v: number | null | undefined): string => {
   if (v == null || v === 0) return "100";
@@ -139,7 +147,7 @@ interface EditActivity {
 }
 interface EditableProposal {
   dealerName:string; location:string; state:string; type:string;
-  rsmName:string; commandoName:string; month:string;
+  rsmName:string; tsmName:string; commandoName:string; month:string;
   eligibility:string; remarks:string; vendorId:string; vendorName:string;
   activities:EditActivity[];
 }
@@ -152,7 +160,7 @@ interface ActualEntry {
 function toEditable(p: ProposalResponse): EditableProposal {
   return {
     dealerName:p.dealerName, location:p.location, state:p.state, type:p.type,
-    rsmName:p.rsmName, commandoName:p.commandoName, month:p.month,
+    rsmName:p.rsmName, tsmName:(p as any).tsmName ?? "", commandoName:p.commandoName ?? "", month:p.month,
     eligibility:p.eligibility, remarks:p.remarks??"",
     vendorId:String(p.vendorId??""), vendorName:p.vendorName??"",
     activities: p.activities.map((a) => ({
@@ -251,6 +259,26 @@ export default function ApproverDashboard() {
     document.body.style.overflow = selected ? "hidden" : "";
     return () => { document.body.style.overflow = ""; };
   }, [selected]);
+
+  // ── TEMPORARY: auto-fill RSM / TSM / Sales Commando from the static CSV
+  // team-mapping when edit mode is opened, IF the dealer name matches a row in
+  // the mapping. This does not touch any existing field-loading logic (toEditable
+  // above is untouched) — it just overlays the 3 team fields right after entering
+  // edit mode, as a stopgap until the backend reliably returns these for every
+  // dealer. Remove this effect (and the findDealerTeam import) once that's fixed.
+  useEffect(() => {
+    if (!isEditing || !editData) return;
+    const csvTeam = findDealerTeam(null, editData.dealerName);
+    if (!csvTeam) return;
+    setEditData((d) => d ? {
+      ...d,
+      rsmName:      csvTeam.rsm      || d.rsmName,
+      tsmName:      csvTeam.tsm      || d.tsmName,
+      commandoName: csvTeam.commando || d.commandoName,
+    } : d);
+    // Only run once per time edit mode is opened for a given dealer — not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing]);
 
   const months      = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],[proposals]);
   const filtered    = useMemo(()=>proposals.filter((p)=>{
@@ -404,7 +432,7 @@ export default function ApproverDashboard() {
     try {
       const payload={
         dealerName:editData.dealerName, location:editData.location, state:editData.state,
-        type:editData.type, rsmName:editData.rsmName, commandoName:editData.commandoName,
+        type:editData.type, rsmName:editData.rsmName, tsmName:editData.tsmName||"", commandoName:editData.commandoName||null,
         month:editData.month, eligibility:editData.eligibility, remarks:editData.remarks,
         vendorId:editData.vendorId?Number(editData.vendorId):null, vendorName:editData.vendorName||null,
         activities:editData.activities.map((a)=>({
@@ -829,10 +857,32 @@ export default function ApproverDashboard() {
             <div style={{ maxWidth:1280,margin:"0 auto" }}>
 
               {/* Meta cards */}
+              {isAdmin&&isEditing&&(
+                <div style={{ display:"flex",justifyContent:"flex-end",marginBottom:8 }}>
+                  {/* ── TEMPORARY: manual re-trigger for the CSV team-mapping auto-fill,
+                      in case the admin changes the Dealer Name while editing and wants
+                      to re-pull RSM/TSM/Commando for the new name. Safe to remove once
+                      the backend reliably returns these 3 fields for every dealer. ── */}
+                  <button type="button"
+                    onClick={()=>{
+                      const csvTeam = findDealerTeam(null, editData.dealerName);
+                      if (!csvTeam) { showToast("No team-mapping match for this dealer name.", false); return; }
+                      setEditData((d)=>d?{...d,
+                        rsmName:csvTeam.rsm||d.rsmName,
+                        tsmName:csvTeam.tsm||d.tsmName,
+                        commandoName:csvTeam.commando||d.commandoName}:d);
+                      showToast("RSM / TSM / Commando auto-filled from team mapping.", true);
+                    }}
+                    style={{ background:"#eff6ff",border:"1px solid #bfdbfe",color:"#1e40af",
+                      borderRadius:7,padding:"6px 14px",fontSize:12,fontWeight:600,cursor:"pointer" }}>
+                    🔄 Auto-fill RSM/TSM/Commando from Team Mapping
+                  </button>
+                </div>
+              )}
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:10,marginBottom:20 }}>
                 {([
                   {key:"rsmName",      label:"RSM / TSM",   edit:"text"},
-                  {key:"commandoName", label:"Commando",    edit:"text"},
+                  {key:"tsmName",      label:"TSM Name",    edit:"text"},
                   {key:"type",         label:"Dealer Type", edit:"select", opts:LOC_TYPES},
                   {key:"eligibility",  label:"Eligibility", edit:"select", opts:ELIGIBILITY},
                   {key:"month",        label:"Month",       edit:"select", opts:MONTHS},
@@ -866,6 +916,9 @@ export default function ApproverDashboard() {
                   </div>
                 ))}
               </div>
+              
+              {/* AI Review */}
+              <ProposalAiReviewPanel proposalId={selected.id} />
 
               {/* RSM Remarks */}
               {(selected.remarks||(isAdmin&&isEditing))&&(
@@ -1062,13 +1115,13 @@ export default function ApproverDashboard() {
                               <div style={{ display:"flex",gap:4,alignItems:"center" }}>
                                 <input type="date"
                                   style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }}
-                                  value={(a as EditActivity).startDate}
+                                  value={(a as EditActivity).startDate} min={MIN_ACTIVITY_DATE}
                                   onChange={(e)=>setAF(i,"startDate",e.target.value)}/>
                                 <span style={{ color:"#6b7280" }}>→</span>
                                 <input type="date"
                                   style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }}
                                   value={(a as EditActivity).endDate}
-                                  min={(a as EditActivity).startDate||undefined}
+                                  min={(a as EditActivity).startDate||MIN_ACTIVITY_DATE}
                                   onChange={(e)=>setAF(i,"endDate",e.target.value)}/>
                               </div>
                             </td>
@@ -1359,6 +1412,13 @@ export default function ApproverDashboard() {
 
               {(()=>{
                 // ── Compute live CAC — used by BOTH warning banner AND button disable logic ──
+                // NOTE (Special Approval / additionalBudget vs the 4000/6000 CAC limit):
+                // The allowedCac (4000 Old / 6000 New) rule is the NORMAL rule and still fully
+                // applies when there's NO Special Approval (additionalBudget) on any activity —
+                // exceeding it locks Approve/Reject/Send-back below, same as before, unchanged.
+                // When Special Approval budget IS present, that's an intentional deviation the
+                // dealer/RSM already flagged — the block still shows here in the approver's
+                // dashboard as designed. This logic is unchanged; commented for clarity only.
                 const bgAmt = isEditing
                   ? editTotals.totalBgauss
                   : selected.activities.reduce((s,a)=>s+calcBgAmt(a.budget,a.additionalBudget,a.bgaussShare),0);

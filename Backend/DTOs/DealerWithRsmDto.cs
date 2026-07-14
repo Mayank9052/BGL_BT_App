@@ -9,6 +9,10 @@ public record DealerWithRsmDto(
     string? ContactPerson,
     string? RsmCode,
     string? RsmName,
+    string? RsmMobile,
     string? TsmCode,
-    string? TsmName
+    string? TsmName,
+    string? TsmMobile,
+    string? CommandoCode,   // ← NEW: Sales Commando DesignationId=26
+    string? CommandoName  // ← NEW
 );

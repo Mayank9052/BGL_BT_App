@@ -226,7 +226,7 @@ public class ChatHub : Hub
 
             botReply = await botSvc.AskAsync(
                 history.Select(h => (h.role, h.content)).ToList(),
-                userEmail);
+                userEmail) ?? "I'm unable to respond right now. Please try again.";
 
             _logger.LogInformation("[Bot] Reply generated ({Len} chars)", botReply?.Length ?? 0);
         }
@@ -242,7 +242,7 @@ public class ChatHub : Hub
             RoomId      = roomId,
             SenderEmail = "bot@bgauss.com",
             SenderName  = "BGauss AI",
-            Body        = botReply,
+            Body        = botReply?.Trim() ?? "",
             IsBot       = true,
             SentAt      = DateTimeOffset.UtcNow,
         };

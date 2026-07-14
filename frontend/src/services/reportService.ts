@@ -3,10 +3,21 @@ import { IPublicClientApplication } from "@azure/msal-browser";
 import { apiRequest, API_BASE_URL } from "../authConfig";
 
 async function getToken(instance: IPublicClientApplication): Promise<string> {
+  // Staff: Azure AD MSAL token
   const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
-  if (!account) throw new Error("No active account.");
-  const result = await instance.acquireTokenSilent({ ...apiRequest, account });
-  return result.accessToken;
+  if (account) {
+    const result = await instance.acquireTokenSilent({ ...apiRequest, account });
+    return result.accessToken;
+  }
+  // Dealer: JWT from localStorage
+  try {
+    const raw = localStorage.getItem("bgauss_dealer_user");
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (d?.token) return d.token as string;
+    }
+  } catch (_e) {}
+  throw new Error("Not signed in.");
 }
 
 export interface ReportFilters {

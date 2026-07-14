@@ -18,6 +18,7 @@ public class ProposalsController : ControllerBase
     private readonly BaplDbContext _bapl;
     private readonly IEmailService _emailService;
     private readonly ILogger<ProposalsController> _logger;
+    private readonly IServiceScopeFactory _scopeFactory;   // add this field
 
     private string GraphToken() =>
         Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
@@ -26,12 +27,14 @@ public class ProposalsController : ControllerBase
         AppDbContext  db,
         BaplDbContext bapl,
         IEmailService emailService,
-        ILogger<ProposalsController> logger)
+        ILogger<ProposalsController> logger,
+        IServiceScopeFactory scopeFactory)                  // add this parameter
     {
         _db           = db;
         _bapl         = bapl;
         _emailService = emailService;
         _logger       = logger;
+        _scopeFactory = scopeFactory;                        // add this line
     }
 
     // ── POST /api/proposals ───────────────────────────────────────────────────
@@ -114,6 +117,7 @@ public class ProposalsController : ControllerBase
             VendorId               = dto.VendorId,
             VendorName             = dto.VendorName,
             RsmName                = dto.RsmName,
+            TsmName              = dto.TsmName,
             CommandoName           = dto.CommandoName,
             Month                  = dto.Month,
             Eligibility            = dto.Eligibility,
@@ -134,6 +138,19 @@ public class ProposalsController : ControllerBase
 
         _db.Proposals.Add(proposal);
         await _db.SaveChangesAsync();
+        // Fire-and-forget AI review — uses its own DI scope since the request's
+        // scoped services (like _db) will be disposed once this action returns.
+        _ = Task.Run(async () =>
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var reviewSvc = scope.ServiceProvider.GetRequiredService<IProposalAiReviewService>();
+            try { await reviewSvc.ReviewAsync(proposal.Id); }
+            catch (Exception ex)
+            {
+                var log = scope.ServiceProvider.GetRequiredService<ILogger<ProposalsController>>();
+                log.LogWarning(ex, "AI review failed for {Id}", proposal.Id);
+            }
+        });
 
         var (sent, error) = await _emailService.SendSubmissionMailAsync(proposal, GraphToken());
         if (!sent)
@@ -141,6 +158,41 @@ public class ProposalsController : ControllerBase
 
         return CreatedAtAction(nameof(GetById), new { id = proposal.Id }, ToResponse(proposal));
     }
+
+    // ── GET /api/proposals/{id}/ai-review ─────────────────────────────────────
+    [HttpGet("{id:guid}/ai-review")]
+    public async Task<ActionResult<ProposalAiReviewDto>> GetAiReview(Guid id)
+    {
+        var review = await _db.ProposalAiReviews
+            .Include(r => r.Flags)
+            .Where(r => r.ProposalId == id)
+            .OrderByDescending(r => r.RunAt)
+            .AsNoTracking()
+            .FirstOrDefaultAsync();
+
+        if (review is null)
+            return NotFound(new { message = "No AI review yet for this proposal." });
+
+        return Ok(ToAiReviewResponse(review));
+    }
+
+    // ── POST /api/proposals/{id}/ai-review/rerun ──────────────────────────────
+    [HttpPost("{id:guid}/ai-review/rerun")]
+    public async Task<ActionResult<ProposalAiReviewDto>> RerunAiReview(
+        Guid id, [FromServices] IProposalAiReviewService reviewSvc)
+    {
+        var exists = await _db.Proposals.AnyAsync(p => p.Id == id);
+        if (!exists) return NotFound();
+
+        var review = await reviewSvc.ReviewAsync(id);
+        return Ok(ToAiReviewResponse(review));
+    }
+
+    private static ProposalAiReviewDto ToAiReviewResponse(Models.ProposalAiReview r) => new(
+        r.Id, r.ProposalId, r.Status, r.OverallVerdict, r.Summary, r.ModelUsed,
+        r.ToolCallCount, r.RunAt, r.ErrorMessage,
+        r.Flags.Select(f => new ProposalAiFlagDto(f.Id, f.Severity, f.Title, f.Detail, f.RelatedActivityType)).ToList()
+    );
 
     // ── GET /api/proposals ────────────────────────────────────────────────────
     [HttpGet]
@@ -276,7 +328,8 @@ public class ProposalsController : ControllerBase
         proposal.State        = dto.State;
         proposal.Type         = dto.Type;
         proposal.RsmName      = dto.RsmName;
-        proposal.CommandoName = dto.CommandoName;
+        proposal.TsmName      = dto.TsmName;
+        proposal.CommandoName  = dto.CommandoName;
         proposal.Month        = dto.Month;
         proposal.Eligibility  = dto.Eligibility;
         proposal.Remarks      = dto.Remarks;
@@ -334,6 +387,19 @@ public class ProposalsController : ControllerBase
         }
 
         await _db.SaveChangesAsync();
+        // Fire-and-forget AI review — uses its own DI scope since the request's
+        // scoped services (like _db) will be disposed once this action returns.
+        _ = Task.Run(async () =>
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var reviewSvc = scope.ServiceProvider.GetRequiredService<IProposalAiReviewService>();
+            try { await reviewSvc.ReviewAsync(proposal.Id); }
+            catch (Exception ex)
+            {
+                var log = scope.ServiceProvider.GetRequiredService<ILogger<ProposalsController>>();
+                log.LogWarning(ex, "AI review failed for {Id}", proposal.Id);
+            }
+        });
 
         var updated = await _db.Proposals
             .Include(p => p.Activities)
@@ -375,6 +441,20 @@ public class ProposalsController : ControllerBase
         proposal.DealerSentBackAt   = DateTimeOffset.UtcNow;
 
         await _db.SaveChangesAsync();
+
+        // Fire-and-forget AI review — uses its own DI scope since the request's
+        // scoped services (like _db) will be disposed once this action returns.
+        _ = Task.Run(async () =>
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var reviewSvc = scope.ServiceProvider.GetRequiredService<IProposalAiReviewService>();
+            try { await reviewSvc.ReviewAsync(proposal.Id); }
+            catch (Exception ex)
+            {
+                var log = scope.ServiceProvider.GetRequiredService<ILogger<ProposalsController>>();
+                log.LogWarning(ex, "AI review failed for {Id}", proposal.Id);
+            }
+        });
 
         var graphToken = Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
         var (sent, error) = await _emailService.SendDealerSendBackMailAsync(
@@ -424,6 +504,19 @@ public class ProposalsController : ControllerBase
         decision.MailSentAt = sent ? DateTimeOffset.UtcNow : null;
         decision.MailError  = error;
         await _db.SaveChangesAsync();
+        // Fire-and-forget AI review — uses its own DI scope since the request's
+        // scoped services (like _db) will be disposed once this action returns.
+        _ = Task.Run(async () =>
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var reviewSvc = scope.ServiceProvider.GetRequiredService<IProposalAiReviewService>();
+            try { await reviewSvc.ReviewAsync(proposal.Id); }
+            catch (Exception ex)
+            {
+                var log = scope.ServiceProvider.GetRequiredService<ILogger<ProposalsController>>();
+                log.LogWarning(ex, "AI review failed for {Id}", proposal.Id);
+            }
+        });
 
         if (!sent)
             _logger.LogWarning("Decision mail failed for proposal {Id}: {Error}", proposal.Id, error);
@@ -449,6 +542,19 @@ public class ProposalsController : ControllerBase
         proposal.ApprovedBy   = dto.SentBackBy ?? CurrentUserEmail();
 
         await _db.SaveChangesAsync();
+        // Fire-and-forget AI review — uses its own DI scope since the request's
+        // scoped services (like _db) will be disposed once this action returns.
+        _ = Task.Run(async () =>
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var reviewSvc = scope.ServiceProvider.GetRequiredService<IProposalAiReviewService>();
+            try { await reviewSvc.ReviewAsync(proposal.Id); }
+            catch (Exception ex)
+            {
+                var log = scope.ServiceProvider.GetRequiredService<ILogger<ProposalsController>>();
+                log.LogWarning(ex, "AI review failed for {Id}", proposal.Id);
+            }
+        });
 
         var (sent, error) = await _emailService.SendRevisionRequestMailAsync(proposal, dto.Note, GraphToken());
         if (!sent)
@@ -484,6 +590,19 @@ public class ProposalsController : ControllerBase
         }
 
         await _db.SaveChangesAsync();
+        // Fire-and-forget AI review — uses its own DI scope since the request's
+        // scoped services (like _db) will be disposed once this action returns.
+        _ = Task.Run(async () =>
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var reviewSvc = scope.ServiceProvider.GetRequiredService<IProposalAiReviewService>();
+            try { await reviewSvc.ReviewAsync(proposal.Id); }
+            catch (Exception ex)
+            {
+                var log = scope.ServiceProvider.GetRequiredService<ILogger<ProposalsController>>();
+                log.LogWarning(ex, "AI review failed for {Id}", proposal.Id);
+            }
+        });
         return Ok(ToResponse(proposal));
     }
 
@@ -595,6 +714,19 @@ public class ProposalsController : ControllerBase
         proposal.CheckedByEmail = CurrentUserEmail();
         proposal.CheckedAt      = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync();
+        // Fire-and-forget AI review — uses its own DI scope since the request's
+        // scoped services (like _db) will be disposed once this action returns.
+        _ = Task.Run(async () =>
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var reviewSvc = scope.ServiceProvider.GetRequiredService<IProposalAiReviewService>();
+            try { await reviewSvc.ReviewAsync(proposal.Id); }
+            catch (Exception ex)
+            {
+                var log = scope.ServiceProvider.GetRequiredService<ILogger<ProposalsController>>();
+                log.LogWarning(ex, "AI review failed for {Id}", proposal.Id);
+            }
+        });
 
         var (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, GraphToken());
         if (!sent)
@@ -622,6 +754,19 @@ public class ProposalsController : ControllerBase
         proposal.DealerEmail    = dto.DealerEmail;
         proposal.DealerNotified = true;
         await _db.SaveChangesAsync();
+        // Fire-and-forget AI review — uses its own DI scope since the request's
+        // scoped services (like _db) will be disposed once this action returns.
+        _ = Task.Run(async () =>
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var reviewSvc = scope.ServiceProvider.GetRequiredService<IProposalAiReviewService>();
+            try { await reviewSvc.ReviewAsync(proposal.Id); }
+            catch (Exception ex)
+            {
+                var log = scope.ServiceProvider.GetRequiredService<ILogger<ProposalsController>>();
+                log.LogWarning(ex, "AI review failed for {Id}", proposal.Id);
+            }
+        });
 
         var (sent, error) = await _emailService.SendDealerNotificationMailAsync(
             proposal, dto.DealerEmail, GraphToken());
@@ -700,7 +845,7 @@ public class ProposalsController : ControllerBase
     // ── ToResponse — maps model → DTO, including Subcategory/Qty/SalesPercent ─
     private static ProposalResponseDto ToResponse(Proposal p) => new(
         p.Id, p.State, p.Location, p.Type, p.DealerName,
-        p.VendorId, p.VendorName, p.RsmName, p.CommandoName,
+        p.VendorId, p.VendorName, p.RsmName, p.TsmName, p.CommandoName,
         p.Month, p.Eligibility, p.Remarks,
         p.TotalBudget, p.TotalLeadTarget, p.TotalRetailTarget,
         p.Cac, p.Cpl,

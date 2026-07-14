@@ -1,0 +1,125 @@
+/* src/components/ProposalAiReviewPanel.css */
+
+.ai-review-panel {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-top: 16px;
+}
+
+.ai-review-panel--loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.ai-review-spinner {
+  width: 16px; height: 16px;
+  border: 2px solid #e2e8f0;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: ai-review-spin 0.7s linear infinite;
+}
+@keyframes ai-review-spin { to { transform: rotate(360deg); } }
+
+.ai-review-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.ai-review-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0a2540;
+}
+
+.ai-review-meta {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.ai-review-rerun-btn {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+}
+.ai-review-rerun-btn:hover:not(:disabled) { background: #eef2f7; }
+.ai-review-rerun-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.ai-review-empty {
+  font-size: 13px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.ai-review-error {
+  font-size: 12px;
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.ai-review-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.ai-review-verdict-icon { font-size: 16px; line-height: 1; }
+
+.ai-review-summary {
+  margin: 4px 0 0;
+  font-weight: 400;
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.ai-review-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-review-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-radius: 7px;
+  padding: 9px 12px;
+  font-size: 12px;
+}
+
+.ai-review-flag-icon { font-size: 14px; line-height: 1.4; }
+
+.ai-review-flag-activity {
+  font-weight: 400;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.ai-review-flag-detail {
+  margin: 3px 0 0;
+  font-weight: 400;
+  color: #334155;
+}

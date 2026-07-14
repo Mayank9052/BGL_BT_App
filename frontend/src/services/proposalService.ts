@@ -44,7 +44,8 @@ export interface ProposalResponse {
   vendorId:               number | null;
   vendorName:             string | null;
   rsmName:                string;
-  commandoName:           string;
+  tsmName:                string;   // TSM (Territory Sales Manager)
+  commandoName:           string | null; // Sales Commando (DesignationId=26)
   month:                  string;
   eligibility:            string;
   remarks:                string | null;
@@ -101,10 +102,11 @@ interface ProposalPayload {
   vendorId:           number | null;
   vendorName:         string | null;
   rsmName:            string;
-  commandoName:       string;
+  tsmName:            string;
+  commandoName:       string | null;
   month:              string;
   eligibility:        string;
-  remarks:            string;
+  remarks:            string | null;
   submittedBy:        string | null;
   docNumber:          string;
   activities:         ActivityPayload[];
@@ -123,7 +125,8 @@ export interface UpdateProposalPayload {
   state:              string;
   type:               string;
   rsmName:            string;
-  commandoName:       string;
+  tsmName:            string;
+  commandoName:       string | null;
   month:              string;
   eligibility:        string;
   remarks:            string;
@@ -158,9 +161,15 @@ export interface ActivityActualsPayload {
 /* ── Token helpers ────────────────────────────────────────────────────────── */
 async function getAccessToken(instance: IPublicClientApplication): Promise<string> {
   const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
-  if (!account) throw new Error("No active account — please sign in again.");
-  const result = await instance.acquireTokenSilent({ ...apiRequest, account });
-  return result.accessToken;
+  if (account) {
+    const result = await instance.acquireTokenSilent({ ...apiRequest, account });
+    return result.accessToken;
+  }
+  try {
+    const raw = localStorage.getItem("bgauss_dealer_user");
+    if (raw) { const d = JSON.parse(raw); if (d?.token) return d.token as string; }
+  } catch {}
+  throw new Error("Not signed in.");
 }
 
 async function getGraphToken(instance: IPublicClientApplication): Promise<string> {
@@ -472,4 +481,4 @@ export async function removeActivityMedia(
     const text = await res.text().catch(() => "");
     throw new Error(text || `Failed to remove media (${res.status})`);
   }
-} 
+}

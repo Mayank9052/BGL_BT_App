@@ -184,6 +184,7 @@ public class GraphEmailService : IEmailService
     private static string BuildProposalInfoTable(Proposal p)
     {
         var vendor    = string.IsNullOrWhiteSpace(p.VendorName)   ? "—" : p.VendorName;
+        var tsmName   = string.IsNullOrWhiteSpace(p.TsmName)      ? "—" : p.TsmName;
         var commando  = string.IsNullOrWhiteSpace(p.CommandoName) ? "—" : p.CommandoName;
         var submitter = $"{p.SubmittedByDisplayName ?? p.RsmName} ({p.SubmittedBy})";
 
@@ -210,6 +211,10 @@ public class GraphEmailService : IEmailService
               <tr>
                 <td style="{lbl}">RSM / TSM</td>
                 <td style="{val}{sep}">{p.RsmName}</td>
+                <td style="{lbl}">TSM</td>
+                <td style="{val}{sep}">{tsmName}</td>
+              </tr>
+              <tr>
                 <td style="{lbl}">Commando</td>
                 <td style="{val}">{commando}</td>
               </tr>
