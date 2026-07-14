@@ -25,6 +25,8 @@ public class AppDbContext : DbContext
     public DbSet<ChatMessage>    ChatMessages    => Set<ChatMessage>();
     public DbSet<WhatsAppMessage> WhatsAppMessages => Set<WhatsAppMessage>();
     public DbSet<BotKnowledge>    BotKnowledgeBase  => Set<BotKnowledge>();
+    public DbSet<ProposalAiReview> ProposalAiReviews => Set<ProposalAiReview>();
+    public DbSet<ProposalAiFlag>   ProposalAiFlags    => Set<ProposalAiFlag>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -214,5 +216,29 @@ public class AppDbContext : DbContext
             e.HasIndex(m => m.SentAt);
             e.HasIndex(m => m.WaMessageId).HasFilter("[WaMessageId] IS NOT NULL");
         });
+
+        modelBuilder.Entity<ProposalAiReview>(e =>
+        {
+            e.ToTable("ProposalAiReviews");
+            e.HasKey(r => r.Id);
+            e.Property(r => r.RunAt).HasDefaultValueSql("SYSDATETIMEOFFSET()");
+            e.HasOne(r => r.Proposal).WithMany()
+            .HasForeignKey(r => r.ProposalId).OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(r => r.ProposalId);
+            e.HasMany(r => r.Flags).WithOne(f => f.Review!)
+            .HasForeignKey(f => f.ReviewId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ProposalAiFlag>(e =>
+        {
+            e.ToTable("ProposalAiFlags");
+            e.HasKey(f => f.Id);
+            e.Property(f => f.Severity).HasMaxLength(20).IsRequired();
+            e.Property(f => f.Title).HasMaxLength(150).IsRequired();
+            e.Property(f => f.Detail).HasMaxLength(1000).IsRequired();
+            e.Property(f => f.RelatedActivityType).HasMaxLength(100);
+            e.HasOne(f => f.Review).WithMany(r => r.Flags)
+             .HasForeignKey(f => f.ReviewId).OnDelete(DeleteBehavior.Cascade);
+        }); 
     }
 }

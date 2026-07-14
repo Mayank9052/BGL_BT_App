@@ -13,7 +13,10 @@ public class Proposal
     [MaxLength(200)]  public string? VendorName   { get; set; }
     public int?       VendorId  { get; set; }
     [MaxLength(150)]  public string  RsmName      { get; set; } = string.Empty;
-    [MaxLength(150)]  public string  CommandoName { get; set; } = string.Empty;
+    // Renamed from CommandoName → TsmName (TSM = Territory Sales Manager)
+    [MaxLength(150)]  public string  TsmName      { get; set; } = string.Empty;
+    // NEW: Sales Commando (DesignationId=26 in H_EmployeeMaster)
+    [MaxLength(150)]  public string? CommandoName { get; set; }
     [MaxLength(20)]   public string  Month        { get; set; } = string.Empty;
     [MaxLength(50)]   public string  Eligibility  { get; set; } = string.Empty;
     [MaxLength(2000)] public string? Remarks      { get; set; }
@@ -39,12 +42,13 @@ public class Proposal
     // Per-activity token shown to the RSM in the decision email; generated
     // once on submission so it's stable even if the mail is resent.
     [MaxLength(50)] public string? TokenNumber { get; set; }
-    public string?          CheckedByEmail { get; set; }  // Mayank's confirm step
+    public string?          CheckedByEmail { get; set; }
     public DateTimeOffset?  CheckedAt      { get; set; }
     public string?          DealerEmail    { get; set; }  // dealer's email for notification
     public bool             DealerNotified { get; set; } = false;
     public string? DealerSendBackNote    { get; set; }
     public bool    DealerSentBack        { get; set; } = false;
     public DateTimeOffset? DealerSentBackAt { get; set; }
+    public string? DealerCode { get; set; }
     public List<ProposalActivity> Activities { get; set; } = new();
 }

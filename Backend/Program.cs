@@ -182,6 +182,7 @@ builder.Services.AddSignalR(opts =>
 });
 builder.Services.AddHttpClient("anthropic");
 builder.Services.AddScoped<IBotService, BotService>();   // BotService now has AppDbContext
+builder.Services.AddScoped<IProposalAiReviewService, ProposalAiReviewService>();
 
 // ── WhatsApp ──────────────────────────────────────────────────────────────────
 builder.Services.AddHttpClient("whatsapp");
