@@ -43,16 +43,13 @@ const MONTHS = [
   "July","August","September","October","November","December",
 ];
 const CURRENT_MONTH = MONTHS[new Date().getMonth()];
-// ── Start/End Date restriction: RSM cannot pick a date from last year or earlier ──
-// (min = 1st Jan of the current year, so any date belonging to a previous year is blocked)
 const CURRENT_YEAR = new Date().getFullYear();
-const MIN_ACTIVITY_DATE = `${CURRENT_YEAR}-01-01`;
-// ── NEW: Year dropdown next to Month — auto-selects the current year ──────
 const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
-// ── NEW: default Start Date = today, End Date = 7 days later (ISO yyyy-mm-dd) ──
 const isoDate = (d: Date) => d.toISOString().split("T")[0];
 const TODAY_ISO = isoDate(new Date());
 const DEFAULT_END_ISO = isoDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
+// ← CHANGED Point 3: no backdating to ANY past date (was Jan 1 of current year)
+const MIN_ACTIVITY_DATE = TODAY_ISO;
 
 interface ActivityRow {
   id: string; activityType: string; category: string;
@@ -182,7 +179,9 @@ export default function RSMProposalForm() {
   const [states,        setStates]        = useState<StateOption[]>([]);
   const [cities,        setCities]        = useState<CityOption[]>([]);
   const [loadingCities, setLoadingCities] = useState(false);
-  const [locationError, setLocationError] = useState<string | null>(null);
+  // const [locationError, setLocationError] = useState<string | null>(null);
+  const [stateLoadError, setStateLoadError] = useState<string | null>(null);
+  const [cityLoadError,  setCityLoadError]  = useState<string | null>(null);
   const [dealers,        setDealers]        = useState<DealerOption[]>([]);
   const [loadingDealers, setLoadingDealers] = useState(false);
   const [dealerError,    setDealerError]    = useState<string | null>(null);
@@ -207,7 +206,7 @@ export default function RSMProposalForm() {
   const selectedDealer = dealers.find((d) => d.customerCode === header.dealerId) ?? null;
 
   useEffect(() => {
-    fetchStates(instance).then(setStates).catch(() => setLocationError("Could not load states."));
+    fetchStates(instance).then(setStates).catch(() => setStateLoadError("Could not load state list. Please refresh the page."));
   }, [instance]);
   useEffect(() => {
     setLoadingDealers(true);
@@ -379,11 +378,14 @@ export default function RSMProposalForm() {
     const id  = e.target.value ? Number(e.target.value) : null;
     const sel = states.find((s) => s.id === id) ?? null;
     setHeader((h) => ({ ...h, state: sel ? titleCase(sel.name) : "", stateId: id, location: "" }));
-    setCities([]); setLocationError(null);
+    setCities([]); setCityLoadError(null);
     if (fieldErrors.state) setFieldErrors((err) => { const n = { ...err }; delete n.state; return n; });
     if (id) {
       setLoadingCities(true);
-      fetchCitiesByState(id, instance).then(setCities).catch(() => setLocationError("Could not load cities.")).finally(() => setLoadingCities(false));
+      fetchCitiesByState(id, instance)
+        .then(setCities)
+        .catch(() => setCityLoadError("Could not load cities for this state."))
+        .finally(() => setLoadingCities(false));
     }
   };
 
@@ -848,7 +850,7 @@ export default function RSMProposalForm() {
               <div className="rsm-field">
                 <Label text="State" required/>
                 {dealerAutoFilled && !editMode ? <LockedField value={header.state}/> :
-                 header.state && !header.stateId ? (
+                header.state && !header.stateId ? (
                   <select className={`rsm-select${fieldErrors.state?" rsm-input--error":""}`}
                     value={header.stateId??""} onChange={handleStateChange}>
                     <option value="">{header.state} (dealer)</option>
@@ -862,12 +864,14 @@ export default function RSMProposalForm() {
                   </select>
                 )}
                 {fieldErrors.state && <span className="rsm-field-error">{fieldErrors.state}</span>}
+                {/* NEW: only show the state-load error when NOT auto-filled by a dealer */}
+                {!dealerAutoFilled && stateLoadError && <span className="rsm-field-error">{stateLoadError}</span>}
               </div>
 
               <div className="rsm-field">
                 <Label text="City" required/>
                 {dealerAutoFilled && !editMode ? <LockedField value={header.location}/> :
-                 header.location && !header.stateId ? (
+                header.location && !header.stateId ? (
                   <input className={`rsm-select${fieldErrors.location?" rsm-input--error":""}`}
                     value={header.location} onChange={(e) => setField("location", e.target.value)} placeholder="City"/>
                 ) : (
@@ -878,7 +882,7 @@ export default function RSMProposalForm() {
                     {cities.map((c) => <option key={c.id} value={titleCase(c.name)}>{titleCase(c.name)}</option>)}
                   </select>
                 )}
-                {(fieldErrors.location || locationError) && <span className="rsm-field-error">{fieldErrors.location || locationError}</span>}
+                {(fieldErrors.location || cityLoadError) && <span className="rsm-field-error">{fieldErrors.location || cityLoadError}</span>}
               </div>
 
               <div className="rsm-field">

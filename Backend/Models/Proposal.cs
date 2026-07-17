@@ -50,5 +50,7 @@ public class Proposal
     public bool    DealerSentBack        { get; set; } = false;
     public DateTimeOffset? DealerSentBackAt { get; set; }
     public string? DealerCode { get; set; }
+
+    public string? CheckerRemarks { get; set; }  // optional note from checker to approver
     public List<ProposalActivity> Activities { get; set; } = new();
 }

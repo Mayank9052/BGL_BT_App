@@ -383,6 +383,16 @@
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px;
 }
 
+.rsm-form-row1 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+@media (max-width: 768px) {
+  .rsm-form-row1 { grid-template-columns: 1fr 1fr; }
+}
+
 /* ─── Dealer input ───────────────────────────────────────────────────────── */
 .rsm-dealer-input-wrap { display: flex; gap: 8px; align-items: flex-start; }
 .rsm-info-btn {

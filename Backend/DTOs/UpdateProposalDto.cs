@@ -20,5 +20,6 @@ public record UpdateProposalDto
     [JsonPropertyName("totalRetailTarget")]  public int     TotalRetailTarget { get; init; }
     [JsonPropertyName("cac")]          public decimal Cac          { get; init; }
     [JsonPropertyName("cpl")]          public decimal Cpl          { get; init; }
+    [JsonPropertyName("checkerRemarks")]  public string? CheckerRemarks { get; init; }
     [JsonPropertyName("activities")]   public List<ActivityDto> Activities { get; init; } = new();
 }

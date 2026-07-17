@@ -36,5 +36,6 @@ public record ProposalResponseDto(
     string?         DealerSendBackNote,
     bool            DealerSentBack,
     DateTimeOffset? DealerSentBackAt,
+    string?         CheckerRemarks,
     List<ActivityResponseDto> Activities
 );
