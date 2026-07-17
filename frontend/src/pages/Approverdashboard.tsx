@@ -14,6 +14,7 @@ import {
   type ActivityType, type ActivityGroup,
 } from "../services/activityService";
 import "./ApproverDashboard.css";
+import { fetchDealerUsers } from "../services/dealerAuthService";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 const inr     = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
@@ -248,6 +249,7 @@ export default function ApproverDashboard() {
   const [dealerEmailMode,  setDealerEmailMode]  = useState<"dealer"|"vendor"|"custom">("dealer");
   const [showNotifyDealer, setShowNotifyDealer] = useState(false);
   const [notifyLoading,    setNotifyLoading]    = useState(false);
+  const [dealerEmailFetching, setDealerEmailFetching] = useState(false);
   const [actualsData,      setActualsData]      = useState<Record<string,ActualEntry>>({});
   const [actualsLoading,   setActualsLoading]   = useState(false);
   const [uploadingMedia,   setUploadingMedia]   = useState<Record<string,boolean>>({});
@@ -1131,10 +1133,57 @@ export default function ApproverDashboard() {
                                     );
                                   })()}
                                 </div>
+                                {/* Invoice / Bill Upload — single file, saved as mediaFileUrl */}
+                                <div style={{ marginBottom:20,background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"16px 20px" }}>
+                                  <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
+                                    <span style={{ fontSize:13,fontWeight:700,color:"#0a2540" }}>🧾 Invoice / Bill Upload</span>
+                                    <span style={{ fontSize:11,color:"#6b7280" }}>— Upload vendor invoice or activity bill (PDF / image)</span>
+                                  </div>
+                                  {d.mediaFileUrl ? (
+                                    <div style={{ display:"flex",alignItems:"center",gap:10,background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:8,padding:"10px 14px" }}>
+                                      <span style={{ fontSize:20 }}>
+                                        {d.mediaFileType?.includes("pdf")?"📄":d.mediaFileType?.startsWith("image/")?"🖼":"📎"}
+                                      </span>
+                                      <div style={{ flex:1 }}>
+                                        <div style={{ fontSize:12,fontWeight:600,color:"#166534" }}>{d.mediaFileName}</div>
+                                        <div style={{ fontSize:11,color:"#6b7280",marginTop:1 }}>Invoice saved ✓</div>
+                                      </div>
+                                      <a href={d.mediaFileUrl.startsWith("http")?d.mediaFileUrl:`${API_BASE}${d.mediaFileUrl}`}
+                                        target="_blank" rel="noopener noreferrer"
+                                        style={{ fontSize:12,color:"#2563eb",fontWeight:600,textDecoration:"none" }}>
+                                        View ↗
+                                      </a>
+                                      <label style={{ display:"inline-flex",alignItems:"center",gap:5,background:"#f1f5f9",
+                                        border:"1px dashed #d1d5db",borderRadius:6,padding:"4px 10px",cursor:"pointer",
+                                        fontSize:11,color:"#374151",fontWeight:600,whiteSpace:"nowrap" }}>
+                                        {d.uploading?"⏳ Uploading…":"🔄 Replace"}
+                                        <input type="file" accept="application/pdf,image/*" style={{ display:"none" }}
+                                          disabled={d.uploading}
+                                          onChange={(e)=>{ const f=e.target.files?.[0]; if(f) handleActualMedia(a.id,f); e.target.value=""; }}/>
+                                      </label>
+                                    </div>
+                                  ) : (
+                                    <label style={{ display:"flex",alignItems:"center",justifyContent:"center",gap:8,
+                                      border:"2px dashed #e2e8f0",borderRadius:10,padding:"20px 24px",cursor:"pointer",
+                                      background:"#f8fafc",color:"#6b7280",fontSize:13 }}>
+                                      <span style={{ fontSize:28 }}>🧾</span>
+                                      <div>
+                                        <div style={{ fontWeight:600,color:"#374151" }}>
+                                          {d.uploading?"⏳ Uploading invoice…":"Click to upload Invoice / Bill"}
+                                        </div>
+                                        <div style={{ fontSize:11,marginTop:2 }}>PDF or image file</div>
+                                      </div>
+                                      <input type="file" accept="application/pdf,image/*" style={{ display:"none" }}
+                                        disabled={d.uploading}
+                                        onChange={(e)=>{ const f=e.target.files?.[0]; if(f) handleActualMedia(a.id,f); e.target.value=""; }}/>
+                                    </label>
+                                  )}
+                                </div>
+
                                 {/* Save + Close */}
                                 <div style={{ display:"flex",gap:10,alignItems:"center",paddingTop:8,borderTop:"1px solid #bbf7d0",flexWrap:"wrap" }}>
                                   <button onClick={saveActuals} disabled={actualsLoading} style={{ background:"#16a34a",color:"#fff",border:"none",padding:"10px 24px",borderRadius:8,fontWeight:700,fontSize:13,cursor:actualsLoading?"not-allowed":"pointer",opacity:actualsLoading?0.7:1 }}>{actualsLoading?"Saving…":"💾 Save Actuals"}</button>
-                                  <span style={{ fontSize:12,color:"#6b7280" }}>{d.proofMedia.length} photo{d.proofMedia.length!==1?"s":""} · {d.dailyEntries.length} day{d.dailyEntries.length!==1?"s":""}</span>
+                                  <span style={{ fontSize:12,color:"#6b7280" }}>{d.proofMedia.length} photo{d.proofMedia.length!==1?"s":""} · {d.dailyEntries.length} day{d.dailyEntries.length!==1?"s":""}{d.mediaFileUrl?" · 1 invoice":""}</span>
                                   <button onClick={()=>setOpenActualsId(null)} style={{ marginLeft:"auto",background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"10px 18px",borderRadius:8,fontSize:13,cursor:"pointer" }}>Close ▲</button>
                                 </div>
                               </div>
@@ -1311,13 +1360,44 @@ export default function ApproverDashboard() {
                 <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"20px",marginBottom:20 }}>
                   <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:8 }}>Notify Dealer</p>
                   {selected.dealerNotified&&<div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:12 }}>✓ Dealer notified{selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}</div>}
-                  {!showNotifyDealer?(<button onClick={()=>{ setShowNotifyDealer(true); if(selected.dealerEmail){setDealerEmailMode("dealer");setDealerEmailInput(selected.dealerEmail);}else{setDealerEmailMode("custom");setDealerEmailInput("");} }} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }}>{selected.dealerNotified?"📧 Send Again":"📧 Notify Dealer"}</button>):(
+                  {!showNotifyDealer?(<button onClick={async()=>{
+                    setShowNotifyDealer(true);
+                    // Priority: previously used email → look up by DealerName from dealer logins
+                    if(selected.dealerEmail){
+                      setDealerEmailMode("dealer"); setDealerEmailInput(selected.dealerEmail);
+                    } else {
+                      setDealerEmailMode("custom"); setDealerEmailInput("");
+                      // Auto-fetch from dealer accounts by matching DealerName
+                      setDealerEmailFetching(true);
+                      try {
+                        const dealers = await fetchDealerUsers(instance);
+                        const match = dealers.find(d =>
+                          d.dealerName?.trim().toLowerCase() === selected.dealerName?.trim().toLowerCase()
+                          || d.dealerCode === (selected as any).dealerCode
+                        );
+                        if (match?.email) {
+                          setDealerEmailInput(match.email);
+                          setDealerEmailMode("dealer");
+                        }
+                      } catch {} finally { setDealerEmailFetching(false); }
+                    }
+                  }} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }}>{selected.dealerNotified?"📧 Send Again":"📧 Notify Dealer"}</button>):(
                     <div style={{ background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:16 }}>
                       <div style={{ display:"flex",flexDirection:"column",gap:8,marginBottom:14 }}>
                         {selected.dealerEmail&&(<label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="dealer"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="dealer"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="dealer" checked={dealerEmailMode==="dealer"} onChange={()=>{setDealerEmailMode("dealer");setDealerEmailInput(selected.dealerEmail??"");}}/><div><span style={{ fontWeight:600,color:"#0a2540" }}>Dealer (previously used)</span> <span style={{ color:"#6b7280",fontSize:12 }}>{selected.dealerEmail}</span></div></label>)}
                         <label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="custom"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="custom"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="custom" checked={dealerEmailMode==="custom"} onChange={()=>{setDealerEmailMode("custom");setDealerEmailInput("");}}/><span style={{ fontWeight:600,color:"#0a2540" }}>Enter email manually</span></label>
                       </div>
-                      <input type="email" value={dealerEmailInput} onChange={(e)=>setDealerEmailInput(e.target.value)} placeholder="recipient@example.com" style={{ width:"100%",padding:"9px 12px",borderRadius:7,border:"1px solid #d1d5db",fontSize:13,boxSizing:"border-box" as const,marginBottom:14 }}/>
+                      {dealerEmailFetching && (
+                        <div style={{ fontSize:12,color:"#2563eb",padding:"6px 0",marginBottom:6 }}>
+                          ⏳ Looking up dealer email…
+                        </div>
+                      )}
+                      <input type="email" value={dealerEmailInput} onChange={(e)=>setDealerEmailInput(e.target.value)} placeholder="recipient@example.com" style={{ width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${dealerEmailInput?"#16a34a":"#d1d5db"}`,fontSize:13,boxSizing:"border-box" as const,marginBottom:14 }}/>
+                      {dealerEmailInput && !dealerEmailFetching && (
+                        <div style={{ fontSize:11,color:"#16a34a",marginBottom:10,fontWeight:500 }}>
+                          ✓ Email auto-fetched from dealer account
+                        </div>
+                      )}
                       <div style={{ display:"flex",gap:10 }}>
                         <button onClick={handleNotifyDealer} disabled={notifyLoading||!dealerEmailInput.trim()} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:notifyLoading||!dealerEmailInput.trim()?"not-allowed":"pointer",opacity:notifyLoading||!dealerEmailInput.trim()?0.6:1 }}>{notifyLoading?"Sending…":"📧 Send to Dealer"}</button>
                         <button onClick={()=>setShowNotifyDealer(false)} style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"10px 20px",borderRadius:8,fontWeight:500,fontSize:14,cursor:"pointer" }}>Cancel</button>

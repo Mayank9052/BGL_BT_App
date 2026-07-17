@@ -174,6 +174,55 @@ function achColor(p: number): string {
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── Print/PDF helper — prints the target table in a clean PDF-ready view ────
+function printSection(sectionId: string, title: string) {
+  const el = document.getElementById(sectionId);
+  if (!el) return;
+
+  const printWindow = window.open("", "_blank", "width=1200,height=900");
+  if (!printWindow) { alert("Allow pop-ups to download PDF."); return; }
+
+  const styles = Array.from(document.styleSheets)
+    .flatMap((ss) => {
+      try { return Array.from(ss.cssRules).map((r) => r.cssText); }
+      catch { return []; }
+    })
+    .join("\n");
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>${title}</title>
+      <meta charset="UTF-8"/>
+      <style>
+        ${styles}
+        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; margin: 0; background: #fff; }
+        .print-header { background: #0a2540; color: #fff; padding: 14px 20px; margin-bottom: 16px; border-radius: 6px; }
+        .print-header h1 { margin: 0; font-size: 16px; font-weight: 700; }
+        .print-header p  { margin: 4px 0 0; font-size: 11px; opacity: 0.75; }
+        table { border-collapse: collapse; width: 100%; font-size: 10px; }
+        th, td { border: 1px solid #e2e8f0; padding: 4px 6px; }
+        th { background: #0a2540 !important; color: #fff !important; font-size: 9px; }
+        tr:nth-child(even) { background: #f8fafc; }
+        @page { size: A3 landscape; margin: 1cm; }
+        @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+      </style>
+    </head>
+    <body>
+      <div class="print-header">
+        <h1>BGauss BTL — ${title}</h1>
+        <p>Generated: ${new Date().toLocaleString("en-IN")}</p>
+      </div>
+      ${el.outerHTML}
+    </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => { printWindow.print(); printWindow.close(); }, 500);
+}
+
 export default function DashboardPage() {
   const { user, loading } = useAuthStore();
   const { instance }      = useMsal();
@@ -957,12 +1006,21 @@ export default function DashboardPage() {
                     Click any dealer row to view their full daily activity sheet ↗
                   </p>
                 </div>
-                <span style={{fontSize:11,background:"#fef3c7",color:"#92400e",padding:"3px 10px",borderRadius:20,fontWeight:700}}>
-                  🔴 Mock data — connect to live API
-                </span>
+                <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                  <span style={{fontSize:11,background:"#fef3c7",color:"#92400e",padding:"3px 10px",borderRadius:20,fontWeight:700}}>
+                    🔴 Mock data — connect to live API
+                  </span>
+                  <button
+                    onClick={()=>printSection("daily-summary-table","Daily Activity Summary")}
+                    style={{background:"#dc2626",color:"#fff",border:"none",borderRadius:6,
+                      padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer",
+                      display:"flex",alignItems:"center",gap:5}}>
+                    ⬇ PDF
+                  </button>
+                </div>
               </div>
               <div className="dash-table-wrap dash-table-wrap--wide">
-                <table className="dash-table" style={{minWidth:1500}}>
+                <table id="daily-summary-table" className="dash-table" style={{minWidth:1500}}>
                   <thead>
                     <tr style={{background:"#0a2540"}}>
                       <th className="dash-th" rowSpan={2} style={{minWidth:32}}>#</th>
@@ -1084,12 +1142,21 @@ export default function DashboardPage() {
                     <span style={{fontSize:12,fontWeight:400,color:"#64748b",marginLeft:10}}>Statewise Planned Leads vs Actual · 03 July 2026 EoD</span>
                   </h2>
                 </div>
-                <span style={{fontSize:11,background:"#fef3c7",color:"#92400e",padding:"3px 10px",borderRadius:20,fontWeight:700}}>
-                  🔴 Mock data — connect to live API
-                </span>
+                <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                  <span style={{fontSize:11,background:"#fef3c7",color:"#92400e",padding:"3px 10px",borderRadius:20,fontWeight:700}}>
+                    🔴 Mock data — connect to live API
+                  </span>
+                  <button
+                    onClick={()=>printSection("lead-report-table","Lead Report — Statewise")}
+                    style={{background:"#dc2626",color:"#fff",border:"none",borderRadius:6,
+                      padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer",
+                      display:"flex",alignItems:"center",gap:5}}>
+                    ⬇ PDF
+                  </button>
+                </div>
               </div>
               <div className="dash-table-wrap dash-table-wrap--wide">
-                <table className="dash-table" style={{minWidth:1600}}>
+                <table id="lead-report-table" className="dash-table" style={{minWidth:1600}}>
                   <thead>
                     <tr style={{background:"#0a2540"}}>
                       <th className="dash-th" rowSpan={3} style={{minWidth:120,textAlign:"left"}}>State</th>
@@ -1191,10 +1258,19 @@ export default function DashboardPage() {
                     <span style={{fontSize:12,fontWeight:400,color:"#64748b",marginLeft:10}}>July 2026 · BG Team: {selectedDealerDaily.bgMember}</span>
                   </h2>
                 </div>
-                <span style={{fontSize:11,background:"#fef3c7",color:"#92400e",padding:"3px 10px",borderRadius:20,fontWeight:700}}>🔴 Mock data</span>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <span style={{fontSize:11,background:"#fef3c7",color:"#92400e",padding:"3px 10px",borderRadius:20,fontWeight:700}}>🔴 Mock data</span>
+                  <button
+                    onClick={()=>printSection("dealer-daily-table",`${selectedDealerDaily.dealer} — ${selectedDealerDaily.location} Daily Sheet`)}
+                    style={{background:"#dc2626",color:"#fff",border:"none",borderRadius:6,
+                      padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer",
+                      display:"flex",alignItems:"center",gap:5}}>
+                    ⬇ PDF
+                  </button>
+                </div>
               </div>
               <div className="dash-table-wrap dash-table-wrap--wide">
-                <table className="dash-table" style={{minWidth:1100}}>
+                <table id="dealer-daily-table" className="dash-table" style={{minWidth:1100}}>
                   <thead>
                     <tr style={{background:"#0a2540"}}>
                       <th className="dash-th" rowSpan={2} style={{minWidth:90,textAlign:"left"}}>Date</th>

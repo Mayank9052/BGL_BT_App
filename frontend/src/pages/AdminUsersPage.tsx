@@ -9,6 +9,8 @@ import {
 import {
   fetchDealerUsers, createDealerUser, toggleDealerActive,
   adminResetDealerPassword, type DealerAccount,
+  bulkPreviewDealers, bulkImportDealers, getBulkImportStatus,
+  type BulkPreviewResult, type BulkImportResult, type BulkStatusResult,
 } from "../services/dealerAuthService";
 import { fetchDealers, type DealerOption } from "../services/dealerService";
 import type { UserProfile } from "../types/user";
@@ -157,6 +159,14 @@ export default function AdminUsersPage() {
   const [dealerSuccess,  setDealerSuccess]  = useState<string | null>(null);
   const [dealerSaving,   setDealerSaving]   = useState(false);
   const [showDealerForm, setShowDealerForm] = useState(false);
+
+  // ── Bulk import state ──────────────────────────────────────────────────────
+  const [bulkStatus,   setBulkStatus]   = useState<BulkStatusResult | null>(null);
+  const [bulkPreview,  setBulkPreview]  = useState<BulkPreviewResult | null>(null);
+  const [bulkResult,   setBulkResult]   = useState<BulkImportResult | null>(null);
+  const [bulkLoading,  setBulkLoading]  = useState<"status"|"preview"|"import"|null>(null);
+  const [bulkError,    setBulkError]    = useState<string|null>(null);
+  const [bulkShowList, setBulkShowList] = useState(false);
   const [erpDealers,     setErpDealers]     = useState<DealerOption[]>([]);
   const [erpLoading,     setErpLoading]     = useState(false);
   const [dealerForm, setDealerForm] = useState({
@@ -378,6 +388,36 @@ export default function AdminUsersPage() {
     iso ? new Date(iso).toLocaleDateString("en-IN",
       { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
+  // ── Bulk import handlers ──────────────────────────────────────────────────
+  const loadBulkStatus = async () => {
+    setBulkLoading("status"); setBulkError(null);
+    try { setBulkStatus(await getBulkImportStatus(instance)); }
+    catch (e) { setBulkError(e instanceof Error ? e.message : "Failed."); }
+    finally { setBulkLoading(null); }
+  };
+  const loadBulkPreview = async () => {
+    setBulkLoading("preview"); setBulkError(null);
+    try { setBulkPreview(await bulkPreviewDealers(instance)); setBulkResult(null); }
+    catch (e) { setBulkError(e instanceof Error ? e.message : "Failed."); }
+    finally { setBulkLoading(null); }
+  };
+  const runBulkImport = async () => {
+    if (!window.confirm(`Import ${bulkPreview?.toCreate ?? "?"} dealers with default password Dealer@123?`)) return;
+    setBulkLoading("import"); setBulkError(null);
+    try {
+      const r = await bulkImportDealers(instance);
+      setBulkResult(r); setBulkPreview(null);
+      const [fresh, status] = await Promise.all([
+        fetchDealerUsers(instance).catch(() => dealers),
+        getBulkImportStatus(instance).catch(() => null),
+      ]);
+      setDealers(fresh);
+      if (status) setBulkStatus(status);
+    }
+    catch (e) { setBulkError(e instanceof Error ? e.message : "Failed."); }
+    finally { setBulkLoading(null); }
+  };
+
   return (
     <div className="admin-users-page">
       <div className="admin-users-head">
@@ -475,6 +515,202 @@ export default function AdminUsersPage() {
         <div className="admin-act-section">
           {dealerError   && <div className="admin-error">{dealerError}</div>}
           {dealerSuccess && <div className="admin-success">{dealerSuccess}</div>}
+
+          {/* ══ BULK IMPORT FROM BAPLFINAL ══════════════════════════════════ */}
+          <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,
+            padding:"20px 24px",marginBottom:20 }}>
+
+            {/* Header row */}
+            <div style={{ display:"flex",alignItems:"flex-start",justifyContent:"space-between",
+              marginBottom:16,flexWrap:"wrap",gap:10 }}>
+              <div>
+                <h3 style={{ margin:0,fontSize:15,fontWeight:700,color:"#0a2540" }}>
+                  🏪 Bulk Import Dealer Logins from ERP
+                </h3>
+                <p style={{ margin:"4px 0 0",fontSize:12,color:"#6b7280" }}>
+                  Fetches all active dealers from BaplFinal <code>C_CustomerMaster</code> and
+                  creates portal logins. Default password:{" "}
+                  <code style={{ background:"#f1f5f9",padding:"1px 5px",borderRadius:3 }}>Dealer@123</code>
+                </p>
+              </div>
+              <button onClick={loadBulkStatus} disabled={!!bulkLoading}
+                style={{ background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:7,
+                  padding:"7px 16px",fontSize:12,fontWeight:600,cursor:bulkLoading?"not-allowed":"pointer",
+                  color:"#374151",whiteSpace:"nowrap" }}>
+                {bulkLoading==="status" ? "Loading…" : "↻ Check Status"}
+              </button>
+            </div>
+
+            {/* Status bar */}
+            {bulkStatus && (
+              <div style={{ display:"flex",gap:12,marginBottom:16,flexWrap:"wrap" }}>
+                {[
+                  { label:"Total in ERP",    value:bulkStatus.totalDealersInBapl, c:"#0a2540" },
+                  { label:"Logins Created",  value:bulkStatus.loginsCreated,      c:"#16a34a" },
+                  { label:"Active Logins",   value:bulkStatus.activeLogins,       c:"#2563eb" },
+                  { label:"Pending Import",  value:bulkStatus.pendingImport,
+                    c:bulkStatus.pendingImport > 0 ? "#f59e0b" : "#16a34a" },
+                ].map(({ label, value, c }) => (
+                  <div key={label} style={{ background:"#f8fafc",border:"1px solid #e2e8f0",
+                    borderRadius:8,padding:"10px 18px",textAlign:"center",minWidth:120 }}>
+                    <div style={{ fontSize:22,fontWeight:800,color:c }}>{value}</div>
+                    <div style={{ fontSize:10,color:"#6b7280",textTransform:"uppercase",
+                      letterSpacing:"0.04em",marginTop:2 }}>{label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Error */}
+            {bulkError && (
+              <div style={{ background:"#fef2f2",border:"1px solid #fecaca",borderRadius:7,
+                padding:"10px 14px",fontSize:12,color:"#991b1b",marginBottom:12 }}>
+                ⚠ {bulkError}
+              </div>
+            )}
+
+            {/* Action buttons */}
+            {!bulkResult && (
+              <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
+                <button onClick={loadBulkPreview} disabled={!!bulkLoading}
+                  style={{ background:"#1e3a5f",color:"#fff",border:"none",borderRadius:8,
+                    padding:"10px 20px",fontSize:13,fontWeight:600,cursor:bulkLoading?"not-allowed":"pointer",
+                    opacity:bulkLoading?0.7:1 }}>
+                  {bulkLoading === "preview" ? "Loading…" : "🔍 Preview Import"}
+                </button>
+                {bulkPreview && bulkPreview.toCreate > 0 && (
+                  <button onClick={runBulkImport} disabled={!!bulkLoading}
+                    style={{ background:"#16a34a",color:"#fff",border:"none",borderRadius:8,
+                      padding:"10px 20px",fontSize:13,fontWeight:700,cursor:bulkLoading?"not-allowed":"pointer",
+                      opacity:bulkLoading?0.7:1 }}>
+                    {bulkLoading === "import"
+                      ? `Importing ${bulkPreview.toCreate} dealers…`
+                      : `✓ Import ${bulkPreview.toCreate} Dealers`}
+                  </button>
+                )}
+                {bulkPreview && bulkPreview.toCreate === 0 && (
+                  <div style={{ fontSize:13,color:"#16a34a",fontWeight:600,
+                    background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:8,
+                    padding:"10px 16px" }}>
+                    ✓ All ERP dealers already have logins
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Preview table */}
+            {bulkPreview && !bulkResult && bulkPreview.toCreate > 0 && (
+              <div style={{ marginTop:14 }}>
+                <div style={{ display:"flex",alignItems:"center",gap:12,marginBottom:10 }}>
+                  <span style={{ fontSize:13,fontWeight:600,color:"#0a2540" }}>
+                    <strong>{bulkPreview.toCreate}</strong> to create ·{" "}
+                    <span style={{ color:"#6b7280" }}>{bulkPreview.alreadyImported} already imported</span>
+                  </span>
+                  <button onClick={() => setBulkShowList(v => !v)}
+                    style={{ background:"none",border:"1px solid #e2e8f0",borderRadius:6,
+                      padding:"3px 10px",fontSize:11,cursor:"pointer",color:"#2563eb" }}>
+                    {bulkShowList ? "▲ Hide list" : "▼ Show list"}
+                  </button>
+                </div>
+                {bulkShowList && (
+                  <div style={{ maxHeight:280,overflowY:"auto",border:"1px solid #e2e8f0",
+                    borderRadius:8,fontSize:11 }}>
+                    <table style={{ width:"100%",borderCollapse:"collapse" }}>
+                      <thead>
+                        <tr style={{ background:"#0a2540",position:"sticky",top:0 }}>
+                          {["Code","Dealer Name","City","State","Proposed Email","Real Email?"]
+                            .map(h => (
+                              <th key={h} style={{ padding:"6px 8px",textAlign:"left",
+                                color:"#e2e8f0",fontSize:10,fontWeight:700 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {bulkPreview.dealers.map((d, i) => (
+                          <tr key={d.customerCode}
+                            style={{ background:i%2===0?"#f8fafc":"#fff",
+                              borderBottom:"1px solid #f1f5f9" }}>
+                            <td style={{ padding:"4px 8px",fontFamily:"monospace",fontSize:10,
+                              color:"#374151" }}>{d.customerCode}</td>
+                            <td style={{ padding:"4px 8px",fontWeight:600,color:"#0a2540" }}>
+                              {d.customerName}
+                            </td>
+                            <td style={{ padding:"4px 8px",color:"#475569" }}>{d.city}</td>
+                            <td style={{ padding:"4px 8px" }}>
+                              <span style={{ background:"#eff6ff",color:"#1e40af",
+                                padding:"1px 6px",borderRadius:3,fontSize:9,fontWeight:700 }}>
+                                {d.state}
+                              </span>
+                            </td>
+                            <td style={{ padding:"4px 8px",color:"#374151",fontSize:10 }}>
+                              {d.proposedEmail}
+                            </td>
+                            <td style={{ padding:"4px 8px",textAlign:"center" }}>
+                              {d.hasRealEmail
+                                ? <span style={{ color:"#16a34a",fontWeight:700 }}>✓</span>
+                                : <span style={{ color:"#f59e0b",fontSize:10 }}>fallback</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p style={{ fontSize:11,color:"#6b7280",margin:"8px 0 0" }}>
+                  ℹ <strong>Real Email</strong> = dealer has a valid email in ERP.
+                  Fallback = mobile or dealer code <code>@dealer.bgauss.local</code>
+                </p>
+              </div>
+            )}
+
+            {/* Import result */}
+            {bulkResult && (
+              <div style={{ marginTop:14,background:"#f0fdf4",border:"1px solid #bbf7d0",
+                borderRadius:8,padding:"16px 20px" }}>
+                <div style={{ fontWeight:700,fontSize:14,color:"#166534",marginBottom:10 }}>
+                  ✓ Import Complete
+                </div>
+                <div style={{ display:"flex",gap:24,flexWrap:"wrap",marginBottom:12 }}>
+                  <span style={{ fontSize:13 }}>
+                    <strong style={{ color:"#166534" }}>{bulkResult.created}</strong> created
+                  </span>
+                  <span style={{ fontSize:13,color:"#6b7280" }}>
+                    <strong>{bulkResult.skipped}</strong> already existed
+                  </span>
+                  {bulkResult.failed > 0 && (
+                    <span style={{ fontSize:13,color:"#dc2626" }}>
+                      <strong>{bulkResult.failed}</strong> failed
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize:12,color:"#374151",marginBottom:10 }}>
+                  Default password for all new accounts:{" "}
+                  <code style={{ background:"#dcfce7",padding:"2px 8px",borderRadius:4,
+                    fontWeight:700,fontSize:13 }}>{bulkResult.defaultPassword}</code>
+                  <span style={{ fontSize:11,color:"#6b7280",marginLeft:10 }}>
+                    (share securely with dealers — they can change it from their dashboard)
+                  </span>
+                </div>
+                {bulkResult.errors.length > 0 && (
+                  <details style={{ fontSize:11,color:"#dc2626" }}>
+                    <summary style={{ cursor:"pointer",fontWeight:600 }}>
+                      {bulkResult.errors.length} error(s) — click to expand
+                    </summary>
+                    <ul style={{ margin:"6px 0 0",paddingLeft:18 }}>
+                      {bulkResult.errors.map((e, i) => <li key={i}>{e}</li>)}
+                    </ul>
+                  </details>
+                )}
+                <button onClick={() => { setBulkResult(null); setBulkPreview(null); loadBulkStatus(); }}
+                  style={{ marginTop:14,background:"#1e3a5f",color:"#fff",border:"none",
+                    borderRadius:7,padding:"8px 18px",fontSize:12,fontWeight:600,cursor:"pointer" }}>
+                  ↩ Import More / Refresh
+                </button>
+              </div>
+            )}
+          </div>
+          {/* ══ END BULK IMPORT ════════════════════════════════════════════ */}
+
           <div className="admin-dealer-toolbar">
             <button className="admin-save-btn" onClick={() => setShowDealerForm((v) => !v)}>
               {showDealerForm ? "✕ Cancel" : "+ Create Dealer Login"}

@@ -52,6 +52,7 @@ export interface ProposalResponse {
   tsmName:                string;   // TSM (Territory Sales Manager)
   commandoName:           string | null; // Sales Commando (DesignationId=26)
   month:                  string;
+  year:                   string;   // ← NEW
   eligibility:            string;
   remarks:                string | null;
   totalBudget:            number;

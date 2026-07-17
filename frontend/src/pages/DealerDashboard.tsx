@@ -134,7 +134,7 @@ export default function DealerDashboard({ onLogout }: DealerDashboardProps) {
       });
       setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
       setSelected(updated); setShowSendBack(false); setSendBackNote("");
-      showToast("Budget add-on request sent to Mayank Maheshwari. You will be contacted shortly.",true);
+      showToast("Budget add-on request sent. You will be contacted shortly.",true);
     } catch(err) {
       showToast(err instanceof Error?err.message:"Failed to send request.",false);
     } finally { setSendBackLoading(false); }
@@ -601,7 +601,7 @@ export default function DealerDashboard({ onLogout }: DealerDashboardProps) {
                     {sentBackNote(selected)}
                   </p>
                   <p style={{ margin:"4px 0 0",color:"#92400e",fontSize:11 }}>
-                    Sent from: <strong>{dealerEmail}</strong> · Mayank Maheshwari has been notified.
+                    Sent from: <strong>{dealerEmail}</strong>
                   </p>
                 </div>
               )}
@@ -664,7 +664,7 @@ export default function DealerDashboard({ onLogout }: DealerDashboardProps) {
                             padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,
                             cursor:sendBackLoading||!sendBackNote.trim()?"not-allowed":"pointer",
                             opacity:sendBackLoading||!sendBackNote.trim()?0.6:1 }}>
-                          {sendBackLoading?"Sending…":"📩 Send Request to Mayank"}
+                          {sendBackLoading?"Sending…":"📩 Send Request"}
                         </button>
                         <button onClick={()=>{setShowSendBack(false);setSendBackNote("");}}
                           style={{ background:"#f1f5f9",color:"#374151",

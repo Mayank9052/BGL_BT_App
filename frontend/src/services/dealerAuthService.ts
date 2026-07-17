@@ -2,6 +2,49 @@
 import { IPublicClientApplication } from "@azure/msal-browser";
 import { apiRequest, API_BASE_URL } from "../authConfig";
 
+// ── Token helper for Azure AD (Admin calls) ───────────────────────────────────
+async function getAzureToken(instance: IPublicClientApplication): Promise<string> {
+  const account = instance.getActiveAccount() ?? instance.getAllAccounts()[0];
+  if (!account) throw new Error("No active account.");
+  const result = await instance.acquireTokenSilent({ ...apiRequest, account });
+  return result.accessToken;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BULK IMPORT TYPES
+// ─────────────────────────────────────────────────────────────────────────────
+export interface BulkPreviewDealer {
+  customerCode:  string;
+  customerName:  string;
+  city:          string;
+  state:         string;
+  mobile:        string;
+  contactPerson: string;
+  proposedEmail: string;
+  hasRealEmail:  boolean;
+}
+export interface BulkPreviewResult {
+  totalInBapl:     number;
+  alreadyImported: number;
+  toCreate:        number;
+  dealers:         BulkPreviewDealer[];
+}
+export interface BulkImportResult {
+  message:         string;
+  created:         number;
+  skipped:         number;
+  failed:          number;
+  defaultPassword: string;
+  errors:          string[];
+  dealers:         { customerCode: string; customerName: string; city: string; state: string; email: string }[];
+}
+export interface BulkStatusResult {
+  totalDealersInBapl: number;
+  loginsCreated:      number;
+  activeLogins:       number;
+  pendingImport:      number;
+}
+
 export interface DealerLoginResponse {
   token:       string;
   userId:      number;
@@ -42,6 +85,44 @@ export async function dealerLogin(email: string, password: string): Promise<Deal
   localStorage.setItem(DEALER_TOKEN_KEY, data.token);
   localStorage.setItem(DEALER_USER_KEY, JSON.stringify(data));
   return data;
+}
+
+/** Preview what would be imported — no writes */
+export async function bulkPreviewDealers(
+  instance: IPublicClientApplication,
+): Promise<BulkPreviewResult> {
+  const token = await getAzureToken(instance);
+  const res = await fetch(`${API_BASE_URL}/api/dealer-auth/bulk-preview`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
+  return res.json();
+}
+
+/** Run the actual import — creates User records with Dealer@123 */
+export async function bulkImportDealers(
+  instance: IPublicClientApplication,
+): Promise<BulkImportResult> {
+  const token = await getAzureToken(instance);
+  const res = await fetch(`${API_BASE_URL}/api/dealer-auth/bulk-import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
+  return res.json();
+}
+
+/** Get current import status (how many imported vs total in BaplFinal) */
+export async function getBulkImportStatus(
+  instance: IPublicClientApplication,
+): Promise<BulkStatusResult> {
+  const token = await getAzureToken(instance);
+  const res = await fetch(`${API_BASE_URL}/api/dealer-auth/bulk-status`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
+  return res.json();
 }
 
 export function getDealerToken(): string | null {
@@ -156,4 +237,22 @@ export async function toggleDealerActive(
     throw new Error(text || `Failed to toggle dealer status (${res.status})`);
   }
   return res.json();
+}
+
+/** Dealer changes their own password from the profile page */
+export async function changeMyPassword(
+  currentPassword: string,
+  newPassword:     string,
+): Promise<void> {
+  const token = getDealerToken();
+  if (!token) throw new Error("Not signed in as a dealer.");
+  const res = await fetch(`${API_BASE_URL}/api/dealer-auth/change-password`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Failed (${res.status})`);
+  }
 }

@@ -48,7 +48,7 @@ const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
 const isoDate = (d: Date) => d.toISOString().split("T")[0];
 const TODAY_ISO = isoDate(new Date());
 const DEFAULT_END_ISO = isoDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
-// ← CHANGED Point 3: no backdating to ANY past date (was Jan 1 of current year)
+// ← no backdating to ANY past date (was Jan 1 of current year)
 const MIN_ACTIVITY_DATE = TODAY_ISO;
 
 interface ActivityRow {
@@ -103,8 +103,7 @@ const emptyActivity = (): ActivityRow => ({
   id: crypto.randomUUID(), activityType: "", category: "", categoryLocked: false,
   subcategory: "", qty: "1", _maxQty: 5, leadTarget: "", salesPercent: "",
   retailTarget: "", retailLocked: false,
-  // startDate: "", endDate: "",                          // ← OLD (blank by default) — kept for reference, do not delete
-  startDate: TODAY_ISO, endDate: DEFAULT_END_ISO,          // ← NEW: auto Start=today, End=today+7 days
+  startDate: TODAY_ISO, endDate: DEFAULT_END_ISO,          // ← auto Start=today, End=today+7 days
   budget: "", additionalBudget: "0",
   bgaussShare: "100", remarks: "", mediaFiles: [],
 });
@@ -136,9 +135,9 @@ function validateActivities(rows: ActivityRow[]): ActivityErrors {
     if (!a.startDate)                                   rowErr.startDate    = "Required";
     if (!a.endDate)                                     rowErr.endDate      = "Required";
     if (a.startDate && a.endDate && a.endDate < a.startDate) rowErr.endDate = "End must be after start";
-    // ── NEW: block dates from last year or earlier (RSM cannot backdate into a previous year) ──
-    if (!rowErr.startDate && a.startDate < MIN_ACTIVITY_DATE) rowErr.startDate = "Cannot select a date from last year.";
-    if (!rowErr.endDate   && a.endDate   < MIN_ACTIVITY_DATE) rowErr.endDate   = "Cannot select a date from last year.";
+    // ── block dates before today (RSM cannot backdate) ──
+    if (!rowErr.startDate && a.startDate < MIN_ACTIVITY_DATE) rowErr.startDate = "Cannot select a date in the past.";
+    if (!rowErr.endDate   && a.endDate   < MIN_ACTIVITY_DATE) rowErr.endDate   = "Cannot select a date in the past.";
     if (!a.budget || num(a.budget) <= 0)               rowErr.budget       = "Required";
     if (Object.keys(rowErr).length) e[a.id] = rowErr;
   });
@@ -153,6 +152,17 @@ export default function RSMProposalForm() {
   const navigate       = useNavigate();
   const [searchParams] = useSearchParams();
   const account        = accounts[0];
+
+  // ── Dealer user detection ─────────────────────────────────────────────────
+  // When a dealer logs in (DealerJwt), their info is stored in localStorage.
+  // isDealerUser=true → lock the Dealer dropdown to their own dealership.
+  const dealerUser = (() => {
+    try {
+      const raw = localStorage.getItem("bgauss_dealer_user");
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  })();
+  const isDealerUser = !!(dealerUser?.role === "Dealer");
   const xlsxRef        = useRef<HTMLInputElement>(null);
 
   const editId   = searchParams.get("edit");
@@ -179,7 +189,6 @@ export default function RSMProposalForm() {
   const [states,        setStates]        = useState<StateOption[]>([]);
   const [cities,        setCities]        = useState<CityOption[]>([]);
   const [loadingCities, setLoadingCities] = useState(false);
-  // const [locationError, setLocationError] = useState<string | null>(null);
   const [stateLoadError, setStateLoadError] = useState<string | null>(null);
   const [cityLoadError,  setCityLoadError]  = useState<string | null>(null);
   const [dealers,        setDealers]        = useState<DealerOption[]>([]);
@@ -212,6 +221,21 @@ export default function RSMProposalForm() {
     setLoadingDealers(true);
     fetchDealers(instance).then(setDealers).catch(() => setDealerError("Could not load dealer list.")).finally(() => setLoadingDealers(false));
   }, [instance]);
+
+  // ── Auto-select dealer for dealer-logged-in users once the list is ready ──
+  useEffect(() => {
+    if (!isDealerUser || !dealers.length || header.dealerId) return;
+    const code = (dealerUser?.dealerCode as string | undefined);
+    const name = (dealerUser?.dealerName as string | undefined)?.toLowerCase().trim();
+    if (code) {
+      handleDealerSelect(code);
+    } else if (name) {
+      const match = dealers.find((d) => d.customerName.toLowerCase().trim() === name);
+      if (match) handleDealerSelect(match.customerCode);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDealerUser, dealers]);
+
   useEffect(() => {
     setLoadingVendors(true);
     fetchVendors(instance).then(setVendors).catch(() => {}).finally(() => setLoadingVendors(false));
@@ -236,7 +260,7 @@ export default function RSMProposalForm() {
           vendorName: p.vendorName ?? "", state: titleCase(p.state), stateId: null,
           location: titleCase(p.location), type: p.type, rsmName: titleCase(p.rsmName),
           tsmName:      titleCase(p.tsmName ?? p.commandoName ?? ""),
-          commandoName: p.commandoName ?? "", month: p.month, year: String(CURRENT_YEAR), // ← year defaults to current year (backend has no Year field yet)
+          commandoName: p.commandoName ?? "", month: p.month, year: String(CURRENT_YEAR), // backend has no Year field yet
           eligibility: p.eligibility, remarks: p.remarks ?? "",
         });
         setActivities(p.activities.map((a) => ({
@@ -264,20 +288,8 @@ export default function RSMProposalForm() {
     const totalRetailTarget = activities.reduce((s, a) => s + num(a.retailTarget), 0);
     const totalBgauss        = activities.reduce((s, a) => s + bgaussAmount(a.budget, a.additionalBudget, a.bgaussShare), 0);
     const totalAdditional    = activities.reduce((s, a) => s + num(a.additionalBudget), 0);
-    // CAC/CPL are BGauss-share-adjusted
     const cac = totalRetailTarget > 0 ? totalBgauss / totalRetailTarget : 0;
     const cpl = totalLeadTarget   > 0 ? totalBgauss / totalLeadTarget   : 0;
-    // When Special Approval budget is present, CAC limit is NOT blocking
-    // ── Special Approval (additionalBudget) and the 4000/6000 CAC limit ──────
-    // The eligibility.baseCacPerVehicle limit (4000 for Old dealers, 6000 for New —
-    // set in the backend's GetCacLimitAsync) is the NORMAL rule and still applies
-    // in full when NO Special Approval budget is entered (hasSpecialApproval=false):
-    // exceeding it BLOCKS submission (see goToSummary/handleSubmit below — unchanged).
-    // Once a Special Approval budget is added, the 4000/6000 limit is intentionally
-    // NOT used to block anymore — it only shows as an advisory warning, because
-    // Special Approval budget is, by definition, a deviation that needs manual
-    // approval rather than an automatic block. This is intentional, existing
-    // behavior — do not remove it.
     const hasSpecialApproval = totalAdditional > 0;
     return { totalBudget, totalLeadTarget, totalRetailTarget, totalBgauss, cac, cpl, hasSpecialApproval, totalAdditional };
   }, [activities]);
@@ -290,14 +302,13 @@ export default function RSMProposalForm() {
     }
     if (cac > eligibility.baseCacPerVehicle) {
       if (hasSpecialApproval) {
-        // Special Approval budget present — show advisory warning but DO NOT block
         setCacWarning(
           `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds ` +
           `₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle — ` +
           `Special Approval budget applied (₹${totals.totalAdditional.toLocaleString("en-IN")}). ` +
           `Proposal will be submitted for deviation approval.`
         );
-        setCacBlocking(false);  // Special Approval overrides block
+        setCacBlocking(false);
       } else {
         setCacWarning(
           `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ` +
@@ -320,23 +331,15 @@ export default function RSMProposalForm() {
 
   const handleDealerSelect = (customerCode: string) => {
     const dealer = dealers.find((d) => d.customerCode === customerCode);
-    // ── Reset ALL auto-filled fields first so old dealer's data never persists ──
     setShowDealerPanel(false); setDealerHistory([]); setEligibility(null);
     setCacWarning(null); setCacBlocking(false); setUsedActivityTypes([]);
     setEligibilityLoading(false);
-    // Reset header to blank state before applying new dealer data
     setHeader(emptyHeader());
     setCities([]);
     setDealerAutoFilled(false);
 
     if (dealer) {
       setDealerAutoFilled(true);
-      // ── TEMPORARY: look up RSM / TSM / Sales Commando from the static CSV
-      // team-mapping first (findDealerTeam), matched by customer code, then by
-      // dealer name. This is a stopgap because the dealer master API doesn't
-      // reliably return these 3 fields for every dealer yet. Falls back to the
-      // original ERP fields below (dealer.rsmName/tsmName/commandoName) if the
-      // dealer isn't found in the CSV. Remove once the backend is fixed.
       const csvTeam = findDealerTeam(dealer.customerCode, dealer.customerName);
       setHeader((h) => ({
         ...h,
@@ -351,9 +354,9 @@ export default function RSMProposalForm() {
         rsmName:       titleCase(csvTeam?.rsm || dealer.rsmName || dealer.rsmCode || ""),
         tsmName:       titleCase(csvTeam?.tsm || dealer.tsmName || dealer.tsmCode || ""),
         commandoName:  titleCase(csvTeam?.commando || dealer.commandoName || ""),
-        month:         h.month || CURRENT_MONTH,   // preserve month selection
-        year:          h.year || String(CURRENT_YEAR), // preserve year selection
-        vendorId:      h.vendorId,                 // preserve vendor selection
+        month:         h.month || CURRENT_MONTH,
+        year:          h.year || String(CURRENT_YEAR),
+        vendorId:      h.vendorId,
         vendorName:    h.vendorName,
       }));
       setFieldErrors((e) => { const n = { ...e }; delete n.dealerName; delete n.rsmName; return n; });
@@ -473,7 +476,6 @@ export default function RSMProposalForm() {
     const errs = validateActivities(activities);
     if (Object.keys(errs).length) { setActivityErrors(errs); setShowActErr(true); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
     setActivityErrors({}); setShowActErr(false);
-    // ── BLOCK: CAC exceeds allowed limit ─────────────────────────────────────
     if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
       setCacWarning(
         `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ` +
@@ -570,11 +572,7 @@ export default function RSMProposalForm() {
 
   const downloadTemplate = () => {
     const wb = XLSX.utils.book_new();
-
-    // ── Main Activities sheet ───────────────────────────────────────────────
     const actNames  = activityGroups.map((g) => g.activityName);
-    const bgOpts    = ["100", "70", "50"];
-
     const header = [
       "Activity Name", "Subcategory", "QTY", "Category (auto)",
       "Lead Target", "Sales %", "Retail Target",
@@ -587,7 +585,6 @@ export default function RSMProposalForm() {
       "dd-MM-yyyy", "dd-MM-yyyy",
       "₹ amount", "₹ additional budget (Special Approval — bypasses CAC limit)", "100 or 70 or 50", "Optional notes",
     ];
-    // Add one example row per activity group
     const exampleRow = activityGroups[0]
       ? [
           activityGroups[0].activityName,
@@ -609,16 +606,8 @@ export default function RSMProposalForm() {
       {wch:14},{wch:14},{wch:12},{wch:20},{wch:14},{wch:25},
     ];
 
-    // ── Data Validation (dropdowns) using sheetData hack ─────────────────
-    // Column A = Activity Name (col 0), starts row 3 (index 2)
-    // Column B = Subcategory, Column C = QTY, Column L = BGauss Share
-
-    // XLSX.js doesn't natively write validation, but we can write a helper sheet
-    // with valid values and document it clearly in the hint row (already done above)
-
     XLSX.utils.book_append_sheet(wb, ws, "Activities");
 
-    // ── Valid Values reference sheet ─────────────────────────────────────
     const refRows: (string | number)[][] = [
       ["=== Valid Activity Names ==="],
       ...actNames.map((n) => [n]),
@@ -633,7 +622,6 @@ export default function RSMProposalForm() {
     wsRef["!cols"] = [{wch:40}];
     XLSX.utils.book_append_sheet(wb, wsRef, "Valid Values");
 
-    // ── Per-activity subcategory reference sheet ──────────────────────────
     const subRows: string[][] = [["Activity Name", "Subcategory", "Max QTY"]];
     for (const g of activityGroups) {
       for (const s of (g.subcategories ?? [])) {
@@ -648,7 +636,6 @@ export default function RSMProposalForm() {
   };
 
   const handleSubmit = async () => {
-    // Double-check CAC before final submit
     if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
       setCacBlocking(true);
       setCacWarning(`CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle. Cannot submit.`);
@@ -662,7 +649,7 @@ export default function RSMProposalForm() {
       const activityPayload = activities.map((a) => ({
         activityType: a.activityType, category: a.category || null,
         subcategory: a.subcategory || null, qty: num(a.qty) || 1,
-        salesPercent: a.salesPercent.trim() ? parseFloat(a.salesPercent) : null,  // ← NEW
+        salesPercent: a.salesPercent.trim() ? parseFloat(a.salesPercent) : null,
         leadTarget: num(a.leadTarget), retailTarget: num(a.retailTarget),
         startDate: a.startDate, endDate: a.endDate,
         budget: num(a.budget), additionalBudget: num(a.additionalBudget),
@@ -675,7 +662,7 @@ export default function RSMProposalForm() {
         dealerName: header.dealerName, dealerCode: header.dealerId || null,
         vendorId: header.vendorId ? Number(header.vendorId) : null, vendorName: header.vendorName || null,
         rsmName: header.rsmName, tsmName: header.tsmName, commandoName: header.commandoName || null,
-        month: header.month, year: header.year, eligibility: header.eligibility, remarks: header.remarks, // ← year added (backend can ignore until it has a Year column)
+        month: header.month, year: header.year, eligibility: header.eligibility, remarks: header.remarks,
         submittedBy: account?.username ?? null, docNumber: generateDocNumber(),
         activities: activityPayload,
         totalBudget, totalLeadTarget: Math.round(totalLeadTarget),
@@ -697,7 +684,6 @@ export default function RSMProposalForm() {
     ...dealers.filter((d) => d.rsmName || d.rsmCode).map((d) => { const val = d.rsmName ?? d.rsmCode!; return [titleCase(val), { value: val, label: titleCase(val) }] as [string, { value: string; label: string }]; }),
     ...dealers.filter((d) => d.tsmName || d.tsmCode).map((d) => { const val = d.tsmName ?? d.tsmCode!; return [titleCase(val), { value: val, label: titleCase(val) }] as [string, { value: string; label: string }]; }),
   ]).values()).sort((a, b) => a.label.localeCompare(b.label));
-  // TSM options built from tsmName/tsmCode
   const tsmOptions = Array.from(new Map(
     dealers.filter((d) => d.tsmName || d.tsmCode).map((d) => {
       const val = d.tsmName ?? d.tsmCode!;
@@ -705,7 +691,6 @@ export default function RSMProposalForm() {
     })
   ).values()).sort((a, b) => a.label.localeCompare(b.label));
 
-  // Commando options built from dealer.commandoName (DesignationId=26 in ERP)
   const commandoOptions = Array.from(new Map(
     dealers.filter((d) => d.commandoName).map((d) => {
       const val = d.commandoName!;
@@ -745,7 +730,6 @@ export default function RSMProposalForm() {
     );
   }
 
-  // ── CAC warning component — red when blocking, yellow when advisory ─────
   const CacWarningBanner = ({ style }: { style?: React.CSSProperties }) => {
     if (!cacWarning) return null;
     return (
@@ -797,10 +781,29 @@ export default function RSMProposalForm() {
             <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(4,1fr)" }}>
               <div className="rsm-field">
                 <Label text="Dealer" required/>
-                {dealerError && <span className="rsm-field-error">{dealerError}</span>}
+                {dealerError && !isDealerUser && (
+                  <span className="rsm-field-error">{dealerError}</span>
+                )}
                 <div className="rsm-dealer-input-wrap">
                   <div style={{ flex:1, minWidth:0 }}>
-                    {editMode ? (
+                    {isDealerUser ? (
+                      // Dealer user: locked to their own dealership — cannot select another
+                      <div>
+                        <LockedField value={
+                          header.dealerName
+                            ? `${header.dealerName}${header.state ? " · " + header.state : ""}`
+                            : loadingDealers ? "Loading your dealer…" : "—"
+                        }/>
+                        {!header.dealerName && !loadingDealers && (
+                          <span style={{ fontSize:11,color:"#f59e0b",marginTop:3,display:"block" }}>
+                            ⚠ Your dealer account is not linked. Contact admin.
+                          </span>
+                        )}
+                        <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>
+                          🔒 Proposals can only be submitted for your own dealership
+                        </span>
+                      </div>
+                    ) : editMode ? (
                       <input className={`rsm-select${fieldErrors.dealerName?" rsm-input--error":""}`}
                         value={header.dealerName} onChange={(e) => setField("dealerName", e.target.value)} placeholder="Dealer name"/>
                     ) : (
@@ -811,11 +814,14 @@ export default function RSMProposalForm() {
                       </div>
                     )}
                   </div>
-                  {!editMode && header.dealerId && (
-                    <button className="rsm-info-btn" title="View dealer details" onClick={() => setShowDealerPanel((v) => !v)}>ⓘ</button>
+                  {!editMode && !isDealerUser && header.dealerId && (
+                    <button className="rsm-info-btn" title="View dealer details"
+                      onClick={() => setShowDealerPanel((v) => !v)}>ⓘ</button>
                   )}
                 </div>
-                {fieldErrors.dealerName && <span className="rsm-field-error">{fieldErrors.dealerName}</span>}
+                {fieldErrors.dealerName && (
+                  <span className="rsm-field-error">{fieldErrors.dealerName}</span>
+                )}
               </div>
 
               <div className="rsm-field">
@@ -833,7 +839,7 @@ export default function RSMProposalForm() {
                 {fieldErrors.month && <span className="rsm-field-error">{fieldErrors.month}</span>}
               </div>
 
-              {/* NEW: Year — auto-selects the current year */}
+              {/* Year — auto-selects the current year */}
               <div className="rsm-field">
                 <Label text="Year" required/>
                 <select className={`rsm-select${fieldErrors.year?" rsm-input--error":""}`}
@@ -843,7 +849,6 @@ export default function RSMProposalForm() {
                 {fieldErrors.year && <span className="rsm-field-error">{fieldErrors.year}</span>}
               </div>
             </div>
-
 
             {/* Row 2 — State, City, Dealer Type, Eligibility */}
             <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(4,1fr)", marginTop:0 }}>
@@ -864,7 +869,6 @@ export default function RSMProposalForm() {
                   </select>
                 )}
                 {fieldErrors.state && <span className="rsm-field-error">{fieldErrors.state}</span>}
-                {/* NEW: only show the state-load error when NOT auto-filled by a dealer */}
                 {!dealerAutoFilled && stateLoadError && <span className="rsm-field-error">{stateLoadError}</span>}
               </div>
 
@@ -923,8 +927,6 @@ export default function RSMProposalForm() {
                 <div className="rsm-dealer-contacts">
                   {selectedDealer.contactPerson && <span className="rsm-dealer-contact">👤 {titleCase(selectedDealer.contactPerson)}</span>}
                   {selectedDealer.mobile        && <span className="rsm-dealer-contact">📞 {selectedDealer.mobile}</span>}
-                  {/* {selectedDealer.rsmName       && <span className="rsm-dealer-contact">👔 RSM: {titleCase(selectedDealer.rsmName)}</span>}
-                  {selectedDealer.tsmName       && <span className="rsm-dealer-contact">🧑‍💼 TSM: {titleCase(selectedDealer.tsmName)}</span>} */}
                   {!selectedDealer.rsmName && !selectedDealer.tsmName && (
                     <span className="rsm-dealer-contact" style={{ color:"#9ca3af" }}>No RSM/TSM assigned in ERP</span>
                   )}
@@ -1001,7 +1003,6 @@ export default function RSMProposalForm() {
                   </span>
                 )}
               </div>
-              {/* TSM Name field */}
               <div className="rsm-field">
                 <Label text="TSM Name"/>
                 {dealerAutoFilled && !editMode ? (
@@ -1022,7 +1023,6 @@ export default function RSMProposalForm() {
                   </span>
                 )}
               </div>
-              {/* Commando Name field */}
               <div className="rsm-field">
                 <Label text="Commando Name"/>
                 {dealerAutoFilled && !editMode ? (
@@ -1116,14 +1116,14 @@ export default function RSMProposalForm() {
                     <th className="rsm-th" style={{ width:160 }}>Subcategory <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:62 }}>QTY</th>
                     <th className="rsm-th" style={{ width:82 }}>Lead Target <span style={{ color:"#f87171" }}>*</span></th>
-                    <th className="rsm-th" style={{ width:78 }}>Sales %<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
+                    <th className="rsm-th" style={{ width:78 }}>Sales %</th>
                     <th className="rsm-th" style={{ width:82 }}>Retail Target <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:120 }}>Start Date <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:120 }}>End Date <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th rsm-th--right" style={{ width:100 }}>Budget (₹) <span style={{ color:"#f87171" }}>*</span></th>
-                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>Special Approval<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
-                    <th className="rsm-th" style={{ width:90 }}>BGauss%<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
-                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>BGauss Amt<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}></div></th>
+                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>Special Approval</th>
+                    <th className="rsm-th" style={{ width:90 }}>BGauss%</th>
+                    <th className="rsm-th rsm-th--right" style={{ width:100 }}>BGauss Amt</th>
                     <th className="rsm-th rsm-th--right" style={{ width:90 }}>Total (₹)</th>
                     <th className="rsm-th" style={{ width:110 }}>Remarks</th>
                     {/* <th className="rsm-th" style={{ width:80 }}>Files</th> */}
@@ -1215,7 +1215,6 @@ export default function RSMProposalForm() {
                           {rowErr?.retailTarget && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.retailTarget}</span>}
                         </td>
                         <td className="rsm-td">
-                          {/* lang="en-GB" makes Chromium/Edge date pickers display dd-mm-yyyy instead of the US mm-dd-yyyy default */}
                           <input type="date" lang="en-GB" className={`rsm-input-sm${rowErr?.startDate?" rsm-input-sm--error":""}`}
                             style={{ width:112 }} value={a.startDate} min={MIN_ACTIVITY_DATE}
                             onChange={(e) => setActivity(a.id,"startDate",e.target.value)}/>
@@ -1355,7 +1354,7 @@ export default function RSMProposalForm() {
                     <th className="rsm-th rsm-th--right">BGauss%</th>
                     <th className="rsm-th rsm-th--right">BGauss Amt</th>
                     <th className="rsm-th rsm-th--right">Total</th>
-                    {/* <th className="rsm-th">Files</th> */}
+                    <th className="rsm-th">Files</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1385,7 +1384,7 @@ export default function RSMProposalForm() {
                         ₹{inr(bgaussAmount(a.budget,a.additionalBudget,a.bgaussShare))}
                       </td>
                       <td className="rsm-td rsm-td--total">₹{inr(num(a.budget)+num(a.additionalBudget))}</td>
-                      {/* <td className="rsm-td">{a.mediaFiles.length>0?`${a.mediaFiles.length} file(s)`:"—"}</td> */}
+                      <td className="rsm-td">{a.mediaFiles.length>0?`${a.mediaFiles.length} file(s)`:"—"}</td>
                     </tr>
                   ))}
                 </tbody>

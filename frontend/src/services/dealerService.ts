@@ -12,18 +12,21 @@ export interface DealerOption {
   contactPerson: string | null;
   rsmCode:       string | null;
   rsmName:       string | null;
+  rsmMobile:     string | null;
   tsmCode:       string | null;
   tsmName:       string | null;
   commandoCode:  string | null;  // Sales Commando (DesignationId=26)
   commandoName:  string | null;
+  tsmMobile:     string | null;
 }
 
 export interface CommandoOption {
-  code:     string;
-  name:     string;
-  mobile:   string | null;
-  location: string | null;
-  zone:     string | null;
+  code:         string;
+  name:         string;
+  mobile:       string | null;
+  location:     string | null;
+  zone:         string | null;
+  headEmployee: string | null;  // RSM EmployeeCode this commando reports to
 }
 
 export interface DealerEligibility {
