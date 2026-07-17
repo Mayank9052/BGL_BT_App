@@ -44,6 +44,8 @@ const MONTHS      = ["January","February","March","April","May","June","July","A
 const ELIGIBILITY = ["Eligible","Not Eligible","Pending Approval"];
 const LOC_TYPES   = ["Old","New"];
 const BGAUSS_OPTS = ["100","70","50"];
+const CURRENT_YEAR = new Date().getFullYear();
+const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
 
 const safeBgaussShare = (v: number | null | undefined): string => {
   if (v == null || v === 0) return "100";
@@ -154,7 +156,7 @@ interface EditActivity {
 }
 interface EditableProposal {
   dealerName:string; location:string; state:string; type:string;
-  rsmName:string; tsmName:string; commandoName:string; month:string;
+  rsmName:string; tsmName:string; commandoName:string; month:string; year:string;
   eligibility:string; remarks:string; vendorId:string; vendorName:string;
   activities:EditActivity[]; checkerRemarks:string;
 }
@@ -181,6 +183,7 @@ function toEditable(p: ProposalResponse): EditableProposal {
   return {
     dealerName:p.dealerName, location:p.location, state:p.state, type:p.type,
     rsmName:p.rsmName, tsmName:(p as any).tsmName??"", commandoName:p.commandoName??"", month:p.month,
+    year:(p as any).year??String(CURRENT_YEAR),
     eligibility:p.eligibility, remarks:p.remarks??"",
     vendorId:String(p.vendorId??""), vendorName:p.vendorName??"", checkerRemarks:"",
     activities:p.activities.map((a)=>({
@@ -486,7 +489,7 @@ export default function ApproverDashboard() {
         dealerName:editData.dealerName,location:editData.location,state:editData.state,
         type:editData.type,rsmName:editData.rsmName,tsmName:editData.tsmName||"",
         commandoName:editData.commandoName||null,checkerRemarks:editData.checkerRemarks||"",
-        month:editData.month,eligibility:editData.eligibility,remarks:editData.remarks,
+        month:editData.month,year:editData.year,eligibility:editData.eligibility,remarks:editData.remarks,
         vendorId:editData.vendorId?Number(editData.vendorId):null,vendorName:editData.vendorName||null,
         activities:editData.activities.map((a)=>({
           activityType:a.activityType,category:a.category||null,
@@ -828,6 +831,7 @@ export default function ApproverDashboard() {
                 {([{key:"rsmName",label:"RSM Name",edit:"text"},{key:"tsmName",label:"TSM Name",edit:"text"},
                   {key:"commandoName",label:"Commando",edit:"text"},{key:"type",label:"Dealer Type",edit:"select",opts:LOC_TYPES},
                   {key:"eligibility",label:"Eligibility",edit:"select",opts:ELIGIBILITY},{key:"month",label:"Month",edit:"select",opts:MONTHS},
+                  {key:"year",label:"Year",edit:"select",opts:YEARS},
                   {key:"dealerName",label:"Dealer Name",edit:"text"},{key:"location",label:"City",edit:"text"},{key:"state",label:"State",edit:"text"},
                 ] as {key:string;label:string;edit:string;opts?:string[]}[]).map(({key,label,edit,opts})=>(
                   <div key={key} style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,padding:"10px 12px" }}>
