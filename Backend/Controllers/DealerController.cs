@@ -184,31 +184,37 @@ public class DealerController : ControllerBase
         return Ok(results);
     }
 
-    // ── GET /api/dealers/eligibility/{customerCode} ───────────────────────────
-    // Returns eligibility based on 3-month average retail sales from BaplFinal
+    // ── CHANGE in GetEligibility endpoint ────────────────────────────────────
+    // Find:
+    //   bool isNew = monthsActive < 6;
+    // Replace with:
+    //   bool isNew = monthsActive < 4; // ← CHANGED: new dealer = onboarded < 4 months ago
+
+    // ── CHANGE in GetStateCounts endpoint ────────────────────────────────────
+    // Find:
+    //   var isNew = months < 6;
+    // Replace with:
+    //   var isNew = months < 4; // ← CHANGED: new dealer = onboarded < 4 months ago
+
+    // Full corrected GetEligibility method (only changed lines highlighted):
     [HttpGet("eligibility/{customerCode}")]
     public async Task<IActionResult> GetEligibility(string customerCode)
     {
         if (string.IsNullOrWhiteSpace(_baplConn))
             return StatusCode(503, new { message = "Dealer service is not configured." });
 
-        // Query last 3 months retail sales from H_VehicleSalesMaster (or equivalent)
-        // BaplFinal table: check H_SalesMaster / H_RetailMaster for actual retail units
-        // Using the most common BaplFinal pattern for retail data
         const string salesSql = """
             SELECT
                 c.CustomerCode,
                 c.CustomerName,
                 st.StateName AS State,
-                -- Check if dealer is new (active < 6 months)
                 DATEDIFF(MONTH, c.CreatedDate, GETDATE()) AS MonthsActive,
-                -- 3-month retail average
                 ISNULL((
                     SELECT COUNT(*)
                     FROM [dbo].[H_VehicleSalesMaster] v
                     WHERE v.CustomerCode = c.CustomerCode
-                      AND v.SaleType = 'Retail'
-                      AND v.TransDate >= DATEADD(MONTH, -3, GETDATE())
+                    AND v.SaleType = 'Retail'
+                    AND v.TransDate >= DATEADD(MONTH, -3, GETDATE())
                 ), 0) AS RetailLast3Months
             FROM [dbo].[C_CustomerMaster] c
             LEFT JOIN [dbo].[C_StateMaster] st ON st.Id = c.StateId
@@ -230,7 +236,8 @@ public class DealerController : ControllerBase
             var monthsActive = rdr["MonthsActive"] == DBNull.Value ? 12 : Convert.ToInt32(rdr["MonthsActive"]);
             var state        = rdr["State"]?.ToString() ?? "";
             var monthlyAvg   = retailLast3M / 3.0;
-            bool isNew       = monthsActive < 6;
+            // ← CHANGED Point #2: new dealer = onboarded within last 4 months (was 6)
+            bool isNew       = monthsActive < 4;
             bool isEligible  = isNew || monthlyAvg >= 10;
             int  cacLimit    = isNew ? 6000 : 4000;
             string dealerType = isNew ? "New" : (monthlyAvg >= 25 ? "Old" : "New");
@@ -262,7 +269,7 @@ public class DealerController : ControllerBase
         }
     }
 
-    // ── GET /api/dealers/state-counts ─────────────────────────────────────────
+
     [HttpGet("state-counts")]
     public async Task<IActionResult> GetStateCounts()
     {
@@ -276,7 +283,7 @@ public class DealerController : ControllerBase
                 ISNULL((
                     SELECT COUNT(*) FROM [dbo].[H_VehicleSalesMaster] v
                     WHERE v.CustomerCode = c.CustomerCode AND v.SaleType = 'Retail'
-                      AND v.TransDate >= DATEADD(MONTH, -3, GETDATE())
+                    AND v.TransDate >= DATEADD(MONTH, -3, GETDATE())
                 ), 0) AS RetailLast3Months
             FROM [dbo].[C_CustomerMaster] c
             LEFT JOIN [dbo].[C_StateMaster] st ON st.Id = c.StateId
@@ -296,7 +303,8 @@ public class DealerController : ControllerBase
                 var r3M    = Convert.ToInt32(rdr["RetailLast3Months"]);
                 var months = Convert.ToInt32(rdr["MonthsActive"]);
                 var avg    = r3M / 3.0;
-                var isNew  = months < 6;
+                // ← CHANGED Point #2: new dealer = onboarded within last 4 months (was 6)
+                var isNew  = months < 4;
                 if (!stateCounts.ContainsKey(state)) stateCounts[state] = (0, 0, 0);
                 var (o, n, x) = stateCounts[state];
                 if (isNew)          stateCounts[state] = (o, n + 1, x);

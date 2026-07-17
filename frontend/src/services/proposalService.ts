@@ -9,6 +9,11 @@ export interface ActivityMediaResponse {
   fileUrl:  string;
   fileName: string;
   fileType: string;
+  // ── NEW: GPS + capture time ──
+  capturedAt?: string | null;
+  latitude?:   number | null;
+  longitude?:  number | null;
+  locationAccuracyMeters?: number | null;
 }
 
 export interface ActivityResponse {
@@ -403,10 +408,35 @@ export async function fetchMyDealerProposals(): Promise<ProposalResponse[]> {
   return res.json();
 }
 
+// export async function addActivityMedia(
+//   proposalId: string,
+//   activityId: string,
+//   media: { fileUrl: string; fileName: string; fileType: string },
+//   instance: IPublicClientApplication,
+// ): Promise<ActivityMediaResponse> {
+//   const token = await getAccessToken(instance);
+//   const res = await fetch(
+//     `${API_BASE_URL}/api/proposals/${proposalId}/activities/${activityId}/media`,
+//     {
+//       method: "POST",
+//       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+//       body: JSON.stringify(media),
+//     },
+//   );
+//   if (!res.ok) {
+//     const text = await res.text().catch(() => "");
+//     throw new Error(text || `Failed to attach media (${res.status})`);
+//   }
+//   return res.json();
+// }
+
 export async function addActivityMedia(
   proposalId: string,
   activityId: string,
-  media: { fileUrl: string; fileName: string; fileType: string },
+  media: {
+    fileUrl: string; fileName: string; fileType: string;
+    capturedAt?: string; latitude?: number; longitude?: number; locationAccuracyMeters?: number;
+  },
   instance: IPublicClientApplication,
 ): Promise<ActivityMediaResponse> {
   const token = await getAccessToken(instance);

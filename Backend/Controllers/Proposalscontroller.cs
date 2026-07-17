@@ -18,7 +18,7 @@ public class ProposalsController : ControllerBase
     private readonly BaplDbContext _bapl;
     private readonly IEmailService _emailService;
     private readonly ILogger<ProposalsController> _logger;
-    private readonly IServiceScopeFactory _scopeFactory;   // add this field
+    private readonly IServiceScopeFactory _scopeFactory;
 
     private string GraphToken() =>
         Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
@@ -28,13 +28,13 @@ public class ProposalsController : ControllerBase
         BaplDbContext bapl,
         IEmailService emailService,
         ILogger<ProposalsController> logger,
-        IServiceScopeFactory scopeFactory)                  // add this parameter
+        IServiceScopeFactory scopeFactory)
     {
         _db           = db;
         _bapl         = bapl;
         _emailService = emailService;
         _logger       = logger;
-        _scopeFactory = scopeFactory;                        // add this line
+        _scopeFactory = scopeFactory;
     }
 
     // ── POST /api/proposals ───────────────────────────────────────────────────
@@ -58,16 +58,8 @@ public class ProposalsController : ControllerBase
                            $"{string.Join(", ", duplicateTypes)}"
             });
 
-        foreach (var a in dto.Activities)
-        {
-            var s = ParseDate(a.StartDate);
-            var e = ParseDate(a.EndDate);
-            if (s.HasValue && e.HasValue && e.Value < s.Value)
-                return BadRequest(new
-                {
-                    message = $"Activity '{a.ActivityType}': End date cannot be before start date."
-                });
-        }
+        var (datesOk, dateError) = ValidateActivityDates(dto.Activities);
+        if (!datesOk) return BadRequest(new { message = dateError });
 
         var submittedBy = CurrentUserEmail();
         var submitter = await _db.Users
@@ -78,9 +70,9 @@ public class ProposalsController : ControllerBase
         {
             ActivityType     = a.ActivityType,
             Category         = a.Category,
-            Subcategory      = a.Subcategory,                          // ← FIXED
-            Qty              = a.Qty > 0 ? a.Qty : 1,                 // ← FIXED
-            SalesPercent     = a.SalesPercent,                         // ← NEW
+            Subcategory      = a.Subcategory,
+            Qty              = a.Qty > 0 ? a.Qty : 1,
+            SalesPercent     = a.SalesPercent,
             LeadTarget       = a.LeadTarget,
             RetailTarget     = a.RetailTarget,
             StartDate        = ParseDate(a.StartDate),
@@ -117,7 +109,7 @@ public class ProposalsController : ControllerBase
             VendorId               = dto.VendorId,
             VendorName             = dto.VendorName,
             RsmName                = dto.RsmName,
-            TsmName              = dto.TsmName,
+            TsmName                = dto.TsmName,
             CommandoName           = dto.CommandoName,
             Month                  = dto.Month,
             Eligibility            = dto.Eligibility,
@@ -138,8 +130,7 @@ public class ProposalsController : ControllerBase
 
         _db.Proposals.Add(proposal);
         await _db.SaveChangesAsync();
-        // Fire-and-forget AI review — uses its own DI scope since the request's
-        // scoped services (like _db) will be disposed once this action returns.
+
         _ = Task.Run(async () =>
         {
             using var scope = _scopeFactory.CreateScope();
@@ -288,7 +279,16 @@ public class ProposalsController : ControllerBase
 
         if (proposal is null) return NotFound();
 
-        if (proposal.Status is "Approved" or "Rejected")
+        // ── Budget Addition bypass: allow editing an Approved proposal
+        // ONLY when the edit is triggered by the budget-addition flow
+        // (i.e. dto.CheckerRemarks starts with "[Budget Addition Request from Dealer]")
+        // For all other cases, block editing approved/rejected proposals.
+        bool isBudgetAdditionEdit =
+            !string.IsNullOrWhiteSpace(dto.CheckerRemarks) &&
+            dto.CheckerRemarks.StartsWith("[Budget Addition Request from Dealer]",
+                StringComparison.OrdinalIgnoreCase);
+
+        if ((proposal.Status is "Approved" or "Rejected") && !isBudgetAdditionEdit)
             return Conflict(new { message = $"This proposal was already {proposal.Status} and cannot be modified." });
 
         if (dto.Activities is null || dto.Activities.Count == 0)
@@ -308,31 +308,28 @@ public class ProposalsController : ControllerBase
                            $"{string.Join(", ", duplicateTypes)}"
             });
 
-        foreach (var a in dto.Activities)
+        // Skip backdate validation for budget addition edits on Approved proposals
+        if (!isBudgetAdditionEdit)
         {
-            var s = ParseDate(a.StartDate);
-            var e = ParseDate(a.EndDate);
-            if (s.HasValue && e.HasValue && e.Value < s.Value)
-                return BadRequest(new
-                {
-                    message = $"Activity '{a.ActivityType}': End date cannot be before start date."
-                });
+            var (datesOk, dateError) = ValidateActivityDates(dto.Activities);
+            if (!datesOk) return BadRequest(new { message = dateError });
         }
 
         var wasNeedsRevision = proposal.Status == "NeedsRevision";
 
-        proposal.DealerName   = dto.DealerName;
-        proposal.VendorId     = dto.VendorId;
-        proposal.VendorName   = dto.VendorName;
-        proposal.Location     = dto.Location;
-        proposal.State        = dto.State;
-        proposal.Type         = dto.Type;
-        proposal.RsmName      = dto.RsmName;
-        proposal.TsmName      = dto.TsmName;
-        proposal.CommandoName  = dto.CommandoName;
-        proposal.Month        = dto.Month;
-        proposal.Eligibility  = dto.Eligibility;
-        proposal.Remarks      = dto.Remarks;
+        proposal.DealerName     = dto.DealerName;
+        proposal.VendorId       = dto.VendorId;
+        proposal.VendorName     = dto.VendorName;
+        proposal.Location       = dto.Location;
+        proposal.State          = dto.State;
+        proposal.Type           = dto.Type;
+        proposal.RsmName        = dto.RsmName;
+        proposal.TsmName        = dto.TsmName;
+        proposal.CommandoName   = dto.CommandoName;
+        proposal.Month          = dto.Month;
+        proposal.Eligibility    = dto.Eligibility;
+        proposal.Remarks        = dto.Remarks;
+        proposal.CheckerRemarks = dto.CheckerRemarks;  // ← FIX: was missing
 
         await _db.ProposalActivities
             .Where(a => a.ProposalId == id)
@@ -344,9 +341,9 @@ public class ProposalsController : ControllerBase
             ProposalId       = id,
             ActivityType     = a.ActivityType,
             Category         = a.Category,
-            Subcategory      = a.Subcategory,                          // ← FIXED
-            Qty              = a.Qty > 0 ? a.Qty : 1,                 // ← FIXED
-            SalesPercent     = a.SalesPercent,                         // ← NEW
+            Subcategory      = a.Subcategory,
+            Qty              = a.Qty > 0 ? a.Qty : 1,
+            SalesPercent     = a.SalesPercent,
             LeadTarget       = a.LeadTarget,
             RetailTarget     = a.RetailTarget,
             StartDate        = ParseDate(a.StartDate),
@@ -380,15 +377,21 @@ public class ProposalsController : ControllerBase
         proposal.AllowedCac = allowedCac;
         proposal.CacWarning = cacWarning;
 
+        // For budget addition: keep status as Pending so Vijay can re-approve
+        // For NeedsRevision: reset to Pending so RSM's resubmit goes back for review
         if (wasNeedsRevision)
         {
             proposal.Status       = "Pending";
             proposal.ApproverNote = null;
         }
+        else if (isBudgetAdditionEdit)
+        {
+            // Reset to Pending so Vijay sees it in queue
+            proposal.Status = "Pending";
+        }
 
         await _db.SaveChangesAsync();
-        // Fire-and-forget AI review — uses its own DI scope since the request's
-        // scoped services (like _db) will be disposed once this action returns.
+
         _ = Task.Run(async () =>
         {
             using var scope = _scopeFactory.CreateScope();
@@ -413,11 +416,12 @@ public class ProposalsController : ControllerBase
             if (!sent)
                 _logger.LogWarning("Resubmission mail failed for {Id}: {Error}", updated.Id, error);
         }
+        // Budget addition email is sent from ForwardToApprover, not here
 
         return Ok(ToResponse(updated));
     }
 
-    // POST /api/proposals/{id}/dealer-sendback
+    // ── POST /api/proposals/{id}/dealer-sendback ──────────────────────────────
     [HttpPost("{id:guid}/dealer-sendback")]
     [Authorize(AuthenticationSchemes = "DealerJwt")]
     public async Task<ActionResult<ProposalResponseDto>> DealerSendBack(
@@ -442,8 +446,6 @@ public class ProposalsController : ControllerBase
 
         await _db.SaveChangesAsync();
 
-        // Fire-and-forget AI review — uses its own DI scope since the request's
-        // scoped services (like _db) will be disposed once this action returns.
         _ = Task.Run(async () =>
         {
             using var scope = _scopeFactory.CreateScope();
@@ -504,8 +506,7 @@ public class ProposalsController : ControllerBase
         decision.MailSentAt = sent ? DateTimeOffset.UtcNow : null;
         decision.MailError  = error;
         await _db.SaveChangesAsync();
-        // Fire-and-forget AI review — uses its own DI scope since the request's
-        // scoped services (like _db) will be disposed once this action returns.
+
         _ = Task.Run(async () =>
         {
             using var scope = _scopeFactory.CreateScope();
@@ -542,8 +543,7 @@ public class ProposalsController : ControllerBase
         proposal.ApprovedBy   = dto.SentBackBy ?? CurrentUserEmail();
 
         await _db.SaveChangesAsync();
-        // Fire-and-forget AI review — uses its own DI scope since the request's
-        // scoped services (like _db) will be disposed once this action returns.
+
         _ = Task.Run(async () =>
         {
             using var scope = _scopeFactory.CreateScope();
@@ -590,8 +590,7 @@ public class ProposalsController : ControllerBase
         }
 
         await _db.SaveChangesAsync();
-        // Fire-and-forget AI review — uses its own DI scope since the request's
-        // scoped services (like _db) will be disposed once this action returns.
+
         _ = Task.Run(async () =>
         {
             using var scope = _scopeFactory.CreateScope();
@@ -603,6 +602,7 @@ public class ProposalsController : ControllerBase
                 log.LogWarning(ex, "AI review failed for {Id}", proposal.Id);
             }
         });
+
         return Ok(ToResponse(proposal));
     }
 
@@ -618,16 +618,22 @@ public class ProposalsController : ControllerBase
 
         var media = new ActivityMedia
         {
-            ActivityId = activityId,
-            FileUrl    = dto.FileUrl,
-            FileName   = dto.FileName,
-            FileType   = dto.FileType,
+            ActivityId             = activityId,
+            FileUrl                = dto.FileUrl,
+            FileName               = dto.FileName,
+            FileType               = dto.FileType,
+            CapturedAt             = dto.CapturedAt ?? DateTimeOffset.UtcNow,
+            Latitude               = dto.Latitude,
+            Longitude              = dto.Longitude,
+            LocationAccuracyMeters = dto.LocationAccuracyMeters,
         };
 
         _db.ActivityMediaFiles.Add(media);
         await _db.SaveChangesAsync();
 
-        return Ok(new ActivityMediaDto(media.Id, media.FileUrl, media.FileName, media.FileType));
+        return Ok(new ActivityMediaDto(
+            media.Id, media.FileUrl, media.FileName, media.FileType,
+            media.CapturedAt, media.Latitude, media.Longitude, media.LocationAccuracyMeters));
     }
 
     // ── DELETE /api/proposals/{id}/activities/{activityId}/media/{mediaId} ───
@@ -714,8 +720,7 @@ public class ProposalsController : ControllerBase
         proposal.CheckedByEmail = CurrentUserEmail();
         proposal.CheckedAt      = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync();
-        // Fire-and-forget AI review — uses its own DI scope since the request's
-        // scoped services (like _db) will be disposed once this action returns.
+
         _ = Task.Run(async () =>
         {
             using var scope = _scopeFactory.CreateScope();
@@ -728,9 +733,37 @@ public class ProposalsController : ControllerBase
             }
         });
 
-        var (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, GraphToken());
-        if (!sent)
-            _logger.LogWarning("Checker-forward mail failed for {Id}: {Error}", proposal.Id, error);
+        // ── BUDGET ADDITION re-approval: if dealer sent a budget request,
+        // send the dedicated budget addition email (amber) instead of the
+        // regular checker-forward email (navy), so Vijay knows it's a
+        // budget re-approval, not a fresh proposal.
+        if (proposal.DealerSentBack && _emailService is GraphEmailService graphSvc)
+        {
+            try
+            {
+                var dto     = ToResponse(proposal);
+                var amounts = proposal.Activities.ToDictionary(
+                    a => a.Id.ToString(),
+                    a => a.AdditionalBudget);
+
+                await graphSvc.SendBudgetAdditionEmailAsync(
+                    dto,
+                    proposal.CheckedByEmail ?? "Manager",
+                    amounts,
+                    proposal.CheckerRemarks);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Budget addition email failed for {Id}", proposal.Id);
+            }
+        }
+        else
+        {
+            // Regular forward — existing flow unchanged
+            var (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, GraphToken());
+            if (!sent)
+                _logger.LogWarning("Checker-forward mail failed for {Id}: {Error}", proposal.Id, error);
+        }
 
         return Ok(ToResponse(proposal));
     }
@@ -754,8 +787,7 @@ public class ProposalsController : ControllerBase
         proposal.DealerEmail    = dto.DealerEmail;
         proposal.DealerNotified = true;
         await _db.SaveChangesAsync();
-        // Fire-and-forget AI review — uses its own DI scope since the request's
-        // scoped services (like _db) will be disposed once this action returns.
+
         _ = Task.Run(async () =>
         {
             using var scope = _scopeFactory.CreateScope();
@@ -777,7 +809,9 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(proposal));
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
+    // HELPERS
+    // ─────────────────────────────────────────────────────────────────────────
     private string CurrentUserEmail() =>
         User.FindFirstValue("preferred_username")
         ?? User.FindFirstValue(ClaimTypes.Upn)
@@ -791,12 +825,36 @@ public class ProposalsController : ControllerBase
     private static DateOnly? ParseDate(string? value) =>
         DateOnly.TryParse(value, out var date) ? date : null;
 
+    private static (bool Ok, string? Error) ValidateActivityDates(
+        List<ActivityDto> activities)
+    {
+        var todayIst = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(5).AddMinutes(30));
+
+        for (int i = 0; i < activities.Count; i++)
+        {
+            var a    = activities[i];
+            var name = string.IsNullOrWhiteSpace(a.ActivityType) ? $"Activity #{i + 1}" : a.ActivityType;
+            var start = ParseDate(a.StartDate);
+            var end   = ParseDate(a.EndDate);
+
+            if (start.HasValue && end.HasValue && end.Value < start.Value)
+                return (false, $"'{name}': end date cannot be before start date.");
+
+            if (start.HasValue && start.Value < todayIst)
+                return (false,
+                    $"'{name}': start date ({start.Value:dd-MMM-yyyy}) is in the past. " +
+                    $"Activities must start from today ({todayIst:dd-MMM-yyyy}) or later.");
+        }
+
+        return (true, null);
+    }
+
     private async Task<(int AllowedCac, string? Warning)>
     GetCacLimitAsync(string dealerName, decimal actualCac)
     {
         try
         {
-            var cutoff = DateTime.UtcNow.AddMonths(-3).Date;
+            var cutoff = DateTime.UtcNow.AddMonths(-4).Date;
 
             var dealer = await _bapl.DealerMasters
                 .AsNoTracking()
@@ -824,7 +882,7 @@ public class ProposalsController : ControllerBase
                     dealer.CustomerCode, cutoff)
                 .ToListAsync();
 
-            double avg        = (double)rows.Sum(r => r.RetailCount) / 3.0;
+            double avg        = (double)rows.Sum(r => r.RetailCount) / 4.0;
             int    allowedCac = isNew ? 6000 : 4000;
 
             string? warning = actualCac > allowedCac
@@ -842,7 +900,7 @@ public class ProposalsController : ControllerBase
         }
     }
 
-    // ── ToResponse — maps model → DTO, including Subcategory/Qty/SalesPercent ─
+    // ── ToResponse — FIX CS7036: added CheckerRemarks before Activities ───────
     private static ProposalResponseDto ToResponse(Proposal p) => new(
         p.Id, p.State, p.Location, p.Type, p.DealerName,
         p.VendorId, p.VendorName, p.RsmName, p.TsmName, p.CommandoName,
@@ -854,16 +912,19 @@ public class ProposalsController : ControllerBase
         p.TokenNumber, p.AllowedCac, p.CacWarning,
         p.CheckedByEmail, p.CheckedAt, p.DealerNotified, p.DealerEmail,
         p.DealerSendBackNote, p.DealerSentBack, p.DealerSentBackAt,
+        p.CheckerRemarks,                              // ← FIX: was missing → CS7036
         p.Activities.Select(a => new ActivityResponseDto(
             a.Id, a.ActivityType, a.Category,
-            a.Subcategory, a.Qty, a.SalesPercent,    // ← Subcategory + Qty + SalesPercent
+            a.Subcategory, a.Qty, a.SalesPercent,
             a.LeadTarget, a.RetailTarget,
             a.StartDate, a.EndDate,
             a.Budget, a.AdditionalBudget, a.BGaussShare,
             a.VendorId, a.Remarks,
             a.ActualStartDate, a.ActualEndDate,
             a.MediaFileUrl, a.MediaFileName, a.MediaFileType,
-            a.MediaFiles.Select(m => new ActivityMediaDto(m.Id, m.FileUrl, m.FileName, m.FileType)).ToList()
+            a.MediaFiles.Select(m => new ActivityMediaDto(
+                m.Id, m.FileUrl, m.FileName, m.FileType,
+                m.CapturedAt, m.Latitude, m.Longitude, m.LocationAccuracyMeters)).ToList()
         )).ToList()
     );
 }
