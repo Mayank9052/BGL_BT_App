@@ -112,6 +112,7 @@ public class ProposalsController : ControllerBase
             TsmName                = dto.TsmName,
             CommandoName           = dto.CommandoName,
             Month                  = dto.Month,
+            Year                   = dto.Year,
             Eligibility            = dto.Eligibility,
             Remarks                = dto.Remarks,
             TotalBudget            = totalBudget,
@@ -327,6 +328,7 @@ public class ProposalsController : ControllerBase
         proposal.TsmName        = dto.TsmName;
         proposal.CommandoName   = dto.CommandoName;
         proposal.Month          = dto.Month;
+        proposal.Year           = dto.Year;
         proposal.Eligibility    = dto.Eligibility;
         proposal.Remarks        = dto.Remarks;
         proposal.CheckerRemarks = dto.CheckerRemarks;  // ← FIX: was missing
@@ -904,7 +906,7 @@ public class ProposalsController : ControllerBase
     private static ProposalResponseDto ToResponse(Proposal p) => new(
         p.Id, p.State, p.Location, p.Type, p.DealerName,
         p.VendorId, p.VendorName, p.RsmName, p.TsmName, p.CommandoName,
-        p.Month, p.Eligibility, p.Remarks,
+        p.Month, p.Year, p.Eligibility, p.Remarks,
         p.TotalBudget, p.TotalLeadTarget, p.TotalRetailTarget,
         p.Cac, p.Cpl,
         p.SubmittedBy, p.CreatedAt, p.SubmittedByDisplayName,

@@ -13,6 +13,7 @@ public record CreateProposalDto
     [JsonPropertyName("tsmName")]      public string  TsmName      { get; init; } = "";
     [JsonPropertyName("commandoName")]  public string? CommandoName { get; init; }
     [JsonPropertyName("month")]        public string  Month        { get; init; } = "";
+    [JsonPropertyName("year")]        public string? Year         { get; init; }
     [JsonPropertyName("eligibility")]  public string  Eligibility  { get; init; } = "";
     [JsonPropertyName("remarks")]      public string? Remarks      { get; init; }
     [JsonPropertyName("submittedBy")]  public string? SubmittedBy  { get; init; }

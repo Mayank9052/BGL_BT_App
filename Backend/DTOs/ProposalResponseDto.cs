@@ -12,6 +12,7 @@ public record ProposalResponseDto(
     string          TsmName,
     string?         CommandoName,
     string          Month,
+    string?         Year,
     string          Eligibility,
     string?         Remarks,
     decimal         TotalBudget,

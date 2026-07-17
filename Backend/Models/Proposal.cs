@@ -18,6 +18,7 @@ public class Proposal
     // NEW: Sales Commando (DesignationId=26 in H_EmployeeMaster)
     [MaxLength(150)]  public string? CommandoName { get; set; }
     [MaxLength(20)]   public string  Month        { get; set; } = string.Empty;
+    [MaxLength(10)]   public string? Year         { get; set; }
     [MaxLength(50)]   public string  Eligibility  { get; set; } = string.Empty;
     [MaxLength(2000)] public string? Remarks      { get; set; }
 
