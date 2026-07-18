@@ -175,9 +175,11 @@ interface ActualEntry {
   actualStartDate:string; actualEndDate:string;
   mediaFile:File|null; mediaFileUrl:string|null;
   mediaFileName:string|null; mediaFileType:string|null;
-  uploading:boolean;       // invoice upload spinner
-  proofUploading:boolean;  // photo proof upload spinner (separate from invoice)
+  uploading:boolean;       // invoice upload spinner (legacy single)
+  proofUploading:boolean;  // photo proof upload spinner
+  invoiceUploading:boolean; // multi-invoice upload spinner
   proofMedia:ProofMedia[];
+  invoiceMedia:ProofMedia[]; // multiple invoices/bills
   dailyEntries:DailyEntry[];
 }
 
@@ -337,9 +339,21 @@ export default function ApproverDashboard() {
         mediaFileName:a.mediaFileName??null, mediaFileType:a.mediaFileType??null,
         uploading:false,
         proofUploading:false,
-        proofMedia:(a.mediaFiles??[]).map((m)=>({
+        invoiceUploading:false,
+        // Load existing invoices from mediaFiles where fileType is pdf or non-image/video
+        invoiceMedia:(a.mediaFiles??[])
+          .filter((m)=>m.fileType?.includes("pdf")||
+            (!m.fileType?.startsWith("image/")&&!m.fileType?.startsWith("video/")))
+          .map((m)=>({
+            id:m.id,fileUrl:m.fileUrl,fileName:m.fileName,fileType:m.fileType,
+            capturedAt:m.capturedAt??new Date().toISOString(),
+            latitude:null, longitude:null,
+          })),
+        proofMedia:(a.mediaFiles??[])
+          .filter((m)=>m.fileType?.startsWith("image/")||m.fileType?.startsWith("video/"))
+          .map((m)=>({
           id:m.id,fileUrl:m.fileUrl,fileName:m.fileName,fileType:m.fileType,
-          capturedAt:m.capturedAt??new Date().toISOString(),  // now typed on ActivityMediaResponse
+          capturedAt:m.capturedAt??new Date().toISOString(),
           latitude:m.latitude??null, longitude:m.longitude??null,
         })),
         dailyEntries:(()=>{
@@ -480,6 +494,35 @@ export default function ApproverDashboard() {
   const removeProof=(activityId:string,id:string)=>
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
       proofMedia:prev[activityId].proofMedia.filter((m)=>m.id!==id)}}));
+
+  // ── Multi-invoice upload ───────────────────────────────────────────────────
+  const handleInvoiceUpload=async(activityId:string,files:FileList)=>{
+    const proposalId=selected?.id;
+    if(!proposalId) return;
+    const fileArray=Array.from(files);
+    setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],invoiceUploading:true}}));
+    try {
+      for(const file of fileArray){
+        const uploaded=await uploadActivityMedia(file,instance);
+        const saved=await addActivityMedia(proposalId,activityId,{
+          fileUrl:uploaded.url,fileName:uploaded.fileName,fileType:uploaded.fileType,
+          capturedAt:new Date().toISOString(),latitude:null,longitude:null,
+        },instance);
+        const inv:ProofMedia={
+          id:saved.id,fileUrl:saved.fileUrl,fileName:saved.fileName,fileType:saved.fileType,
+          capturedAt:saved.capturedAt??new Date().toISOString(),latitude:null,longitude:null,
+        };
+        setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
+          invoiceMedia:[...prev[activityId].invoiceMedia,inv]}}));
+      }
+      showToast(`${fileArray.length} invoice${fileArray.length>1?"s":""} uploaded.`,true);
+    } catch(err){ showToast(err instanceof Error?err.message:"Upload failed.",false); }
+    finally { setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],invoiceUploading:false}})); }
+  };
+
+  const removeInvoice=(activityId:string,id:string)=>
+    setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
+      invoiceMedia:prev[activityId].invoiceMedia.filter((m)=>m.id!==id)}}));
 
   const handleActualMedia=async(activityId:string,file:File)=>{
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:true,mediaFile:file}}));
@@ -1239,57 +1282,65 @@ export default function ApproverDashboard() {
                                     </div>
                                   )}
                                 </div>
-                                {/* Invoice / Bill Upload — single file, saved as mediaFileUrl */}
+                                {/* Invoice / Bill Upload — multiple files */}
                                 <div style={{ marginBottom:20,background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"16px 20px" }}>
-                                  <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
+                                  <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap" }}>
                                     <span style={{ fontSize:13,fontWeight:700,color:"#0a2540" }}>🧾 Invoice / Bill Upload</span>
-                                    <span style={{ fontSize:11,color:"#6b7280" }}>— Upload vendor invoice or activity bill (PDF / image)</span>
-                                  </div>
-                                  {d.mediaFileUrl ? (
-                                    <div style={{ display:"flex",alignItems:"center",gap:10,background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:8,padding:"10px 14px" }}>
-                                      <span style={{ fontSize:20 }}>
-                                        {d.mediaFileType?.includes("pdf")?"📄":d.mediaFileType?.startsWith("image/")?"🖼":"📎"}
-                                      </span>
-                                      <div style={{ flex:1 }}>
-                                        <div style={{ fontSize:12,fontWeight:600,color:"#166534" }}>{d.mediaFileName}</div>
-                                        <div style={{ fontSize:11,color:"#6b7280",marginTop:1 }}>Invoice saved ✓</div>
-                                      </div>
-                                      <a href={d.mediaFileUrl.startsWith("http")?d.mediaFileUrl:`${API_BASE}${d.mediaFileUrl}`}
-                                        target="_blank" rel="noopener noreferrer"
-                                        style={{ fontSize:12,color:"#2563eb",fontWeight:600,textDecoration:"none" }}>
-                                        View ↗
-                                      </a>
-                                      <label style={{ display:"inline-flex",alignItems:"center",gap:5,background:"#f1f5f9",
-                                        border:"1px dashed #d1d5db",borderRadius:6,padding:"4px 10px",cursor:"pointer",
-                                        fontSize:11,color:"#374151",fontWeight:600,whiteSpace:"nowrap" }}>
-                                        {d.uploading?"⏳ Uploading…":"🔄 Replace"}
-                                        <input type="file" accept="application/pdf,image/*" style={{ display:"none" }}
-                                          disabled={d.uploading}
-                                          onChange={(e)=>{ const f=e.target.files?.[0]; if(f) handleActualMedia(a.id,f); e.target.value=""; }}/>
-                                      </label>
-                                    </div>
-                                  ) : (
-                                    <label style={{ display:"flex",alignItems:"center",justifyContent:"center",gap:8,
-                                      border:"2px dashed #e2e8f0",borderRadius:10,padding:"20px 24px",cursor:"pointer",
-                                      background:"#f8fafc",color:"#6b7280",fontSize:13 }}>
-                                      <span style={{ fontSize:28 }}>🧾</span>
-                                      <div>
-                                        <div style={{ fontWeight:600,color:"#374151" }}>
-                                          {d.uploading?"⏳ Uploading invoice…":"Click to upload Invoice / Bill"}
-                                        </div>
-                                        <div style={{ fontSize:11,marginTop:2 }}>PDF or image file</div>
-                                      </div>
-                                      <input type="file" accept="application/pdf,image/*" style={{ display:"none" }}
-                                        disabled={d.uploading}
-                                        onChange={(e)=>{ const f=e.target.files?.[0]; if(f) handleActualMedia(a.id,f); e.target.value=""; }}/>
+                                    <span style={{ fontSize:11,color:"#6b7280" }}>— Upload multiple vendor invoices or bills (PDF / image)</span>
+                                    <label style={{ marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:6,
+                                      background:d.invoiceUploading?"#f1f5f9":"#1e3a5f",
+                                      color:d.invoiceUploading?"#6b7280":"#fff",
+                                      border:d.invoiceUploading?"1px dashed #d1d5db":"none",
+                                      borderRadius:8,padding:"7px 14px",cursor:d.invoiceUploading?"not-allowed":"pointer",
+                                      fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
+                                      {d.invoiceUploading?"⏳ Uploading…":"＋ Add Invoice / Bill"}
+                                      <input type="file" multiple accept="application/pdf,image/*" style={{ display:"none" }}
+                                        disabled={d.invoiceUploading}
+                                        onChange={(e)=>{ if(e.target.files&&e.target.files.length) handleInvoiceUpload(a.id,e.target.files); e.target.value=""; }}/>
                                     </label>
+                                  </div>
+                                  {d.invoiceMedia.length===0?(
+                                    <div style={{ border:"2px dashed #e2e8f0",borderRadius:8,padding:"20px",textAlign:"center",color:"#9ca3af",fontSize:13 }}>
+                                      <div style={{ fontSize:28,marginBottom:6 }}>🧾</div>
+                                      No invoices uploaded yet. Click <strong>Add Invoice / Bill</strong> to upload multiple files.
+                                    </div>
+                                  ):(
+                                    <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+                                      {d.invoiceMedia.map((inv,ii)=>{
+                                        const url=inv.fileUrl.startsWith("http")?inv.fileUrl:`${API_BASE}${inv.fileUrl}`;
+                                        const icon=inv.fileType?.includes("pdf")?"📄":inv.fileType?.startsWith("image/")?"🖼":"📎";
+                                        return (
+                                          <div key={inv.id} style={{ display:"flex",alignItems:"center",gap:10,
+                                            background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:"8px 12px" }}>
+                                            <span style={{ fontSize:20,flexShrink:0 }}>{icon}</span>
+                                            <div style={{ flex:1,minWidth:0 }}>
+                                              <div style={{ fontSize:12,fontWeight:600,color:"#0a2540",
+                                                overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
+                                                #{ii+1} · {inv.fileName}
+                                              </div>
+                                              <div style={{ fontSize:11,color:"#6b7280",marginTop:1 }}>
+                                                {new Date(inv.capturedAt).toLocaleString("en-IN",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})}
+                                              </div>
+                                            </div>
+                                            <a href={url} target="_blank" rel="noopener noreferrer"
+                                              style={{ fontSize:11,color:"#2563eb",fontWeight:600,textDecoration:"none",flexShrink:0 }}>
+                                              View ↗
+                                            </a>
+                                            <button type="button" onClick={()=>removeInvoice(a.id,inv.id)}
+                                              style={{ background:"#fee2e2",border:"none",color:"#991b1b",
+                                                borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,
+                                                cursor:"pointer",flexShrink:0 }}>✕</button>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
                                   )}
                                 </div>
 
                                 {/* Save + Close */}
                                 <div style={{ display:"flex",gap:10,alignItems:"center",paddingTop:8,borderTop:"1px solid #bbf7d0",flexWrap:"wrap" }}>
                                   <button onClick={saveActuals} disabled={actualsLoading} style={{ background:"#16a34a",color:"#fff",border:"none",padding:"10px 24px",borderRadius:8,fontWeight:700,fontSize:13,cursor:actualsLoading?"not-allowed":"pointer",opacity:actualsLoading?0.7:1 }}>{actualsLoading?"Saving…":"💾 Save Actuals"}</button>
-                                  <span style={{ fontSize:12,color:"#6b7280" }}>{d.proofMedia.length} photo{d.proofMedia.length!==1?"s":""} · {d.dailyEntries.length} day{d.dailyEntries.length!==1?"s":""}{d.mediaFileUrl?" · 1 invoice":""}</span>
+                                  <span style={{ fontSize:12,color:"#6b7280" }}>{d.proofMedia.length} photo{d.proofMedia.length!==1?"s":""} · {d.dailyEntries.length} day{d.dailyEntries.length!==1?"s":""}{d.invoiceMedia.length>0?` · ${d.invoiceMedia.length} invoice${d.invoiceMedia.length!==1?"s":""}`:""}</span>
                                   <button onClick={()=>setOpenActualsId(null)} style={{ marginLeft:"auto",background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"10px 18px",borderRadius:8,fontSize:13,cursor:"pointer" }}>Close ▲</button>
                                 </div>
                               </div>
