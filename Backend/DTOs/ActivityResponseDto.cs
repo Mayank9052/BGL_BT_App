@@ -29,5 +29,6 @@ public record ActivityResponseDto(
     [property: JsonPropertyName("mediaFileUrl")]     string?   MediaFileUrl,
     [property: JsonPropertyName("mediaFileName")]    string?   MediaFileName,
     [property: JsonPropertyName("mediaFileType")]    string?   MediaFileType,
-    [property: JsonPropertyName("mediaFiles")]       List<ActivityMediaDto> MediaFiles
+    [property: JsonPropertyName("mediaFiles")]       List<ActivityMediaDto> MediaFiles,
+    [property: JsonPropertyName("dailyData")]  string? DailyData = null
 );

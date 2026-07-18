@@ -7,5 +7,6 @@ public record UpdateActivityActualsDto(
     string? MediaFileUrl,
     string? MediaFileName,
     string? MediaFileType,
-    List<MediaFileDto>? MediaFiles
+    List<MediaFileDto>? MediaFiles,
+    string? DailyData = null  // JSON: [{date, enquiryPlanned, enquiryActual, ...}]
 );

@@ -6,7 +6,7 @@ import { useAuthStore } from "../store/authStore";
 import {
   fetchProposals, fetchMyProposals, decideProposal, updateProposal,
   sendBackProposal, updateProposalActuals, uploadActivityMedia,
-  forwardProposalToApprover, notifyDealer,
+  forwardProposalToApprover, notifyDealer, addActivityMedia,
   type ActivityResponse, type ActivityMediaResponse, type ProposalResponse,
 } from "../services/proposalService";
 import {
@@ -174,7 +174,9 @@ interface DailyEntry {
 interface ActualEntry {
   actualStartDate:string; actualEndDate:string;
   mediaFile:File|null; mediaFileUrl:string|null;
-  mediaFileName:string|null; mediaFileType:string|null; uploading:boolean;
+  mediaFileName:string|null; mediaFileType:string|null;
+  uploading:boolean;       // invoice upload spinner
+  proofUploading:boolean;  // photo proof upload spinner (separate from invoice)
   proofMedia:ProofMedia[];
   dailyEntries:DailyEntry[];
 }
@@ -334,12 +336,23 @@ export default function ApproverDashboard() {
         mediaFile:null, mediaFileUrl:a.mediaFileUrl??null,
         mediaFileName:a.mediaFileName??null, mediaFileType:a.mediaFileType??null,
         uploading:false,
+        proofUploading:false,
         proofMedia:(a.mediaFiles??[]).map((m)=>({
           id:m.id,fileUrl:m.fileUrl,fileName:m.fileName,fileType:m.fileType,
-          capturedAt:(m as any).capturedAt??new Date().toISOString(),
-          latitude:(m as any).latitude??null, longitude:(m as any).longitude??null,
+          capturedAt:m.capturedAt??new Date().toISOString(),  // now typed on ActivityMediaResponse
+          latitude:m.latitude??null, longitude:m.longitude??null,
         })),
-        dailyEntries:buildDailyEntries(a.actualStartDate??a.startDate,a.actualEndDate??a.endDate),
+        dailyEntries:(()=>{
+          // Load saved daily data from server if available, else build blank entries
+          const serverDaily = (a as any).dailyData;
+          if (serverDaily) {
+            try {
+              const parsed = JSON.parse(serverDaily) as DailyEntry[];
+              if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+            } catch {}
+          }
+          return buildDailyEntries(a.actualStartDate??a.startDate,a.actualEndDate??a.endDate);
+        })(),
       };
     });
     setActualsData(init);
@@ -371,20 +384,97 @@ export default function ApproverDashboard() {
 
   // ── Proof upload with GPS ──────────────────────────────────────────────────
   const handleProofUpload=async(activityId:string,files:FileList)=>{
-    setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:true}}));
+    // ── DEBUG CHECKPOINT 1: function called ──────────────────────────────────
+    console.log("[PROOF-UPLOAD] ▶ handleProofUpload called", {
+      activityId,
+      fileCount: files.length,
+      fileNames: Array.from(files).map(f=>f.name),
+      selectedId: selected?.id ?? "NULL — selected is null!",
+    });
+
+    const proposalId = selected?.id;
+    if (!proposalId) {
+      console.error("[PROOF-UPLOAD] ✖ BLOCKED — selected?.id is null. Modal must be open with a proposal.");
+      showToast("Error: No proposal selected. Please close and reopen.", false);
+      return;
+    }
+
+    // ── FIX: Copy FileList → plain Array IMMEDIATELY before any await ──────────
+    // FileList becomes empty after e.target.value="" clears the input.
+    // GPS capture takes 6-8s, by which time the FileList reference is stale.
+    const fileArray = Array.from(files);
+    console.log("[PROOF-UPLOAD] 📋 Copied to array immediately:", fileArray.map(f=>f.name));
+
+    setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],proofUploading:true}}));
+
     try {
-      const geo=await captureGeo(); const capturedAt=new Date().toISOString();
-      for (const file of Array.from(files)){
-        const uploaded=await uploadActivityMedia(file,instance);
-        const proof:ProofMedia={ id:crypto.randomUUID(),fileUrl:uploaded.url,
-          fileName:uploaded.fileName,fileType:uploaded.fileType,capturedAt,
-          latitude:geo?.lat??null,longitude:geo?.lng??null };
+      // ── GPS captured AFTER copying files (so FileList invalidation doesn't matter) ──
+      console.log("[PROOF-UPLOAD] 📍 Capturing GPS…");
+      const geo=await captureGeo();
+      const capturedAt=new Date().toISOString();
+      console.log("[PROOF-UPLOAD] 📍 GPS result:", geo ?? "null (no GPS / denied)");
+
+      for (const file of fileArray){  // ← use fileArray, not Array.from(files)
+        // ── DEBUG CHECKPOINT 3: uploading file to storage ────────────────────
+        console.log("[PROOF-UPLOAD] ⬆ STEP 1 — uploading to /api/media/upload:", file.name, file.type, file.size, "bytes");
+        let uploaded: {url:string; fileName:string; fileType:string};
+        try {
+          uploaded = await uploadActivityMedia(file, instance);
+          console.log("[PROOF-UPLOAD] ✔ STEP 1 done — storage URL:", uploaded.url);
+        } catch(uploadErr) {
+          console.error("[PROOF-UPLOAD] ✖ STEP 1 FAILED — /api/media/upload error:", uploadErr);
+          throw uploadErr;
+        }
+
+        // ── DEBUG CHECKPOINT 4: saving to DB ────────────────────────────────
+        console.log("[PROOF-UPLOAD] 💾 STEP 2 — saving to DB via /api/proposals/.../media", {
+          proposalId, activityId,
+          fileUrl: uploaded.url,
+          capturedAt,
+          latitude: geo?.lat ?? null,
+          longitude: geo?.lng ?? null,
+        });
+        let saved: import("../services/proposalService").ActivityMediaResponse;
+        try {
+          saved = await addActivityMedia(proposalId, activityId, {
+            fileUrl: uploaded.url,
+            fileName: uploaded.fileName,
+            fileType: uploaded.fileType,
+            capturedAt,
+            latitude: geo?.lat ?? null,
+            longitude: geo?.lng ?? null,
+          }, instance);
+          console.log("[PROOF-UPLOAD] ✔ STEP 2 done — saved to DB with id:", saved.id);
+        } catch(dbErr) {
+          console.error("[PROOF-UPLOAD] ✖ STEP 2 FAILED — addActivityMedia DB error:", dbErr);
+          throw dbErr;
+        }
+
+        // ── DEBUG CHECKPOINT 5: adding to UI state ───────────────────────────
+        const proof:ProofMedia={
+          id: saved.id,
+          fileUrl: saved.fileUrl,
+          fileName: saved.fileName,
+          fileType: saved.fileType,
+          capturedAt: saved.capturedAt ?? capturedAt,
+          latitude: saved.latitude ?? geo?.lat ?? null,
+          longitude: saved.longitude ?? geo?.lng ?? null,
+        };
+        console.log("[PROOF-UPLOAD] ✔ STEP 3 — added to UI state:", proof);
         setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
           proofMedia:[...prev[activityId].proofMedia,proof]}}));
       }
-      showToast(geo?"Photo(s) uploaded with GPS 📍":"Photo(s) uploaded (no GPS)",true);
-    } catch(err){ showToast(err instanceof Error?err.message:"Upload failed.",false); }
-    finally { setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:false}})); }
+
+      console.log("[PROOF-UPLOAD] ✅ All files uploaded successfully");
+      showToast(geo?"Photo(s) saved with GPS 📍":"Photo(s) saved (no GPS)",true);
+
+    } catch(err){
+      console.error("[PROOF-UPLOAD] ✖ CAUGHT ERROR:", err);
+      showToast(err instanceof Error ? err.message : "Upload failed.", false);
+    } finally {
+      console.log("[PROOF-UPLOAD] 🔚 finally — resetting proofUploading to false");
+      setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],proofUploading:false}}));
+    }
   };
 
   const removeProof=(activityId:string,id:string)=>
@@ -431,9 +521,15 @@ export default function ApproverDashboard() {
     try {
       const payload=selected.activities.map((a)=>{
         const d=actualsData[a.id];
-        return { activityId:a.id,actualStartDate:d?.actualStartDate||null,
-          actualEndDate:d?.actualEndDate||null,mediaFileUrl:d?.mediaFileUrl??null,
-          mediaFileName:d?.mediaFileName??null,mediaFileType:d?.mediaFileType??null };
+        return {
+          activityId:a.id,
+          actualStartDate:d?.actualStartDate||null,
+          actualEndDate:d?.actualEndDate||null,
+          mediaFileUrl:d?.mediaFileUrl??null,
+          mediaFileName:d?.mediaFileName??null,
+          mediaFileType:d?.mediaFileType??null,
+          dailyData: d?.dailyEntries?.length ? JSON.stringify(d.dailyEntries) : null,
+        };
       });
       const updated=await updateProposalActuals(selected.id,payload,instance);
       setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
@@ -1062,9 +1158,18 @@ export default function ApproverDashboard() {
                                   <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap" }}>
                                     <span style={{ fontSize:13,fontWeight:700,color:"#0a2540" }}>📸 Activity Proof / Photos</span>
                                     <span style={{ fontSize:11,color:"#6b7280" }}>— Grouped by upload time · GPS auto-captured</span>
-                                    <label style={{ marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:6,background:d.uploading?"#f1f5f9":"#16a34a",color:d.uploading?"#6b7280":"#fff",border:d.uploading?"1px dashed #d1d5db":"none",borderRadius:8,padding:"8px 16px",cursor:d.uploading?"not-allowed":"pointer",fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
-                                      {d.uploading?"⏳ Uploading…":"＋ Add Photos / Proof"}
-                                      <input type="file" multiple accept="image/*,video/*,.pdf" style={{ display:"none" }} disabled={d.uploading} onChange={(e)=>{ if(e.target.files&&e.target.files.length) handleProofUpload(a.id,e.target.files); e.target.value=""; }}/>
+                                    <label style={{ marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:6,background:d.proofUploading?"#f1f5f9":"#16a34a",color:d.proofUploading?"#6b7280":"#fff",border:d.proofUploading?"1px dashed #d1d5db":"none",borderRadius:8,padding:"8px 16px",cursor:d.proofUploading?"not-allowed":"pointer",fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
+                                      {d.proofUploading?"⏳ Uploading…":"＋ Add Photos / Proof"}
+                                      <input type="file" multiple accept="image/*,video/*,.pdf" style={{ display:"none" }} disabled={d.proofUploading} onChange={(e)=>{
+                                        console.log("[PROOF-INPUT] onChange fired, files:", e.target.files?.length ?? 0, "activityId:", a.id);
+                                        if(e.target.files&&e.target.files.length) {
+                                          console.log("[PROOF-INPUT] calling handleProofUpload with", e.target.files.length, "files");
+                                          handleProofUpload(a.id,e.target.files);
+                                        } else {
+                                          console.warn("[PROOF-INPUT] no files selected or files is null");
+                                        }
+                                        e.target.value="";
+                                      }}/>
                                     </label>
                                   </div>
                                   {d.proofMedia.length===0?(
@@ -1072,70 +1177,67 @@ export default function ApproverDashboard() {
                                       <div style={{ fontSize:36,marginBottom:8 }}>📷</div>No proof uploaded yet. Click <strong>Add Photos / Proof</strong> to upload multiple files at once.
                                       <div style={{ fontSize:11,color:"#94a3b8",marginTop:4 }}>GPS location + timestamp captured automatically. Photos grouped by upload hour.</div>
                                     </div>
-                                  ):(()=>{
-                                    // Group photos by hour of capturedAt
-                                    const hourGroups: Record<string, typeof d.proofMedia> = {};
-                                    d.proofMedia.forEach((m)=>{
-                                      const dt  = new Date(m.capturedAt);
-                                      const key = dt.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}) +
-                                                  " " + dt.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",hour12:true});
-                                      // Group by date + hour (ignore minutes for hourly bucket)
-                                      const hourKey = dt.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}) +
-                                                      " " + dt.getHours().toString().padStart(2,"0") + ":00";
-                                      if (!hourGroups[hourKey]) hourGroups[hourKey] = [];
-                                      hourGroups[hourKey].push(m);
-                                    });
-                                    return (
-                                      <div style={{ display:"flex",flexDirection:"column",gap:16 }}>
-                                        {Object.entries(hourGroups).map(([hourKey,photos])=>{
-                                          const firstDt = new Date(photos[0].capturedAt);
-                                          const hourLabel = firstDt.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}) +
-                                            " · " + firstDt.toLocaleTimeString("en-IN",{hour:"2-digit",hour12:true}) +
-                                            " batch";
-                                          return (
-                                            <div key={hourKey}>
-                                              {/* Hour group header */}
-                                              <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:8,padding:"6px 10px",background:"#0a2540",borderRadius:6 }}>
-                                                <span style={{ fontSize:12,fontWeight:700,color:"#fff" }}>🕐 {hourLabel}</span>
-                                                <span style={{ marginLeft:"auto",fontSize:11,color:"#94a3b8",background:"rgba(255,255,255,0.1)",padding:"1px 8px",borderRadius:10 }}>
-                                                  {photos.length} file{photos.length!==1?"s":""}
-                                                </span>
-                                                {photos[0].latitude!=null&&photos[0].longitude!=null&&(
-                                                  <a href={mapsUrl(photos[0].latitude!,photos[0].longitude!)}
-                                                    target="_blank" rel="noreferrer"
-                                                    style={{ fontSize:11,color:"#6ee7b7",textDecoration:"none",fontWeight:600 }}>
-                                                    📍 GPS location
+                                  ):(
+                                    // 1-per-line photo list — each photo on its own row
+                                    <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+                                      {d.proofMedia.map((m,pi)=>{
+                                        const url=m.fileUrl.startsWith("http")?m.fileUrl:`${API_BASE}${m.fileUrl}`;
+                                        const uploadTime=new Date(m.capturedAt).toLocaleString("en-IN",{
+                                          day:"2-digit",month:"short",year:"numeric",
+                                          hour:"2-digit",minute:"2-digit",hour12:true
+                                        });
+                                        return (
+                                          <div key={m.id} style={{ display:"flex",alignItems:"center",gap:10,
+                                            background:"#fff",border:"1px solid #bbf7d0",borderRadius:8,
+                                            padding:"8px 12px",boxShadow:"0 1px 3px rgba(0,0,0,0.04)" }}>
+                                            {/* Thumbnail / icon */}
+                                            <div style={{ width:48,height:48,flexShrink:0,borderRadius:6,overflow:"hidden",
+                                              background:"#f0fdf4",border:"1px solid #dcfce7",cursor:"pointer",
+                                              display:"flex",alignItems:"center",justifyContent:"center" }}
+                                              onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})}>
+                                              {isImage(m.fileType)
+                                                ?<img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
+                                                :isVideo(m.fileType)
+                                                ?<video src={url} muted style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
+                                                :<span style={{ fontSize:24 }}>{mediaIcon(m.fileType)}</span>}
+                                            </div>
+                                            {/* Info */}
+                                            <div style={{ flex:1,minWidth:0 }}>
+                                              <div style={{ fontSize:12,fontWeight:600,color:"#0a2540",
+                                                overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
+                                                #{pi+1} · {m.fileName}
+                                              </div>
+                                              <div style={{ fontSize:11,color:"#6b7280",marginTop:2 }}>
+                                                🕐 {uploadTime}
+                                                {m.latitude!=null&&m.longitude!=null&&(
+                                                  <a href={mapsUrl(m.latitude!,m.longitude!)} target="_blank"
+                                                    rel="noreferrer" onClick={(e)=>e.stopPropagation()}
+                                                    style={{ marginLeft:8,color:"#16a34a",textDecoration:"none",fontWeight:600,fontSize:11 }}>
+                                                    📍 GPS
                                                   </a>
                                                 )}
-                                              </div>
-                                              {/* Photo grid for this hour */}
-                                              <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:8 }}>
-                                                {photos.map((m,pi)=>{
-                                                  const url=m.fileUrl.startsWith("http")?m.fileUrl:`${API_BASE}${m.fileUrl}`;
-                                                  return (
-                                                    <div key={m.id} style={{ background:"#fff",border:"1px solid #bbf7d0",borderRadius:8,overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.06)" }}>
-                                                      <div style={{ height:100,background:"#f0fdf4",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",overflow:"hidden",position:"relative" }} onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})}>
-                                                        {isImage(m.fileType)?<img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>:isVideo(m.fileType)?<video src={url} muted style={{ width:"100%",height:"100%",objectFit:"cover" }}/>:<span style={{ fontSize:40 }}>{mediaIcon(m.fileType)}</span>}
-                                                        <span style={{ position:"absolute",top:4,left:4,background:"rgba(0,0,0,0.55)",color:"#fff",fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3 }}>#{pi+1}</span>
-                                                      </div>
-                                                      <div style={{ padding:"6px 8px" }}>
-                                                        <div style={{ fontSize:10,fontWeight:600,color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:3 }}>{m.fileName}</div>
-                                                        <div style={{ fontSize:9,color:"#6b7280",marginBottom:2 }}>🕐 {new Date(m.capturedAt).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:true})}</div>
-                                                        {m.latitude!=null&&m.longitude!=null?
-                                                          <a href={mapsUrl(m.latitude!,m.longitude!)} target="_blank" rel="noreferrer" onClick={(e)=>e.stopPropagation()} style={{ fontSize:9,color:"#16a34a",textDecoration:"none",fontWeight:600 }}>📍 Maps</a>
-                                                          :<span style={{ fontSize:9,color:"#9ca3af" }}>📍 No GPS</span>}
-                                                        <button type="button" onClick={()=>removeProof(a.id,m.id)} style={{ marginTop:4,background:"#fee2e2",border:"none",color:"#991b1b",borderRadius:4,padding:"2px 6px",fontSize:9,cursor:"pointer",width:"100%",fontWeight:600 }}>✕ Remove</button>
-                                                      </div>
-                                                    </div>
-                                                  );
-                                                })}
+                                                {(m.latitude==null||m.longitude==null)&&
+                                                  <span style={{ marginLeft:8,color:"#9ca3af",fontSize:10 }}>No GPS</span>}
                                               </div>
                                             </div>
-                                          );
-                                        })}
-                                      </div>
-                                    );
-                                  })()}
+                                            {/* Actions */}
+                                            <div style={{ display:"flex",alignItems:"center",gap:8,flexShrink:0 }}>
+                                              <button type="button" onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})}
+                                                style={{ background:"#eff6ff",border:"1px solid #bfdbfe",color:"#1e40af",
+                                                  borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer" }}>
+                                                View ↗
+                                              </button>
+                                              <button type="button" onClick={()=>removeProof(a.id,m.id)}
+                                                style={{ background:"#fee2e2",border:"none",color:"#991b1b",
+                                                  borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer" }}>
+                                                ✕
+                                              </button>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
                                 </div>
                                 {/* Invoice / Bill Upload — single file, saved as mediaFileUrl */}
                                 <div style={{ marginBottom:20,background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"16px 20px" }}>

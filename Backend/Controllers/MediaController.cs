@@ -5,7 +5,7 @@ namespace BGL_BT_App.Backend.Controllers;
 
 [ApiController]
 [Route("api/media")]
-[Authorize]
+[Authorize(AuthenticationSchemes = "AzureAD,DealerJwt")]  // ← accept both admin and dealer tokens
 public class MediaController : ControllerBase
 {
     private readonly IWebHostEnvironment _env;

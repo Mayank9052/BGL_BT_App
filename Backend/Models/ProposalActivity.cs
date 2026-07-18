@@ -41,5 +41,7 @@ public class ProposalActivity
     [MaxLength(255)] public string? MediaFileName { get; set; }
     [MaxLength(100)] public string? MediaFileType { get; set; }
 
+    public string? DailyData { get; set; }  // JSON: [{date, enquiryPlanned, enquiryActual, ...}]
+
     public List<ActivityMedia> MediaFiles { get; set; } = new();
 }

@@ -5,15 +5,13 @@ import { getDealerToken } from "./dealerAuthService";
 
 /* ── Types ────────────────────────────────────────────────────────────────── */
 export interface ActivityMediaResponse {
-  id:       string;
-  fileUrl:  string;
-  fileName: string;
-  fileType: string;
-  // ── NEW: GPS + capture time ──
-  capturedAt?: string | null;
-  latitude?:   number | null;
-  longitude?:  number | null;
-  locationAccuracyMeters?: number | null;
+  id:          string;
+  fileUrl:     string;
+  fileName:    string;
+  fileType:    string;
+  capturedAt?: string | null;   // ISO timestamp of when photo was taken
+  latitude?:   number | null;   // GPS latitude
+  longitude?:  number | null;   // GPS longitude
 }
 
 export interface ActivityResponse {
@@ -112,7 +110,7 @@ interface ProposalPayload {
   commandoName:       string | null;
   month:              string;
   eligibility:        string;
-  remarks:            string | null;
+  remarks:            string;
   submittedBy:        string | null;
   docNumber:          string;
   activities:         ActivityPayload[];
@@ -162,6 +160,7 @@ export interface ActivityActualsPayload {
   mediaFileUrl:    string | null;
   mediaFileName:   string | null;
   mediaFileType:   string | null;
+  dailyData:       string | null;  // JSON: [{date, enquiryPlanned, enquiryActual, ...}]
 }
 
 /* ── Token helpers ────────────────────────────────────────────────────────── */
@@ -434,10 +433,7 @@ export async function fetchMyDealerProposals(): Promise<ProposalResponse[]> {
 export async function addActivityMedia(
   proposalId: string,
   activityId: string,
-  media: {
-    fileUrl: string; fileName: string; fileType: string;
-    capturedAt?: string; latitude?: number; longitude?: number; locationAccuracyMeters?: number;
-  },
+  media: { fileUrl: string; fileName: string; fileType: string; capturedAt?: string|null; latitude?: number|null; longitude?: number|null },
   instance: IPublicClientApplication,
 ): Promise<ActivityMediaResponse> {
   const token = await getAccessToken(instance);
@@ -446,7 +442,14 @@ export async function addActivityMedia(
     {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(media),
+      body: JSON.stringify({
+        fileUrl:    media.fileUrl,
+        fileName:   media.fileName,
+        fileType:   media.fileType,
+        capturedAt: media.capturedAt ?? null,
+        latitude:   media.latitude   ?? null,
+        longitude:  media.longitude  ?? null,
+      }),
     },
   );
   if (!res.ok) {

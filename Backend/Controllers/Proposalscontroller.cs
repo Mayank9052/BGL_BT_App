@@ -112,7 +112,6 @@ public class ProposalsController : ControllerBase
             TsmName                = dto.TsmName,
             CommandoName           = dto.CommandoName,
             Month                  = dto.Month,
-            Year                   = dto.Year,
             Eligibility            = dto.Eligibility,
             Remarks                = dto.Remarks,
             TotalBudget            = totalBudget,
@@ -328,7 +327,6 @@ public class ProposalsController : ControllerBase
         proposal.TsmName        = dto.TsmName;
         proposal.CommandoName   = dto.CommandoName;
         proposal.Month          = dto.Month;
-        proposal.Year           = dto.Year;
         proposal.Eligibility    = dto.Eligibility;
         proposal.Remarks        = dto.Remarks;
         proposal.CheckerRemarks = dto.CheckerRemarks;  // ← FIX: was missing
@@ -589,6 +587,7 @@ public class ProposalsController : ControllerBase
             if (dto.MediaFileUrl  != null) activity.MediaFileUrl  = dto.MediaFileUrl;
             if (dto.MediaFileName != null) activity.MediaFileName = dto.MediaFileName;
             if (dto.MediaFileType != null) activity.MediaFileType = dto.MediaFileType;
+            if (dto.DailyData     != null) activity.DailyData     = dto.DailyData;
         }
 
         await _db.SaveChangesAsync();
@@ -610,6 +609,7 @@ public class ProposalsController : ControllerBase
 
     // ── POST /api/proposals/{id}/activities/{activityId}/media ───────────────
     [HttpPost("{id:guid}/activities/{activityId:guid}/media")]
+    [Authorize(AuthenticationSchemes = "AzureAD,DealerJwt")]  // both admin and dealer can add proof
     public async Task<ActionResult<ActivityMediaDto>> AddActivityMedia(
         Guid id, Guid activityId, [FromBody] AddActivityMediaDto dto)
     {
@@ -926,7 +926,8 @@ public class ProposalsController : ControllerBase
             a.MediaFileUrl, a.MediaFileName, a.MediaFileType,
             a.MediaFiles.Select(m => new ActivityMediaDto(
                 m.Id, m.FileUrl, m.FileName, m.FileType,
-                m.CapturedAt, m.Latitude, m.Longitude, m.LocationAccuracyMeters)).ToList()
+                m.CapturedAt, m.Latitude, m.Longitude, m.LocationAccuracyMeters)).ToList(),
+            a.DailyData
         )).ToList()
     );
 }
