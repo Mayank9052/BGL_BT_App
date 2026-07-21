@@ -664,10 +664,9 @@ export default function ApproverDashboard() {
       i===idx?{...a,subcategory,qty:"1"}:a)}:d);
 
   // ── Save edits ─────────────────────────────────────────────────────────────
-   const saveEdits=async()=>{
+  const saveEdits=async()=>{
     if (!selected||!editData) return;
-    // ── NEW: reject out-of-window dates before saving, since the date
-    // input's min/max attributes are advisory only, not enforced ──
+    // ── Reject out-of-window dates before saving ──
     const { min, max } = editActivityDateRange;
     const outOfRange = editData.activities.find(a =>
       (a.startDate && a.startDate < min) ||
