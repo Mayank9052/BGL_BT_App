@@ -603,12 +603,18 @@ export default function DashboardPage() {
           <span className="dash-action-icon">📋</span>
           <div><div className="dash-action-title">New Proposal</div><div className="dash-action-desc">Submit a BTL activity plan</div></div>
         </button>
-        {isAdmin && (
+        {/* {isAdmin && (
           <button className="dash-action-card" onClick={() => navigate("/approver")}>
             <span className="dash-action-icon">✅</span>
             <div><div className="dash-action-title">Review Proposals</div><div className="dash-action-desc">Approve or reject pending plans</div></div>
           </button>
-        )}
+        )} */}
+       
+          <button className="dash-action-card" onClick={() => navigate("/approver")}>
+            <span className="dash-action-icon">✅</span>
+            <div><div className="dash-action-title">Review Proposals</div><div className="dash-action-desc">Approve or reject pending plans</div></div>
+          </button>
+        
         <button className="dash-action-card dash-action-card--report" onClick={() => navigate("/reports")}>
           <span className="dash-action-icon">📊</span>
           <div><div className="dash-action-title">Download Report</div><div className="dash-action-desc">Excel &amp; PDF · by period, state, dealer</div></div>
@@ -668,11 +674,18 @@ export default function DashboardPage() {
               value={`₹${Math.round(stats.avgCpl).toLocaleString("en-IN")}`}
               sub={`${stats.totalLeadTarget.toLocaleString("en-IN")} total leads`}
               accent="blue" onClick={clearAllFilters}/>
-            {isAdmin&&<KpiCard icon="↩" label="Needs Revision"
+              {/* {isAdmin&&<KpiCard icon="↩" label="Needs Revision"
               value={String(stats.needsRevision??0)}
               sub="Sent back for changes"
               accent="amber" active={activeFilter==="NeedsRevision"}
-              onClick={()=>handleKpiClick("NeedsRevision")}/>}
+              onClick={()=>handleKpiClick("NeedsRevision")}/>} */}
+            {stats.needsRevision !== undefined && (
+              <KpiCard icon="↩" label="Needs Revision"
+                value={String(stats.needsRevision??0)}
+                sub="Sent back for changes"
+                accent="amber" active={activeFilter==="NeedsRevision"}
+                onClick={()=>handleKpiClick("NeedsRevision")}/>
+            )}
           </div>
 
           {/* ── POINT 4: Filter scope hint when month/state filter active ── */}
