@@ -5,6 +5,13 @@
 //   3. CAC warning checks BGauss CAC against allowed limit
 //   4. Sales % column — Retail auto-calculates and locks from Lead × Sales%
 //   5. goToSummary BLOCKS if BGauss CAC exceeds allowed limit (red warning shown)
+//   6. Year auto-selects current year (rolls forward automatically each year
+//      since CURRENT_YEAR is computed live) · Month options restrict to
+//      current/future months when Year = current year · Start/End Date
+//      restricted to fall within the selected Month+Year window
+//   7. NEW: "+ Add Activity" now defaults the new row's dates to the start
+//      of the currently-selected Month+Year window (was always today/+7,
+//      which could fall outside the window if a future month was selected)
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
@@ -44,10 +51,25 @@ const MONTHS = [
 ];
 const CURRENT_MONTH = MONTHS[new Date().getMonth()];
 const CURRENT_YEAR = new Date().getFullYear();
-const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
-const isoDate = (d: Date) => d.toISOString().split("T")[0];
+const YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
+// FIX: was `d.toISOString().split("T")[0]`. toISOString() converts to UTC —
+// for a date built as local midnight (e.g. `new Date(year, month, 1)`) in any
+// timezone ahead of UTC (like IST, +5:30), that shift lands on the PREVIOUS
+// calendar day. That's why selecting "August" showed "31 July" as an
+// available/min Start Date instead of "1 August". This version reads the
+// date's own local year/month/day directly, with no UTC conversion.
+const isoDate = (d: Date) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
 const TODAY_ISO = isoDate(new Date());
 const DEFAULT_END_ISO = isoDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
+// ← NEW: small helper used only by "+ Add Activity" to default new rows'
+// dates inside whatever Month+Year window is currently selected.
+const addDaysISO = (iso: string, days: number) =>
+  isoDate(new Date(new Date(iso).getTime() + days * 24 * 60 * 60 * 1000));
 // ← no backdating to ANY past date (was Jan 1 of current year)
 const MIN_ACTIVITY_DATE = TODAY_ISO;
 
@@ -103,7 +125,7 @@ const emptyActivity = (): ActivityRow => ({
   id: crypto.randomUUID(), activityType: "", category: "", categoryLocked: false,
   subcategory: "", qty: "1", _maxQty: 5, leadTarget: "", salesPercent: "",
   retailTarget: "", retailLocked: false,
-  startDate: TODAY_ISO, endDate: DEFAULT_END_ISO,          // ← auto Start=today, End=today+7 days
+  startDate: TODAY_ISO, endDate: DEFAULT_END_ISO,          // ← default for the very first row / edit-mode fallback
   budget: "", additionalBudget: "0",
   bgaussShare: "100", remarks: "", mediaFiles: [],
 });
@@ -327,6 +349,11 @@ export default function RSMProposalForm() {
     setHeader((h) => ({ ...h, [key]: value }));
     if (fieldErrors[key as keyof FieldErrors])
       setFieldErrors((e) => { const n = { ...e }; delete n[key as keyof FieldErrors]; return n; });
+    // When month or year changes, clear all activity dates so RSM must re-pick
+    // dates that fall within the new month/year window
+    if (key === "month" || key === "year") {
+      setActivities(rows => rows.map(r => ({ ...r, startDate: "", endDate: "" })));
+    }
   };
 
   const handleDealerSelect = (customerCode: string) => {
@@ -430,7 +457,17 @@ export default function RSMProposalForm() {
       setActivityErrors((prev) => { const next = { ...prev }; if (next[id]) { next[id] = { ...next[id] }; delete next[id][key as keyof ActivityErrors[string]]; if (!Object.keys(next[id]).length) delete next[id]; } return next; });
   };
 
-  const addActivity    = () => setActivities((rows) => [...rows, emptyActivity()]);
+  // ── "+ Add Activity" — new row's dates now default INSIDE the currently
+  // selected Month+Year window (activityDateRange), instead of always
+  // defaulting to today/+7 which could fall outside a future month's range.
+  const addActivity = () => {
+    const start = activityDateRange.min;
+    const naturalEnd = addDaysISO(start, 7);
+    const end = activityDateRange.max && naturalEnd > activityDateRange.max
+      ? activityDateRange.max
+      : naturalEnd;
+    setActivities((rows) => [...rows, { ...emptyActivity(), startDate: start, endDate: end }]);
+  };
   const removeActivity = (id: string) => {
     setActivities((rows) => rows.length > 1 ? rows.filter((r) => r.id !== id) : rows);
     setActivityErrors((prev) => { const n = { ...prev }; delete n[id]; return n; });
@@ -474,6 +511,25 @@ export default function RSMProposalForm() {
 
   const goToSummary = () => {
     const errs = validateActivities(activities);
+    // Extra check: dates must be within selected month
+    if (header.month && header.year) {
+      const { min, max } = activityDateRange;
+      let hasDateError = false;
+      const dateErrors: ActivityErrors = {};
+      activities.forEach((a) => {
+        const rowErr: ActivityErrors[string] = {};
+        if (a.startDate && a.startDate < min) rowErr.startDate = "Start date cannot be before today.";
+        if (max && a.startDate && a.startDate > max) rowErr.startDate = `Must be within ${header.month} ${header.year}.`;
+        if (max && a.endDate && a.endDate > max) rowErr.endDate = `Must be within ${header.month} ${header.year}.`;
+        if (Object.keys(rowErr).length) { dateErrors[a.id] = { ...(errs[a.id] ?? {}), ...rowErr }; hasDateError = true; }
+      });
+      if (hasDateError) {
+        setActivityErrors(prev => ({ ...prev, ...dateErrors }));
+        setShowActErr(true);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        return;
+      }
+    }
     if (Object.keys(errs).length) { setActivityErrors(errs); setShowActErr(true); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
     setActivityErrors({}); setShowActErr(false);
     if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
@@ -698,7 +754,37 @@ export default function RSMProposalForm() {
     })
   ).values()).sort((a, b) => a.label.localeCompare(b.label));
   const activityNameOptions = activityGroups.map((g) => ({ value: g.activityName, label: g.activityName }));
-  const monthOptions        = MONTHS.map((m) => ({ value: m, label: m }));
+  //const monthOptions        = MONTHS.map((m) => ({ value: m, label: m }));
+  const monthOptions = useMemo(() => {
+  const allMonths = MONTHS.map((m, i) => ({ value: m, label: m, index: i }));
+    if (header.year === String(CURRENT_YEAR)) {
+      // Only show current month and future months — no backdating
+      return allMonths
+        .filter(m => m.index >= new Date().getMonth())
+        .map(({ value, label }) => ({ value, label }));
+    }
+    // Next year: all months are valid
+    return allMonths.map(({ value, label }) => ({ value, label }));
+  }, [header.year]);
+
+  // Activity dates must fall within the selected month+year
+  const activityDateRange = useMemo(() => {
+    const monthIdx = MONTHS.indexOf(header.month);
+    const year = parseInt(header.year) || CURRENT_YEAR;
+    if (monthIdx < 0 || !header.month) {
+      return { min: TODAY_ISO, max: "" };
+    }
+    const firstDay  = new Date(year, monthIdx, 1);
+    const lastDay   = new Date(year, monthIdx + 1, 0);
+    const todayDate = new Date();
+    // min = whichever is later: today or first day of month
+    const minDate   = firstDay > todayDate ? firstDay : todayDate;
+    return {
+      min: isoDate(minDate),
+      max: isoDate(lastDay),
+    };
+  }, [header.month, header.year]);
+
 
   const fmtShort = (iso: string) => new Date(iso).toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" });
   const statusCls = (s: string) => {
@@ -1216,13 +1302,13 @@ export default function RSMProposalForm() {
                         </td>
                         <td className="rsm-td">
                           <input type="date" lang="en-GB" className={`rsm-input-sm${rowErr?.startDate?" rsm-input-sm--error":""}`}
-                            style={{ width:112 }} value={a.startDate} min={MIN_ACTIVITY_DATE}
+                            style={{ width:112 }} value={a.startDate} min={activityDateRange.min} max={activityDateRange.max || undefined}
                             onChange={(e) => setActivity(a.id,"startDate",e.target.value)}/>
                           {rowErr?.startDate && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.startDate}</span>}
                         </td>
                         <td className="rsm-td">
                           <input type="date" lang="en-GB" className={`rsm-input-sm${rowErr?.endDate?" rsm-input-sm--error":""}`}
-                            style={{ width:112 }} value={a.endDate} min={a.startDate||MIN_ACTIVITY_DATE}
+                            style={{ width:112 }} value={a.endDate} min={a.startDate || activityDateRange.min} max={activityDateRange.max || undefined}
                             onChange={(e) => setActivity(a.id,"endDate",e.target.value)}/>
                           {rowErr?.endDate && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.endDate}</span>}
                         </td>
