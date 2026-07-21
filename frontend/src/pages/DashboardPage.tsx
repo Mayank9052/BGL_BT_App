@@ -489,15 +489,14 @@ export default function DashboardPage() {
 
   // ── Live daily summary from real proposals ───────────────────────────────
   const liveDailySummary = useMemo((): DailySummaryRow[] => {
-    const approvedWithActuals = proposals.filter(p =>
-      p.status === "Approved" && p.activities.some(a => a.actualStartDate || (a as any).dailyData)
-    );
+    // Show ALL approved proposals — even those without actuals yet (shows planned data)
+    const approvedProposals = proposals.filter(p => p.status === "Approved");
     const rows: DailySummaryRow[] = [];
     let sr = 1;
-    for (const p of approvedWithActuals) {
+    for (const p of approvedProposals) {
       for (const a of p.activities) {
-        const dailyData = (a as any).dailyData;
-        if (!dailyData && !a.actualStartDate) continue;
+        // Try both camelCase and PascalCase (JSON serializer may send either)
+        const dailyData = (a as any).dailyData ?? (a as any).DailyData ?? null;
         let entries: any[] = [];
         try { if (dailyData) entries = JSON.parse(dailyData); } catch {}
         const totalEnqActual   = entries.reduce((s: number, e: any) => s + (e.enquiryActual   || 0), 0);
@@ -545,25 +544,33 @@ export default function DashboardPage() {
     return rows;
   }, [proposals]);
 
-  // Daily summary totals
-  const dsTotals = useMemo(() => ({
-    canopy:          liveDailySummary.reduce((s, r) => s + r.canopy, 0) || liveDailySummary.length > 0 ? liveDailySummary.reduce((s, r) => s + r.canopy, 0) : DAILY_SUMMARY.reduce((s, r) => s + r.canopy, 0),
-    enquiryPlanned:  DAILY_SUMMARY.reduce((s, r) => s + r.enquiryPlanned, 0),
-    enquiryActual:   DAILY_SUMMARY.reduce((s, r) => s + r.enquiryActual, 0),
-    perCanopy:       Math.round(DAILY_SUMMARY.reduce((s, r) => s + r.enquiryActual, 0) / DAILY_SUMMARY.reduce((s, r) => s + r.canopy, 0)),
-    hot:             DAILY_SUMMARY.reduce((s, r) => s + r.hot, 0),
-    trPlanned:       DAILY_SUMMARY.reduce((s, r) => s + r.trPlanned, 0),
-    trActual:        DAILY_SUMMARY.reduce((s, r) => s + r.trActual, 0),
-    trPerCanopy:     Math.round(DAILY_SUMMARY.reduce((s, r) => s + r.trActual, 0) / DAILY_SUMMARY.reduce((s, r) => s + r.canopy, 0)),
-    bookToday:       DAILY_SUMMARY.reduce((s, r) => s + r.bookToday, 0),
-    bookInHand:      DAILY_SUMMARY.reduce((s, r) => s + r.bookInHand, 0),
-    retailToday:     DAILY_SUMMARY.reduce((s, r) => s + r.retailToday, 0),
-    retailMtdAct:    DAILY_SUMMARY.reduce((s, r) => s + r.retailMtdAct, 0),
-    retailMtd:       DAILY_SUMMARY.reduce((s, r) => s + r.retailMtd, 0),
-    leads:           DAILY_SUMMARY.reduce((s, r) => s + r.leads, 0),
-    punched:         DAILY_SUMMARY.reduce((s, r) => s + r.punched, 0),
-    gap:             DAILY_SUMMARY.reduce((s, r) => s + r.gap, 0),
-  }), []);
+  // Daily summary totals — computed from LIVE data
+  const dsTotals = useMemo(() => {
+    const src = liveDailySummary;
+    const totalCanopy  = src.reduce((s, r) => s + r.canopy, 0);
+    const totalEnqAct  = src.reduce((s, r) => s + r.enquiryActual, 0);
+    const totalTrAct   = src.reduce((s, r) => s + r.trActual, 0);
+    const totalRetail  = src.reduce((s, r) => s + r.retailMtd, 0);
+    const totalLeads   = src.reduce((s, r) => s + r.leads, 0);
+    return {
+      canopy:         totalCanopy,
+      enquiryPlanned: src.reduce((s, r) => s + r.enquiryPlanned, 0),
+      enquiryActual:  totalEnqAct,
+      perCanopy:      totalCanopy > 0 ? Math.round(totalEnqAct / totalCanopy) : 0,
+      hot:            src.reduce((s, r) => s + r.hot, 0),
+      trPlanned:      src.reduce((s, r) => s + r.trPlanned, 0),
+      trActual:       totalTrAct,
+      trPerCanopy:    totalCanopy > 0 ? Math.round(totalTrAct / totalCanopy) : 0,
+      bookToday:      src.reduce((s, r) => s + r.bookToday, 0),
+      bookInHand:     src.reduce((s, r) => s + r.bookInHand, 0),
+      retailToday:    src.reduce((s, r) => s + r.retailToday, 0),
+      retailMtdAct:   src.reduce((s, r) => s + r.retailMtdAct, 0),
+      retailMtd:      totalRetail,
+      leads:          totalLeads,
+      punched:        src.reduce((s, r) => s + r.punched, 0),
+      gap:            src.reduce((s, r) => s + r.gap, 0),
+    };
+  }, [liveDailySummary]);
 
   // Lead report grand totals
   const lrTotals = useMemo(() => ({
@@ -596,7 +603,7 @@ export default function DashboardPage() {
           <span className="dash-action-icon">📋</span>
           <div><div className="dash-action-title">New Proposal</div><div className="dash-action-desc">Submit a BTL activity plan</div></div>
         </button>
-        {(
+        {isAdmin && (
           <button className="dash-action-card" onClick={() => navigate("/approver")}>
             <span className="dash-action-icon">✅</span>
             <div><div className="dash-action-title">Review Proposals</div><div className="dash-action-desc">Approve or reject pending plans</div></div>
@@ -661,11 +668,11 @@ export default function DashboardPage() {
               value={`₹${Math.round(stats.avgCpl).toLocaleString("en-IN")}`}
               sub={`${stats.totalLeadTarget.toLocaleString("en-IN")} total leads`}
               accent="blue" onClick={clearAllFilters}/>
-            <KpiCard icon="↩" label="Needs Revision"
+            {isAdmin&&<KpiCard icon="↩" label="Needs Revision"
               value={String(stats.needsRevision??0)}
               sub="Sent back for changes"
               accent="amber" active={activeFilter==="NeedsRevision"}
-              onClick={()=>handleKpiClick("NeedsRevision")}/>
+              onClick={()=>handleKpiClick("NeedsRevision")}/>}
           </div>
 
           {/* ── POINT 4: Filter scope hint when month/state filter active ── */}
@@ -1091,15 +1098,21 @@ export default function DashboardPage() {
                 <div>
                   <h2 className="dash-section-title" style={{fontSize:16}}>
                     📅 Daily Activity Sheet Summary
-                    <span style={{fontSize:12,fontWeight:400,color:"#64748b",marginLeft:10}}>Live data from approved proposals</span>
+                    <span style={{fontSize:12,fontWeight:400,color:"#64748b",marginLeft:10}}>
+                      Live · {liveDailySummary.length} activit{liveDailySummary.length===1?"y":"ies"} across {proposals.filter(p=>p.status==="Approved").length} approved proposal{proposals.filter(p=>p.status==="Approved").length===1?"":"s"}
+                    </span>
                   </h2>
                   <p style={{margin:"2px 0 0",fontSize:11,color:"#94a3b8"}}>
                     Click any dealer row to view their full daily activity sheet ↗
+                    {proposals.filter(p=>p.status==="Approved").length===0&&<span style={{color:"#f59e0b",fontWeight:600}}> — No approved proposals yet</span>}
                   </p>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
                   <span style={{fontSize:11,background:"#dcfce7",color:"#166534",padding:"3px 10px",borderRadius:20,fontWeight:700}}>
                     🟢 Live data from Post-Activity entries
+                  </span>
+                  <span style={{fontSize:11,background:"#fef3c7",color:"#92400e",padding:"3px 10px",borderRadius:20,fontWeight:700}}>
+                    ⚠ ERP/LMS auto-fetch: Pending integration
                   </span>
                   <button
                     onClick={()=>printSection("daily-summary-table","Daily Activity Summary")}
@@ -1150,6 +1163,23 @@ export default function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
+                    {liveDailySummary.length === 0 && (
+                      <tr>
+                        <td colSpan={27} style={{textAlign:"center",padding:"48px 20px",color:"#6b7280"}}>
+                          <div style={{fontSize:36,marginBottom:12}}>📋</div>
+                          <div style={{fontWeight:700,fontSize:15,color:"#0a2540",marginBottom:6}}>
+                            {proposals.filter(p=>p.status==="Approved").length === 0
+                              ? "No approved proposals yet"
+                              : "No Post-Activity entries yet"}
+                          </div>
+                          <div style={{fontSize:13,color:"#94a3b8",maxWidth:400,margin:"0 auto"}}>
+                            {proposals.filter(p=>p.status==="Approved").length === 0
+                              ? "Once proposals are approved, their activities will appear here with daily data."
+                              : `${proposals.filter(p=>p.status==="Approved").length} approved proposal(s) found. Open each from the Approver Dashboard → Post-Activity section to enter daily data (enquiry, test drives, bookings, retail, LMS).`}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
                     {liveDailySummary.map((row, i) => {
                       const enqColor  = cellColor(row.enquiryActual, row.enquiryPlanned);
                       const trColor   = cellColor(row.trActual, row.trPlanned);
@@ -1205,14 +1235,14 @@ export default function DashboardPage() {
                       <td className="dash-td dash-td--right" style={{fontWeight:700}}>{dsTotals.retailMtdAct}</td>
                       <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.retailMtd}</td>
                       <td className="dash-td dash-td--right" style={{fontWeight:800}}>
-                        {(dsTotals.retailMtd / dsTotals.canopy).toFixed(1)}
+                        {dsTotals.canopy > 0 ? (dsTotals.retailMtd / dsTotals.canopy).toFixed(1) : "—"}
                       </td>
                       <td className="dash-td" colSpan={2}/>
                       <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.leads}</td>
                       <td className="dash-td dash-td--right" style={{fontWeight:700}}>{dsTotals.punched}</td>
                       <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.gap}</td>
                       <td className="dash-td dash-td--right" style={{fontWeight:800}}>
-                        {Math.round(dsTotals.retailMtd / dsTotals.leads * 100)}%
+                        {dsTotals.leads > 0 ? Math.round(dsTotals.retailMtd / dsTotals.leads * 100) + "%" : "—"}
                       </td>
                     </tr>
                   </tfoot>
