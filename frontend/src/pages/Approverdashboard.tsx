@@ -45,7 +45,16 @@ const ELIGIBILITY = ["Eligible","Not Eligible","Pending Approval"];
 const LOC_TYPES   = ["Old","New"];
 const BGAUSS_OPTS = ["100","70","50"];
 const CURRENT_YEAR = new Date().getFullYear();
-const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
+const YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
+// ── NEW: local-date ISO helper (matches RSMForm's fix — avoids the UTC
+// shift bug where toISOString() could roll a date back by one day) ──
+const isoDate = (d: Date) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+const TODAY_ISO = isoDate(new Date());
 
 const safeBgaussShare = (v: number | null | undefined): string => {
   if (v == null || v === 0) return "100";
@@ -245,6 +254,7 @@ export default function ApproverDashboard() {
   const [showSendBack,     setShowSendBack]     = useState(false);
   const [filterStatus,     setFilterStatus]     = useState("All");
   const [filterMonth,      setFilterMonth]      = useState("All");
+  const [filterYear,       setFilterYear]       = useState("All");
   const [search,           setSearch]           = useState("");
   const [loading,          setLoading]          = useState(true);
   const [fetchError,       setFetchError]       = useState<string|null>(null);
@@ -282,9 +292,17 @@ export default function ApproverDashboard() {
   const loadProposals = useCallback(async () => {
     setLoading(true); setFetchError(null);
     try {
-      const data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
+      // Retry once on failure (handles transient DB connection timeouts)
+      let data: ProposalResponse[];
+      try {
+        data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
+      } catch (firstErr) {
+        // Wait 2s and retry once
+        await new Promise(r => setTimeout(r, 2000));
+        data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
+      }
       setProposals(data);
-    } catch (err) { setFetchError(err instanceof Error ? err.message : "Failed to load."); }
+    } catch (err) { setFetchError(err instanceof Error ? err.message : "Failed to load. Please click Refresh to try again."); }
     finally { setLoading(false); }
   }, [instance, isAdmin]);
 
@@ -301,14 +319,16 @@ export default function ApproverDashboard() {
 
   // ── Computed ───────────────────────────────────────────────────────────────
   const months   = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],[proposals]);
+  const years    = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>(p as any).year).filter(Boolean))).sort()],[proposals]);
   const filtered = useMemo(()=>proposals.filter((p)=>{
     if (filterStatus!=="All"&&p.status!==filterStatus) return false;
     if (filterMonth!=="All"&&p.month!==filterMonth) return false;
+    if (filterYear!=="All"&&(p as any).year!==filterYear) return false;
     if (search){ const q=search.toLowerCase();
       return p.dealerName.toLowerCase().includes(q)||p.rsmName.toLowerCase().includes(q)||
              p.location.toLowerCase().includes(q)||(p.tokenNumber??"").toLowerCase().includes(q); }
     return true;
-  }),[proposals,filterStatus,filterMonth,search]);
+  }),[proposals,filterStatus,filterMonth,filterYear,search]);
   const pendingFiltered = useMemo(()=>filtered.filter((p)=>p.status==="Pending"),[filtered]);
   const stats = useMemo(()=>{
     const approved=proposals.filter((p)=>p.status==="Approved");
@@ -327,6 +347,20 @@ export default function ApproverDashboard() {
     return { totalBudget:tb,totalLeadTarget:tlt,totalRetailTarget:trt,
       cac:trt>0?tbg/trt:0,cpl:tlt>0?tbg/tlt:0,totalBgauss:tbg };
   },[editData]);
+
+  // ── NEW: activity dates in edit mode must fall within editData's
+  // Month + Year window — mirrors RSMForm's activityDateRange logic ──
+  const editActivityDateRange = useMemo(() => {
+    if (!editData) return { min: TODAY_ISO, max: "" };
+    const monthIdx = MONTHS.indexOf(editData.month);
+    const year = parseInt(editData.year) || CURRENT_YEAR;
+    if (monthIdx < 0 || !editData.month) return { min: TODAY_ISO, max: "" };
+    const firstDay  = new Date(year, monthIdx, 1);
+    const lastDay   = new Date(year, monthIdx + 1, 0);
+    const todayDate = new Date();
+    const minDate   = firstDay > todayDate ? firstDay : todayDate;
+    return { min: isoDate(minDate), max: isoDate(lastDay) };
+  }, [editData?.month, editData?.year]);
 
   // ── initActuals ────────────────────────────────────────────────────────────
   const initActuals = useCallback((p:ProposalResponse)=>{
@@ -598,7 +632,17 @@ export default function ApproverDashboard() {
 
   // ── Edit helpers ───────────────────────────────────────────────────────────
   const setF=(key:keyof Omit<EditableProposal,"activities">,v:string)=>
-    setEditData((d)=>d?{...d,[key]:v}:d);
+    setEditData((d)=>{
+      if (!d) return d;
+      const next = { ...d, [key]: v };
+      // ── NEW: changing Month invalidates existing activity dates that may
+      // now fall outside the new Month+Year window — clear them so the
+      // Checker must re-pick dates within range, same as RSMForm.
+      if (key === "month") {
+        next.activities = next.activities.map((a) => ({ ...a, startDate: "", endDate: "" }));
+      }
+      return next;
+    });
   const setAF=(idx:number,key:keyof EditActivity,v:string)=>
     setEditData((d)=>d?{...d,activities:d.activities.map((a,i)=>i===idx?{...a,[key]:v}:a)}:d);
   const addRow=()=>setEditData((d)=>d?{...d,activities:[...d.activities,
@@ -620,8 +664,20 @@ export default function ApproverDashboard() {
       i===idx?{...a,subcategory,qty:"1"}:a)}:d);
 
   // ── Save edits ─────────────────────────────────────────────────────────────
-  const saveEdits=async()=>{
+   const saveEdits=async()=>{
     if (!selected||!editData) return;
+    // ── NEW: reject out-of-window dates before saving, since the date
+    // input's min/max attributes are advisory only, not enforced ──
+    const { min, max } = editActivityDateRange;
+    const outOfRange = editData.activities.find(a =>
+      (a.startDate && a.startDate < min) ||
+      (max && a.startDate && a.startDate > max) ||
+      (max && a.endDate && a.endDate > max)
+    );
+    if (outOfRange) {
+      showToast(`All activity dates must fall within ${editData.month} ${editData.year}.`, false);
+      return;
+    }
     setSaveLoading(true);
     try {
       const payload={
@@ -656,6 +712,8 @@ export default function ApproverDashboard() {
         })(),
       }));
       setEditData(editable); setIsEditing(false); showToast("Proposal updated.",true);
+      // Reload all proposals to ensure server state is in sync (prevents stale data)
+      setTimeout(() => loadProposals(), 500);
     } catch(err){ showToast(err instanceof Error?err.message:"Save failed.",false); }
     finally { setSaveLoading(false); }
   };
@@ -840,8 +898,29 @@ export default function ApproverDashboard() {
               <select className="ap-select" value={filterMonth} onChange={(e)=>setFilterMonth(e.target.value)}>
                 {months.map((m)=><option key={m} value={m}>{m==="All"?"All months":m}</option>)}
               </select>
+              <select className="ap-select" value={filterYear} onChange={(e)=>setFilterYear(e.target.value)}>
+                {years.map((y)=><option key={y} value={y}>{y==="All"?"All years":y}</option>)}
+              </select>
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
             </div>
+            {/* Bulk Forward — for Checker (Manager) who is not the final approver */}
+            {isAdmin&&!isFinalApprover&&selectedIds.size>0&&(
+              <div style={{ background:"#1e3a5f",borderRadius:10,padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
+                <span style={{ color:"#e2e8f0",fontSize:13,fontWeight:600 }}>{selectedIds.size} proposal{selectedIds.size>1?"s":""} selected</span>
+                <button onClick={async()=>{
+                  let ok=0,fail=0;
+                  for(const id of Array.from(selectedIds)){
+                    try{ await forwardProposalToApprover(id,instance); ok++; }catch{ fail++; }
+                  }
+                  setSelectedIds(new Set());
+                  showToast(fail===0?`✓ ${ok} proposal${ok>1?"s":""} forwarded.`:`${ok} forwarded, ${fail} failed.`,fail===0);
+                  loadProposals();
+                }} style={{ background:"#fff",color:"#1e3a5f",border:"none",borderRadius:7,padding:"8px 20px",fontWeight:700,fontSize:13,cursor:"pointer" }}>
+                  📤 Forward Selected to Final Approver
+                </button>
+                <button onClick={()=>setSelectedIds(new Set())} style={{ background:"rgba(255,255,255,0.1)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,0.2)",borderRadius:7,padding:"8px 16px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
+              </div>
+            )}
             {isAdmin&&isFinalApprover&&selectedIds.size>0&&(
               <div style={{ background:"#0a2540",borderRadius:10,padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
                 <span style={{ color:"#e2e8f0",fontSize:13,fontWeight:600 }}>{selectedIds.size} proposal{selectedIds.size>1?"s":""} selected</span>
@@ -862,7 +941,7 @@ export default function ApproverDashboard() {
             <div className="ap-table-wrap">
               <table className="ap-table">
                 <thead><tr>
-                  {isAdmin&&isFinalApprover&&(
+                  {isAdmin&&(
                     <th style={{ width:44,textAlign:"center",padding:"8px 6px" }}>
                       <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
                         <input type="checkbox" checked={allPendingSelected}
@@ -874,7 +953,7 @@ export default function ApproverDashboard() {
                   )}
                   <th>Action</th><th>Token</th><th>Submitted</th>
                   {isAdmin&&<th>RSM / TSM</th>}
-                  <th>Dealer &amp; location</th><th>Month</th><th>Activities</th>
+                  <th>Dealer &amp; location</th><th>Month</th><th>Year</th><th>Activities</th>
                   <th className="ap-num">Budget</th><th className="ap-num">Lead</th><th className="ap-num">Retail</th>
                   <th className="ap-num">CAC</th><th className="ap-num">CPL</th>
                   {isAdmin&&<th>Dealer Req.</th>}
@@ -889,17 +968,21 @@ export default function ApproverDashboard() {
                         className={`ap-row${isChecked?" ap-row--selected":""}${p.status==="NeedsRevision"?" ap-row--revision":""}`}
                         style={p.status==="NeedsRevision"?{borderLeft:"4px solid #f59e0b",background:"#fffbeb"}:{}}
                         onClick={()=>openModal(p)}>
-                        {isAdmin&&isFinalApprover&&(
+                        {isAdmin&&(
                           <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>
                             {isPending?<input type="checkbox" checked={isChecked} onChange={()=>toggleOne(p.id,isPending)} style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}/>:<span style={{ color:"#e2e8f0",fontSize:11 }}>—</span>}
                           </td>
                         )}
-                        <td onClick={(e)=>e.stopPropagation()}><button className="ap-review-btn" onClick={()=>openModal(p)}>{isAdmin?(isPending||p.status==="NeedsRevision"?"Review":"View"):"View"}</button></td>
+                        <td onClick={(e)=>e.stopPropagation()}>
+                          {!isAdmin && p.status==="NeedsRevision"
+                            ? <button className="ap-review-btn" style={{background:"#f59e0b",color:"#fff",fontWeight:700}} onClick={()=>{ window.location.href=`/rsm-form?edit=${p.id}`; }}>✏ Edit</button>
+                            : <button className="ap-review-btn" onClick={()=>openModal(p)}>{isAdmin?(isPending||p.status==="NeedsRevision"?"Review":"View"):"View"}</button>}
+                        </td>
                         <td><span className="ap-id-chip">{p.tokenNumber??p.id.split("-").slice(-1)[0]}</span></td>
                         <td><span className="ap-cell-p">{fmtDate(p.createdAt)}</span>{isAdmin&&<span className="ap-cell-m">{p.submittedByDisplayName??p.submittedBy}</span>}</td>
                         {isAdmin&&<td><span className="ap-cell-p">{p.rsmName}</span><span className="ap-cell-m">{(p as any).tsmName||p.commandoName}</span></td>}
                         <td><span className="ap-cell-p">{p.dealerName}</span><span className="ap-cell-m">{p.location}, {p.state}</span></td>
-                        <td>{p.month}</td>
+                        <td>{p.month}</td><td>{p.year}</td>
                         <td>{p.activities.slice(0,2).map((a,i)=><span key={i} className="ap-act-chip">{a.activityType}</span>)}{p.activities.length>2&&<span className="ap-act-chip ap-act-chip--more">+{p.activities.length-2}</span>}</td>
                         <td className="ap-num ap-bold">{inr(p.totalBudget)}</td>
                         <td className="ap-num">{p.totalLeadTarget}</td>
@@ -975,7 +1058,17 @@ export default function ApproverDashboard() {
                 ] as {key:string;label:string;edit:string;opts?:string[]}[]).map(({key,label,edit,opts})=>(
                   <div key={key} style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,padding:"10px 12px" }}>
                     <div style={{ fontSize:10,color:"#6b7280",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4 }}>{label}</div>
-                    {isAdmin&&isEditing?(
+                    {isAdmin&&isEditing&&key==="year"?(
+                      // ── NEW: Year is locked in edit mode — it's fixed at
+                      // submission time and shouldn't be changed by the Checker,
+                      // since RSMForm already enforces year on the Maker side.
+                      <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",
+                        border:"1.5px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:13,
+                        color:"#0a2540",minHeight:30 }}>
+                        <span style={{ flex:1 }}>{(editData as any)[key] || "—"}</span>
+                        <span style={{ fontSize:11,color:"#9ca3af" }} title="Year is locked and cannot be changed here">🔒</span>
+                      </div>
+                    ):isAdmin&&isEditing?(
                       edit==="select"&&opts?<select style={{ width:"100%",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 8px",fontSize:13,outline:"none",background:"#fff" }} value={(editData as any)[key]} onChange={(e)=>setF(key as any,e.target.value)}>{opts.map((o)=><option key={o} value={o}>{o}</option>)}</select>
                       :<input style={{ width:"100%",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 8px",fontSize:13,outline:"none",boxSizing:"border-box" as const }} value={(editData as any)[key]} onChange={(e)=>setF(key as any,e.target.value)}/>
                     ):key==="eligibility"?<span className={`ap-elig ${eligClass((selected as any)[key])}`}>{(selected as any)[key]}</span>
@@ -1061,7 +1154,28 @@ export default function ApproverDashboard() {
                             <td style={{ padding:"8px",textAlign:"right" }}><input type="number" min={0} style={{ width:58,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }} value={(a as EditActivity).leadTarget} onChange={(e)=>{ const lead=e.target.value; const pct=(a as EditActivity).salesPercent.trim(); const retail=pct&&parseFloat(pct)>0?String(Math.round(parseFloat(lead||"0")*parseFloat(pct)/100)):""; setEditData(d=>d?{...d,activities:d.activities.map((act,k)=>k===i?{...act,leadTarget:lead,retailTarget:retail||act.retailTarget,retailLocked:!!(retail)}:act)}:d); }}/></td>
                             <td style={{ padding:"8px",textAlign:"center" }}><input type="number" min={0} max={100} step="0.1" style={{ width:58,textAlign:"center",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 4px",fontSize:12,outline:"none" }} placeholder="e.g. 3" value={(a as EditActivity).salesPercent} onChange={(e)=>{ const pct=e.target.value; const lead=(a as EditActivity).leadTarget; const retail=pct&&parseFloat(pct)>0&&lead?String(Math.round(parseFloat(lead)*parseFloat(pct)/100)):""; setEditData(d=>d?{...d,activities:d.activities.map((act,k)=>k===i?{...act,salesPercent:pct,retailTarget:retail||act.retailTarget,retailLocked:!!(retail)}:act)}:d); }}/></td>
                             <td style={{ padding:"8px",textAlign:"right" }}>{(a as EditActivity).retailLocked?<div title="Auto-calculated" style={{ display:"flex",alignItems:"center",gap:4,background:"#eff6ff",border:"1.5px solid #bfdbfe",borderRadius:6,padding:"4px 6px",fontSize:12,fontWeight:600,color:"#1e40af",width:58,height:30,justifyContent:"space-between" }}><span>{(a as EditActivity).retailTarget||"0"}</span><span style={{ fontSize:9,color:"#93c5fd" }}>🔒</span></div>:<input type="number" min={0} style={{ width:58,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }} value={(a as EditActivity).retailTarget} onChange={(e)=>setAF(i,"retailTarget",e.target.value)}/>}</td>
-                            <td style={{ padding:"8px" }}><div style={{ display:"flex",gap:4,alignItems:"center" }}><input type="date" style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }} value={(a as EditActivity).startDate} onChange={(e)=>setAF(i,"startDate",e.target.value)}/><span style={{ color:"#6b7280" }}>→</span><input type="date" style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }} value={(a as EditActivity).endDate} min={(a as EditActivity).startDate||undefined} onChange={(e)=>setAF(i,"endDate",e.target.value)}/></div></td>
+                            <td style={{ padding:"8px" }}>
+                              <div style={{ display:"flex",gap:4,alignItems:"center" }}>
+                                <input type="date" lang="en-GB"
+                                  style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }}
+                                  value={(a as EditActivity).startDate}
+                                  min={editActivityDateRange.min}
+                                  max={editActivityDateRange.max || undefined}
+                                  onChange={(e)=>setAF(i,"startDate",e.target.value)}/>
+                                <span style={{ color:"#6b7280" }}>→</span>
+                                <input type="date" lang="en-GB"
+                                  style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:11,outline:"none",width:118 }}
+                                  value={(a as EditActivity).endDate}
+                                  min={(a as EditActivity).startDate || editActivityDateRange.min}
+                                  max={editActivityDateRange.max || undefined}
+                                  onChange={(e)=>setAF(i,"endDate",e.target.value)}/>
+                              </div>
+                              {editActivityDateRange.max && (
+                                <div style={{ fontSize:9,color:"#9ca3af",marginTop:2 }}>
+                                  Must fall within {editData.month} {editData.year}
+                                </div>
+                              )}
+                            </td>
                             <td style={{ padding:"8px",textAlign:"right" }}><input type="number" min={0} style={{ width:90,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }} value={(a as EditActivity).budget} onChange={(e)=>setAF(i,"budget",e.target.value)}/></td>
                             <td style={{ padding:"8px",textAlign:"right" }}><input type="number" min={0} style={{ width:88,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }} value={(a as EditActivity).additionalBudget} onChange={(e)=>setAF(i,"additionalBudget",e.target.value)}/></td>
                             <td style={{ padding:"8px",textAlign:"center" }}><select style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 8px",fontSize:12,outline:"none",background:"#fff",width:80 }} value={(a as EditActivity).bgaussShare} onChange={(e)=>setAF(i,"bgaussShare",e.target.value)}>{BGAUSS_OPTS.map(o=><option key={o} value={o}>{o}%</option>)}</select></td>

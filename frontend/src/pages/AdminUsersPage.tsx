@@ -1,5 +1,5 @@
 // src/pages/AdminUsersPage.tsx
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useMsal } from "@azure/msal-react";
 import { fetchAllUsers, updateUser } from "../services/userService";
 import {
@@ -28,6 +28,41 @@ function SkeletonRow({ cols }: { cols: number }) {
 }
 function TableSkeleton({ rows = 5, cols = 8 }: { rows?: number; cols?: number }) {
   return <>{Array.from({ length: rows }).map((_, i) => <SkeletonRow key={i} cols={cols}/>)}</>;
+}
+
+// ── Small reusable search box used above each tab's table ─────────────────────
+function TableSearchBox({ value, onChange, placeholder, resultCount, totalCount }: {
+  value: string; onChange: (v: string) => void; placeholder: string;
+  resultCount?: number; totalCount?: number;
+}) {
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
+      <div style={{ position:"relative", flex:"1 1 260px", maxWidth:360 }}>
+        <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)",
+          fontSize:13, color:"#94a3b8", pointerEvents:"none" }}>🔍</span>
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          style={{ width:"100%", padding:"8px 30px 8px 30px", borderRadius:8,
+            border:"1.5px solid #e2e8f0", fontSize:13, outline:"none",
+            boxSizing:"border-box" as const, background:"#fff" }}
+        />
+        {value && (
+          <button onClick={() => onChange("")}
+            style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)",
+              background:"none", border:"none", cursor:"pointer", color:"#94a3b8", fontSize:12 }}>
+            ✕
+          </button>
+        )}
+      </div>
+      {value && typeof resultCount === "number" && typeof totalCount === "number" && (
+        <span style={{ fontSize:12, color:"#6b7280" }}>
+          {resultCount} of {totalCount} match{resultCount !== 1 ? "es" : ""}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function DealerSearchSelect({ dealers, loading, value, onChange }: {
@@ -123,6 +158,11 @@ export default function AdminUsersPage() {
   const [saving,    setSaving]    = useState(false);
   const [error,     setError]     = useState<string | null>(null);
 
+  // ── Search filters (one per tab) ─────────────────────────────────────────
+  const [userSearch,     setUserSearch]     = useState("");
+  const [dealerSearch,   setDealerSearch]   = useState("");
+  const [activitySearch, setActivitySearch] = useState("");
+
   // ── Activity types ───────────────────────────────────────────────────────
   const [activityTypes,   setActivityTypes]   = useState<ActivityType[]>([]);
   const [actLoading,      setActLoading]      = useState(true);
@@ -145,8 +185,36 @@ export default function AdminUsersPage() {
   const [editActSaving,   setEditActSaving]   = useState(false);
   const [editActError,    setEditActError]    = useState<string|null>(null);
 
-  // Group by activityName
-  const groupedActivities = activityTypes.reduce((acc, a) => {
+  // ── Filtered lists (search applied) ──────────────────────────────────────
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter((u) =>
+      [u.displayName, u.email, u.department, u.jobTitle, u.phoneNumber, u.role]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q))
+    );
+  }, [users, userSearch]);
+
+  // const filteredDealers = useMemo(() => {
+  //   const q = dealerSearch.trim().toLowerCase();
+  //   if (!q) return dealers => dealers; // placeholder, real filter below uses `dealers` state directly
+  //   return null;
+  // }, [dealerSearch]);
+
+  const filteredActivityTypes = useMemo(() => {
+    const q = activitySearch.trim().toLowerCase();
+    if (!q) return activityTypes;
+    return activityTypes.filter((a) =>
+      [a.activityName, a.subcategory, a.activityType]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q))
+    );
+  }, [activityTypes, activitySearch]);
+
+  // Group by activityName — uses the SEARCH-FILTERED list so the table only
+  // shows matching rows, while keeping the name-grouping/indent behaviour.
+  const groupedActivities = filteredActivityTypes.reduce((acc, a) => {
     if (!acc[a.activityName]) acc[a.activityName] = [];
     acc[a.activityName].push(a);
     return acc;
@@ -159,6 +227,17 @@ export default function AdminUsersPage() {
   const [dealerSuccess,  setDealerSuccess]  = useState<string | null>(null);
   const [dealerSaving,   setDealerSaving]   = useState(false);
   const [showDealerForm, setShowDealerForm] = useState(false);
+
+  // Real dealer-account search (correctly reads the `dealers` state)
+  const filteredDealerAccounts = useMemo(() => {
+    const q = dealerSearch.trim().toLowerCase();
+    if (!q) return dealers;
+    return dealers.filter((d) =>
+      [d.displayName, d.email, d.dealerCode, d.dealerName, d.phoneNumber]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q))
+    );
+  }, [dealers, dealerSearch]);
 
   // ── Bulk import state ──────────────────────────────────────────────────────
   const [bulkStatus,   setBulkStatus]   = useState<BulkStatusResult | null>(null);
@@ -440,6 +519,15 @@ export default function AdminUsersPage() {
       {tab === "users" && (
         <>
           {error && <div className="admin-error">{error}</div>}
+
+          <TableSearchBox
+            value={userSearch}
+            onChange={setUserSearch}
+            placeholder="Search name, email, department, job title, phone, role…"
+            resultCount={filteredUsers.length}
+            totalCount={users.length}
+          />
+
           <div className="admin-users-table-wrap">
             <table className="admin-users-table">
               <thead>
@@ -451,9 +539,11 @@ export default function AdminUsersPage() {
               </thead>
               <tbody>
                 {loading ? <TableSkeleton rows={6} cols={8}/> :
-                 users.length === 0 ? (
-                  <tr><td colSpan={8} className="admin-empty-cell">No users found.</td></tr>
-                ) : users.map((u) => {
+                 filteredUsers.length === 0 ? (
+                  <tr><td colSpan={8} className="admin-empty-cell">
+                    {users.length === 0 ? "No users found." : "No users match your search."}
+                  </td></tr>
+                ) : filteredUsers.map((u) => {
                   const isEditing = editingId === u.id;
                   return (
                     <tr key={u.id} className={isEditing ? "admin-row--editing" : ""}>
@@ -782,6 +872,15 @@ export default function AdminUsersPage() {
               </div>
             </form>
           )}
+
+          <TableSearchBox
+            value={dealerSearch}
+            onChange={setDealerSearch}
+            placeholder="Search name, email, dealer code, dealer name, phone…"
+            resultCount={filteredDealerAccounts.length}
+            totalCount={dealers.length}
+          />
+
           <div className="admin-users-table-wrap">
             <table className="admin-users-table">
               <thead>
@@ -793,9 +892,11 @@ export default function AdminUsersPage() {
               </thead>
               <tbody>
                 {dealersLoading ? <TableSkeleton rows={5} cols={8}/> :
-                 dealers.length === 0 ? (
-                  <tr><td colSpan={8} className="admin-empty-cell">No dealer accounts yet.</td></tr>
-                ) : dealers.map((d) => (
+                 filteredDealerAccounts.length === 0 ? (
+                  <tr><td colSpan={8} className="admin-empty-cell">
+                    {dealers.length === 0 ? "No dealer accounts yet." : "No dealer accounts match your search."}
+                  </td></tr>
+                ) : filteredDealerAccounts.map((d) => (
                   <tr key={d.id}>
                     <td><span className="admin-user-name">{d.displayName}</span></td>
                     <td className="admin-readonly">{d.email}</td>
@@ -900,6 +1001,14 @@ export default function AdminUsersPage() {
             </p>
           </div>
 
+          <TableSearchBox
+            value={activitySearch}
+            onChange={setActivitySearch}
+            placeholder="Search activity name, subcategory, ATL/BTL…"
+            resultCount={filteredActivityTypes.length}
+            totalCount={activityTypes.length}
+          />
+
           {/* ── Activity types table ── */}
           <div className="admin-users-table-wrap">
             <table className="admin-users-table">
@@ -916,10 +1025,12 @@ export default function AdminUsersPage() {
               </thead>
               <tbody>
                 {actLoading ? <TableSkeleton rows={8} cols={7}/> :
-                 activityTypes.length === 0 ? (
+                 filteredActivityTypes.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="admin-empty-cell">
-                      No activity types yet. Use the form above to add one.
+                      {activityTypes.length === 0
+                        ? "No activity types yet. Use the form above to add one."
+                        : "No activity types match your search."}
                     </td>
                   </tr>
                 ) : (
@@ -1007,12 +1118,12 @@ export default function AdminUsersPage() {
           {/* Summary */}
           {!actLoading && activityTypes.length > 0 && (
             <div style={{ display:"flex",gap:16,marginTop:12,fontSize:12,color:"#6b7280",flexWrap:"wrap" }}>
-              <span><strong style={{ color:"#0a2540" }}>{Object.keys(groupedActivities).length}</strong> activity names</span>
-              <span><strong style={{ color:"#0a2540" }}>{activityTypes.length}</strong> total subcategories</span>
-              <span><strong style={{ color:"#16a34a" }}>{activityTypes.filter(a=>a.isActive).length}</strong> active</span>
-              <span><strong style={{ color:"#6b7280" }}>{activityTypes.filter(a=>!a.isActive).length}</strong> inactive</span>
-              <span><strong style={{ color:"#1e40af" }}>{activityTypes.filter(a=>a.activityType==="ATL").length}</strong> ATL</span>
-              <span><strong style={{ color:"#166534" }}>{activityTypes.filter(a=>a.activityType==="BTL").length}</strong> BTL</span>
+              <span><strong style={{ color:"#0a2540" }}>{Object.keys(groupedActivities).length}</strong> activity names{activitySearch ? " (filtered)" : ""}</span>
+              <span><strong style={{ color:"#0a2540" }}>{filteredActivityTypes.length}</strong> {activitySearch ? "matching " : "total "}subcategories</span>
+              <span><strong style={{ color:"#16a34a" }}>{filteredActivityTypes.filter(a=>a.isActive).length}</strong> active</span>
+              <span><strong style={{ color:"#6b7280" }}>{filteredActivityTypes.filter(a=>!a.isActive).length}</strong> inactive</span>
+              <span><strong style={{ color:"#1e40af" }}>{filteredActivityTypes.filter(a=>a.activityType==="ATL").length}</strong> ATL</span>
+              <span><strong style={{ color:"#166534" }}>{filteredActivityTypes.filter(a=>a.activityType==="BTL").length}</strong> BTL</span>
             </div>
           )}
         </div>

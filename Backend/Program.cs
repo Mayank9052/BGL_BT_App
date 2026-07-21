@@ -155,23 +155,7 @@ builder.Services.Configure<FormOptions>(o =>
     o.MultipartHeadersLengthLimit = int.MaxValue;
 });
 builder.Services.Configure<KestrelServerOptions>(o =>
-{
-    o.Limits.MaxRequestBodySize = OneGb;
-
-    // ── NEW: disable the minimum-data-rate abort for uploads ──────────────
-    // Default: Kestrel kills any request whose body arrives slower than
-    // 240 bytes/sec after a 5s grace period. A 1GB file on a slow or mobile
-    // connection will almost always dip below that at some point, and the
-    // connection gets reset — this looks like "large uploads just fail"
-    // with no clear error on the client. Setting this to null disables the
-    // check entirely for request bodies (keep-alive/response rate is separate).
-    o.Limits.MinRequestBodyDataRate = null;
-
-    // ── NEW: give slow uploads enough wall-clock time to finish ────────────
-    // Defaults are tuned for typical API calls, not multi-hundred-MB uploads.
-    o.Limits.KeepAliveTimeout        = TimeSpan.FromMinutes(10);
-    o.Limits.RequestHeadersTimeout   = TimeSpan.FromMinutes(2);
-});
+    o.Limits.MaxRequestBodySize = OneGb);
 builder.Services.Configure<IISServerOptions>(o =>
     o.MaxRequestBodySize = OneGb);
 
@@ -198,7 +182,6 @@ builder.Services.AddSignalR(opts =>
 });
 builder.Services.AddHttpClient("anthropic");
 builder.Services.AddScoped<IBotService, BotService>();   // BotService now has AppDbContext
-builder.Services.AddScoped<IProposalAiReviewService, ProposalAiReviewService>();
 
 // ── WhatsApp ──────────────────────────────────────────────────────────────────
 builder.Services.AddHttpClient("whatsapp");
@@ -242,5 +225,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHub<ChatHub>("/hubs/chat");
+// ── Health check endpoint ─────────────────────────────────────────────────────
+app.MapGet("/api/health", () => "Testing...").AllowAnonymous();
 app.MapFallbackToFile("index.html");
 app.Run();

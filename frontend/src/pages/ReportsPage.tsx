@@ -278,6 +278,7 @@ export default function ReportsPage() {
                     <th className="rp-num">Pending</th>
                     <th className="rp-num">Approved</th>
                     <th className="rp-num">Rejected</th>
+                    <th className="rp-num" style={{background:"#f59e0b22",color:"#92400e"}}>Revision</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -293,6 +294,7 @@ export default function ReportsPage() {
                       <td className="rp-num"><StatusBadge v={s.pending}  t="pending"/></td>
                       <td className="rp-num"><StatusBadge v={s.approved} t="approved"/></td>
                       <td className="rp-num"><StatusBadge v={s.rejected} t="rejected"/></td>
+                      <td className="rp-num"><StatusBadge v={(s as any).needsRevision ?? (s as any).NeedsRevision ?? 0} t="revision"/></td>
                     </tr>
                   ))}
                 </tbody>
@@ -310,13 +312,14 @@ export default function ReportsPage() {
                     <th>Dealer</th>
                     <th className="rp-num">Activities</th>
                     <th className="rp-num">Total Budget</th>
-                    <th className="rp-num">Retail Target</th>
-                    <th className="rp-num">Lead Target</th>
+                    <th className="rp-num">Retail</th>
+                    <th className="rp-num">Lead</th>
                     <th className="rp-num">CAC</th>
                     <th className="rp-num">CPL</th>
                     <th className="rp-num">Pending</th>
                     <th className="rp-num">Approved</th>
                     <th className="rp-num">Rejected</th>
+                    <th className="rp-num" style={{background:"#f59e0b22",color:"#92400e"}}>Revision</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -333,6 +336,7 @@ export default function ReportsPage() {
                       <td className="rp-num"><StatusBadge v={d.pending}  t="pending"/></td>
                       <td className="rp-num"><StatusBadge v={d.approved} t="approved"/></td>
                       <td className="rp-num"><StatusBadge v={d.rejected} t="rejected"/></td>
+                      <td className="rp-num"><StatusBadge v={(d as any).needsRevision ?? (d as any).NeedsRevision ?? 0} t="revision"/></td>
                     </tr>
                   ))}
                 </tbody>
@@ -454,5 +458,9 @@ export default function ReportsPage() {
 
 function StatusBadge({ v, t }: { v: number; t: string }) {
   if (!v) return <span className="rp-muted">—</span>;
+  if (t === "revision") return (
+    <span style={{background:"#fef3c7",color:"#92400e",padding:"2px 8px",
+      borderRadius:10,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{v}</span>
+  );
   return <span className={`rp-badge rp-badge--${t}`}>{v}</span>;
 }

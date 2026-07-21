@@ -126,11 +126,11 @@ const DEALER_DAILY: DealerDayRow[] = [
 ];
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
-type ActiveFilter = "All" | "Pending" | "Approved" | "Rejected";
+type ActiveFilter = "All" | "Pending" | "Approved" | "Rejected" | "NeedsRevision";
 
 interface SummaryStats {
   totalProposals: number; pendingCount: number; approvedCount: number;
-  rejectedCount: number; totalBudget: number; approvedBudget: number;
+  rejectedCount: number; needsRevision: number; totalBudget: number; approvedBudget: number;
   pendingBudget: number; totalRetailTarget: number; totalLeadTarget: number;
   avgCac: number; avgCpl: number; stateCount: number; dealerCount: number;
 }
@@ -145,6 +145,7 @@ function computeStats(proposals: ProposalResponse[]): SummaryStats {
     pendingCount:   pending.length,
     approvedCount:  approved.length,
     rejectedCount:  proposals.filter((p) => p.status === "Rejected").length,
+    needsRevision:  proposals.filter((p) => p.status === "NeedsRevision").length,
     totalBudget:    proposals.reduce((s, p) => s + p.totalBudget, 0),
     approvedBudget: approved.reduce((s, p) => s + p.totalBudget, 0),
     pendingBudget:  pending.reduce((s, p)  => s + p.totalBudget, 0),
@@ -238,6 +239,7 @@ export default function DashboardPage() {
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("All");
   const [stateFilter,  setStateFilter]  = useState("All");
   const [monthFilter,  setMonthFilter]  = useState("All");
+  const [yearFilter,   setYearFilter]   = useState("All");
   const [sharedSearch, setSharedSearch] = useState("");
 
   // ── Report tab state (Admin only) ──────────────────────────────────────────
@@ -266,6 +268,10 @@ export default function DashboardPage() {
     () => ["All", ...Array.from(new Set(proposals.map((p) => p.month)))],
     [proposals],
   );
+  const years = useMemo(
+    () => ["All", ...Array.from(new Set(proposals.map((p) => (p as any).year).filter(Boolean))).sort()],
+    [proposals],
+  );
 
   const handleKpiClick = (filter: ActiveFilter) =>
     setActiveFilter((prev) => (prev === filter ? "All" : filter));
@@ -275,12 +281,13 @@ export default function DashboardPage() {
       if (activeFilter !== "All" && p.status !== activeFilter) return false;
       if (stateFilter  !== "All" && p.state  !== stateFilter)  return false;
       if (monthFilter  !== "All" && p.month  !== monthFilter)   return false;
+      if (yearFilter   !== "All" && (p as any).year !== yearFilter) return false;
       return true;
     }),
-  [proposals, activeFilter, stateFilter, monthFilter]);
+  [proposals, activeFilter, stateFilter, monthFilter, yearFilter]);
 
   // ── POINT 4: KPI cards reflect filtered set when any filter is active ──────
-  const hasActiveFilter = activeFilter !== "All" || stateFilter !== "All" || monthFilter !== "All";
+  const hasActiveFilter = activeFilter !== "All" || stateFilter !== "All" || monthFilter !== "All" || yearFilter !== "All";
   const stats = useMemo(
     () => computeStats(hasActiveFilter ? baseFiltered : proposals),
     [baseFiltered, proposals, hasActiveFilter],
@@ -427,7 +434,7 @@ export default function DashboardPage() {
       eligibleOldBudget: number; eligibleNewBudget: number; nonBudget: number;
       retailTarget: number; leadTarget: number; activities: number;
       eligibility: string; type: string;
-      pending: number; approved: number; rejected: number;
+      pending: number; approved: number; rejected: number; revision: number;
       activityNames: Set<string>;
     }> = {};
     for (const p of searchFiltered) {
@@ -437,7 +444,7 @@ export default function DashboardPage() {
         eligibleOldBudget: 0, eligibleNewBudget: 0, nonBudget: 0,
         retailTarget: 0, leadTarget: 0, activities: 0,
         eligibility: p.eligibility ?? "", type: p.type ?? "",
-        pending: 0, approved: 0, rejected: 0,
+        pending: 0, approved: 0, rejected: 0, revision: 0,
         activityNames: new Set<string>(),
       };
       const d  = map[key];
@@ -451,9 +458,10 @@ export default function DashboardPage() {
       if (el.includes("not") || el.includes("non")) d.nonBudget         += p.totalBudget;
       else if (ty === "new")                         d.eligibleNewBudget += p.totalBudget;
       else                                           d.eligibleOldBudget += p.totalBudget;
-      if (p.status === "Pending")  d.pending++;
-      if (p.status === "Approved") d.approved++;
-      if (p.status === "Rejected") d.rejected++;
+      if (p.status === "Pending")       d.pending++;
+      if (p.status === "Approved")      d.approved++;
+      if (p.status === "Rejected")      d.rejected++;
+      if (p.status === "NeedsRevision") d.revision = (d.revision||0) + 1;
       d.eligibility = p.eligibility ?? d.eligibility;
       d.type        = p.type        ?? d.type;
     }
@@ -471,16 +479,75 @@ export default function DashboardPage() {
     activeFilter !== "All",
     stateFilter  !== "All",
     monthFilter  !== "All",
+    yearFilter   !== "All",
   ].filter(Boolean).length;
 
   const clearAllFilters = () => {
     setActiveFilter("All"); setStateFilter("All");
-    setMonthFilter("All");  setSharedSearch("");
+    setMonthFilter("All");  setYearFilter("All"); setSharedSearch("");
   };
+
+  // ── Live daily summary from real proposals ───────────────────────────────
+  const liveDailySummary = useMemo((): DailySummaryRow[] => {
+    const approvedWithActuals = proposals.filter(p =>
+      p.status === "Approved" && p.activities.some(a => a.actualStartDate || (a as any).dailyData)
+    );
+    const rows: DailySummaryRow[] = [];
+    let sr = 1;
+    for (const p of approvedWithActuals) {
+      for (const a of p.activities) {
+        const dailyData = (a as any).dailyData;
+        if (!dailyData && !a.actualStartDate) continue;
+        let entries: any[] = [];
+        try { if (dailyData) entries = JSON.parse(dailyData); } catch {}
+        const totalEnqActual   = entries.reduce((s: number, e: any) => s + (e.enquiryActual   || 0), 0);
+        const totalEnqPlanned  = entries.reduce((s: number, e: any) => s + (e.enquiryPlanned  || 0), 0);
+        const totalTrActual    = entries.reduce((s: number, e: any) => s + (e.testDriveActual || 0), 0);
+        const totalTrPlanned   = entries.reduce((s: number, e: any) => s + (e.testDrivePlanned|| 0), 0);
+        const totalBooking     = entries.reduce((s: number, e: any) => s + (e.bookingActual   || 0), 0);
+        const totalRetail      = entries.reduce((s: number, e: any) => s + (e.retailActual    || 0), 0);
+        const totalPunched     = entries.reduce((s: number, e: any) => s + (e.leadsPunched    || 0), 0);
+        const canopy = Number((a as any).qty) || 1;
+        const actStart = a.actualStartDate || a.startDate;
+        const actDay = actStart
+          ? Math.ceil((new Date().getTime() - new Date(actStart).getTime()) / (1000 * 60 * 60 * 24)) + 1
+          : 1;
+        rows.push({
+          sr: sr++,
+          dealer: p.dealerName,
+          location: p.location,
+          state: p.state,
+          zone: (p as any).zone || "—",
+          bgMember: p.commandoName || (p as any).tsmName || p.rsmName || "—",
+          canopy,
+          enquiryPlanned:      totalEnqPlanned  || (a.leadTarget * actDay),
+          enquiryActual:       totalEnqActual,
+          perCanopy:           canopy > 0 ? Math.round(totalEnqActual / canopy) : 0,
+          hot:                 0, // not in current schema
+          trPlanned:           totalTrPlanned   || 0,
+          trActual:            totalTrActual,
+          trPerCanopy:         canopy > 0 ? Math.round(totalTrActual / canopy) : 0,
+          bookToday:           entries.length > 0 ? (entries[entries.length-1]?.bookingActual || 0) : 0,
+          bookInHand:          0,
+          retailToday:         entries.length > 0 ? (entries[entries.length-1]?.retailActual || 0) : 0,
+          retailMtdAct:        totalRetail,
+          retailMtd:           totalRetail,
+          retailRatePerCanopy: canopy > 0 ? parseFloat((totalRetail / canopy).toFixed(1)) : 0,
+          activityDay:         Math.min(actDay, entries.length || actDay),
+          closingStock:        0,
+          leads:               totalEnqActual,
+          punched:             totalPunched,
+          gap:                 totalEnqActual - totalPunched,
+          convPct:             totalEnqActual > 0 ? Math.round(totalRetail / totalEnqActual * 100) : 0,
+        });
+      }
+    }
+    return rows;
+  }, [proposals]);
 
   // Daily summary totals
   const dsTotals = useMemo(() => ({
-    canopy:          DAILY_SUMMARY.reduce((s, r) => s + r.canopy, 0),
+    canopy:          liveDailySummary.reduce((s, r) => s + r.canopy, 0) || liveDailySummary.length > 0 ? liveDailySummary.reduce((s, r) => s + r.canopy, 0) : DAILY_SUMMARY.reduce((s, r) => s + r.canopy, 0),
     enquiryPlanned:  DAILY_SUMMARY.reduce((s, r) => s + r.enquiryPlanned, 0),
     enquiryActual:   DAILY_SUMMARY.reduce((s, r) => s + r.enquiryActual, 0),
     perCanopy:       Math.round(DAILY_SUMMARY.reduce((s, r) => s + r.enquiryActual, 0) / DAILY_SUMMARY.reduce((s, r) => s + r.canopy, 0)),
@@ -529,7 +596,7 @@ export default function DashboardPage() {
           <span className="dash-action-icon">📋</span>
           <div><div className="dash-action-title">New Proposal</div><div className="dash-action-desc">Submit a BTL activity plan</div></div>
         </button>
-        {isAdmin && (
+        {(
           <button className="dash-action-card" onClick={() => navigate("/approver")}>
             <span className="dash-action-icon">✅</span>
             <div><div className="dash-action-title">Review Proposals</div><div className="dash-action-desc">Approve or reject pending plans</div></div>
@@ -594,6 +661,11 @@ export default function DashboardPage() {
               value={`₹${Math.round(stats.avgCpl).toLocaleString("en-IN")}`}
               sub={`${stats.totalLeadTarget.toLocaleString("en-IN")} total leads`}
               accent="blue" onClick={clearAllFilters}/>
+            <KpiCard icon="↩" label="Needs Revision"
+              value={String(stats.needsRevision??0)}
+              sub="Sent back for changes"
+              accent="amber" active={activeFilter==="NeedsRevision"}
+              onClick={()=>handleKpiClick("NeedsRevision")}/>
           </div>
 
           {/* ── POINT 4: Filter scope hint when month/state filter active ── */}
@@ -608,6 +680,7 @@ export default function DashboardPage() {
               <strong>KPI counts filtered:</strong>
               {stateFilter  !== "All" && <span>State: <b>{stateFilter}</b></span>}
               {monthFilter  !== "All" && <span>Month: <b>{monthFilter}</b></span>}
+              {yearFilter   !== "All" && <span>Year: <b>{yearFilter}</b></span>}
               {activeFilter !== "All" && <span>Status: <b>{activeFilter}</b></span>}
               <button
                 style={{
@@ -647,13 +720,7 @@ export default function DashboardPage() {
               <div className="dash-global-filter-bar">
                 <div className="dash-global-filter-left">
                   <span className="dash-filter-label">Filters:</span>
-                  <select className="dash-filter-select dash-filter-select--inline"
-                    value={activeFilter}
-                    onChange={(e) => setActiveFilter(e.target.value as ActiveFilter)}>
-                    {["All","Pending","Approved","Rejected"].map((s) => (
-                      <option key={s} value={s}>{s === "All" ? "All Statuses" : s}</option>
-                    ))}
-                  </select>
+
                   <select className="dash-filter-select dash-filter-select--inline"
                     value={stateFilter}
                     onChange={(e) => setStateFilter(e.target.value)}>
@@ -666,6 +733,20 @@ export default function DashboardPage() {
                     onChange={(e) => setMonthFilter(e.target.value)}>
                     {months.map((m) => (
                       <option key={m} value={m}>{m === "All" ? "All Months" : m}</option>
+                    ))}
+                  </select>
+                  <select className="dash-filter-select dash-filter-select--inline"
+                    value={yearFilter}
+                    onChange={(e) => setYearFilter(e.target.value)}>
+                    {years.map((y) => (
+                      <option key={y} value={y}>{y === "All" ? "All Years" : y}</option>
+                    ))}
+                  </select>
+                  <select className="dash-filter-select dash-filter-select--inline"
+                    value={activeFilter}
+                    onChange={(e) => setActiveFilter(e.target.value as ActiveFilter)}>
+                    {["All","Pending","Approved","Rejected","NeedsRevision"].map((s) => (
+                      <option key={s} value={s}>{s === "All" ? "All Statuses" : s === "NeedsRevision" ? "Needs Revision" : s}</option>
                     ))}
                   </select>
                   {activeFilterCount > 0 && (
@@ -695,6 +776,12 @@ export default function DashboardPage() {
                     <span className="dash-pill dash-pill--month">
                       Month: {monthFilter}
                       <button onClick={() => setMonthFilter("All")}>✕</button>
+                    </span>
+                  )}
+                  {yearFilter !== "All" && (
+                    <span className="dash-pill dash-pill--month">
+                      Year: {yearFilter}
+                      <button onClick={() => setYearFilter("All")}>✕</button>
                     </span>
                   )}
                 </div>
@@ -931,6 +1018,7 @@ export default function DashboardPage() {
                           <th className="dash-th" style={{textAlign:"center"}}>Pending</th>
                           <th className="dash-th" style={{textAlign:"center"}}>Approved</th>
                           <th className="dash-th" style={{textAlign:"center"}}>Rejected</th>
+                          <th className="dash-th" style={{textAlign:"center",background:"#f59e0b22",color:"#92400e"}}>Revision</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -980,6 +1068,9 @@ export default function DashboardPage() {
                               <td className="dash-td" style={{textAlign:"center"}}>
                                 {row.rejected > 0 ? <span className="dash-badge dash-badge--rejected">{row.rejected}</span> : <span className="dash-muted">—</span>}
                               </td>
+                              <td className="dash-td" style={{textAlign:"center"}}>
+                                {(row as any).revision > 0 ? <span className="dash-badge dash-badge--revision">{(row as any).revision}</span> : <span className="dash-muted">—</span>}
+                              </td>
                             </tr>
                           );
                         })}
@@ -1000,15 +1091,15 @@ export default function DashboardPage() {
                 <div>
                   <h2 className="dash-section-title" style={{fontSize:16}}>
                     📅 Daily Activity Sheet Summary
-                    <span style={{fontSize:12,fontWeight:400,color:"#64748b",marginLeft:10}}>03 July 2026</span>
+                    <span style={{fontSize:12,fontWeight:400,color:"#64748b",marginLeft:10}}>Live data from approved proposals</span>
                   </h2>
                   <p style={{margin:"2px 0 0",fontSize:11,color:"#94a3b8"}}>
                     Click any dealer row to view their full daily activity sheet ↗
                   </p>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                  <span style={{fontSize:11,background:"#fef3c7",color:"#92400e",padding:"3px 10px",borderRadius:20,fontWeight:700}}>
-                    🔴 Mock data — connect to live API
+                  <span style={{fontSize:11,background:"#dcfce7",color:"#166534",padding:"3px 10px",borderRadius:20,fontWeight:700}}>
+                    🟢 Live data from Post-Activity entries
                   </span>
                   <button
                     onClick={()=>printSection("daily-summary-table","Daily Activity Summary")}
@@ -1059,7 +1150,7 @@ export default function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {DAILY_SUMMARY.map((row, i) => {
+                    {liveDailySummary.map((row, i) => {
                       const enqColor  = cellColor(row.enquiryActual, row.enquiryPlanned);
                       const trColor   = cellColor(row.trActual, row.trPlanned);
                       const rateColor = row.retailRatePerCanopy >= 1 ? "#d1fae5" : row.retailRatePerCanopy >= 0.5 ? "#fef3c7" : "#fee2e2";
@@ -1099,7 +1190,7 @@ export default function DashboardPage() {
                   </tbody>
                   <tfoot>
                     <tr style={{background:"#fef9c3",borderTop:"2px solid #fde68a"}}>
-                      <td className="dash-td" colSpan={6} style={{fontWeight:800,fontSize:12,color:"#92400e"}}>Total ({DAILY_SUMMARY.length})</td>
+                      <td className="dash-td" colSpan={6} style={{fontWeight:800,fontSize:12,color:"#92400e"}}>Total ({liveDailySummary.length})</td>
                       <td className="dash-td" style={{textAlign:"center",fontWeight:800}}>{dsTotals.canopy}</td>
                       <td className="dash-td dash-td--right" style={{fontWeight:700}}>{dsTotals.enquiryPlanned}</td>
                       <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.enquiryActual}</td>

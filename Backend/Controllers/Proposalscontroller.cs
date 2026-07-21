@@ -112,6 +112,7 @@ public class ProposalsController : ControllerBase
             TsmName                = dto.TsmName,
             CommandoName           = dto.CommandoName,
             Month                  = dto.Month,
+            Year                   = dto.Year,
             Eligibility            = dto.Eligibility,
             Remarks                = dto.Remarks,
             TotalBudget            = totalBudget,
@@ -327,6 +328,7 @@ public class ProposalsController : ControllerBase
         proposal.TsmName        = dto.TsmName;
         proposal.CommandoName   = dto.CommandoName;
         proposal.Month          = dto.Month;
+        proposal.Year           = dto.Year;
         proposal.Eligibility    = dto.Eligibility;
         proposal.Remarks        = dto.Remarks;
         proposal.CheckerRemarks = dto.CheckerRemarks;  // ← FIX: was missing

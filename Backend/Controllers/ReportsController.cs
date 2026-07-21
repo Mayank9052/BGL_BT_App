@@ -141,6 +141,7 @@ public class ReportsController : ControllerBase
                     Pending           = g.Count(p => p.Status == "Pending"),
                     Approved          = g.Count(p => p.Status == "Approved"),
                     Rejected          = g.Count(p => p.Status == "Rejected"),
+                    NeedsRevision     = g.Count(p => p.Status == "NeedsRevision"),
                 };
             })
             .OrderBy(s => s.State)
@@ -166,6 +167,7 @@ public class ReportsController : ControllerBase
                     Pending           = g.Count(p => p.Status == "Pending"),
                     Approved          = g.Count(p => p.Status == "Approved"),
                     Rejected          = g.Count(p => p.Status == "Rejected"),
+                    NeedsRevision     = g.Count(p => p.Status == "NeedsRevision"),
                 };
             })
             .OrderBy(d => d.State).ThenBy(d => d.Dealer)
@@ -300,7 +302,7 @@ public class ReportsController : ControllerBase
             "State", "Dealers", "Total Budget (₹)",
             "Retail Target", "Lead Target",
             "CAC (₹)", "CPL (₹)",
-            "Pending", "Approved", "Rejected"
+            "Pending", "Approved", "Rejected", "Needs Revision"
         };
         for (int i = 0; i < stateHdrs.Length; i++)
         {
@@ -323,6 +325,7 @@ public class ReportsController : ControllerBase
             stateSheet.Cells[sr, 8].Value  = g.Count(p => p.Status == "Pending");
             stateSheet.Cells[sr, 9].Value  = g.Count(p => p.Status == "Approved");
             stateSheet.Cells[sr, 10].Value = g.Count(p => p.Status == "Rejected");
+            stateSheet.Cells[sr, 11].Value = g.Count(p => p.Status == "NeedsRevision");
             sr++;
         }
         stateSheet.Cells[stateSheet.Dimension?.Address ?? "A1"].AutoFitColumns();
@@ -333,7 +336,7 @@ public class ReportsController : ControllerBase
             "State", "Dealer", "Activities",
             "Total Budget (₹)", "Retail Target", "Lead Target",
             "CAC (₹)", "CPL (₹)",
-            "Pending", "Approved", "Rejected"
+            "Pending", "Approved", "Rejected", "Needs Revision"
         };
         for (int i = 0; i < dealerHdrs.Length; i++)
         {
@@ -357,6 +360,7 @@ public class ReportsController : ControllerBase
             dealerSheet.Cells[dr, 9].Value  = g.Count(p => p.Status == "Pending");
             dealerSheet.Cells[dr, 10].Value = g.Count(p => p.Status == "Approved");
             dealerSheet.Cells[dr, 11].Value = g.Count(p => p.Status == "Rejected");
+            dealerSheet.Cells[dr, 12].Value = g.Count(p => p.Status == "NeedsRevision");
             dr++;
         }
         dealerSheet.Cells[dealerSheet.Dimension?.Address ?? "A1"].AutoFitColumns();

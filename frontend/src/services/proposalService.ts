@@ -109,6 +109,7 @@ interface ProposalPayload {
   tsmName:            string;
   commandoName:       string | null;
   month:              string;
+  year:               string;
   eligibility:        string;
   remarks:            string;
   submittedBy:        string | null;
@@ -132,6 +133,7 @@ export interface UpdateProposalPayload {
   tsmName:            string;
   commandoName:       string | null;
   month:              string;
+  year:               string;
   eligibility:        string;
   remarks:            string;
   activities:         ActivityPayload[];
