@@ -5,13 +5,9 @@
 //   3. CAC warning checks BGauss CAC against allowed limit
 //   4. Sales % column — Retail auto-calculates and locks from Lead × Sales%
 //   5. goToSummary BLOCKS if BGauss CAC exceeds allowed limit (red warning shown)
-//   6. Year auto-selects current year (rolls forward automatically each year
-//      since CURRENT_YEAR is computed live) · Month options restrict to
-//      current/future months when Year = current year · Start/End Date
-//      restricted to fall within the selected Month+Year window
-//   7. NEW: "+ Add Activity" now defaults the new row's dates to the start
-//      of the currently-selected Month+Year window (was always today/+7,
-//      which could fall outside the window if a future month was selected)
+//   6. YEARS = current + next only (no previous year)
+//   7. monthOptions = no past months for current year
+//   8. activityDateRange = dates constrained to selected month+year
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
@@ -28,12 +24,7 @@ import {
 import { fetchVendors, type VendorOption } from "../services/vendorService";
 import SearchableSelect from "../components/SearchableSelect";
 import type { StateOption, CityOption } from "../types/location";
-// ── TEMPORARY: static RSM/TSM/Sales Commando lookup from the team-mapping CSV.
-// Used only as a fallback source for these 3 fields until the dealer master API
-// reliably returns them for every dealer. Remove this import + its usages below
-// (they are clearly marked) once the backend is fixed — don't delete the old
-// ERP-based logic, it stays commented out right next to the new lookup.
-import { findDealerTeam } from "../data/dealerTeamMap";
+import { findDealerTeam, DEALER_TEAM_MAP } from "../data/dealerTeamMap";
 import * as XLSX from "xlsx";
 import "./RSMForm.css";
 import {
@@ -50,27 +41,12 @@ const MONTHS = [
   "July","August","September","October","November","December",
 ];
 const CURRENT_MONTH = MONTHS[new Date().getMonth()];
-const CURRENT_YEAR = new Date().getFullYear();
+const CURRENT_YEAR  = new Date().getFullYear();
+// ── FIX: only current year + next year (no previous year) ────────────────────
 const YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
-// FIX: was `d.toISOString().split("T")[0]`. toISOString() converts to UTC —
-// for a date built as local midnight (e.g. `new Date(year, month, 1)`) in any
-// timezone ahead of UTC (like IST, +5:30), that shift lands on the PREVIOUS
-// calendar day. That's why selecting "August" showed "31 July" as an
-// available/min Start Date instead of "1 August". This version reads the
-// date's own local year/month/day directly, with no UTC conversion.
-const isoDate = (d: Date) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-};
+const isoDate = (d: Date) => d.toISOString().split("T")[0];
 const TODAY_ISO = isoDate(new Date());
 const DEFAULT_END_ISO = isoDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
-// ← NEW: small helper used only by "+ Add Activity" to default new rows'
-// dates inside whatever Month+Year window is currently selected.
-const addDaysISO = (iso: string, days: number) =>
-  isoDate(new Date(new Date(iso).getTime() + days * 24 * 60 * 60 * 1000));
-// ← no backdating to ANY past date (was Jan 1 of current year)
 const MIN_ACTIVITY_DATE = TODAY_ISO;
 
 interface ActivityRow {
@@ -121,11 +97,12 @@ function calcRetailFromSales(leadTarget: string, salesPercent: string): string {
   return String(Math.round(lead * pct / 100));
 }
 
+// ── emptyActivity: dates start empty so user picks within their chosen month ──
 const emptyActivity = (): ActivityRow => ({
   id: crypto.randomUUID(), activityType: "", category: "", categoryLocked: false,
   subcategory: "", qty: "1", _maxQty: 5, leadTarget: "", salesPercent: "",
   retailTarget: "", retailLocked: false,
-  startDate: TODAY_ISO, endDate: DEFAULT_END_ISO,          // ← default for the very first row / edit-mode fallback
+  startDate: "", endDate: "",
   budget: "", additionalBudget: "0",
   bgaussShare: "100", remarks: "", mediaFiles: [],
 });
@@ -157,7 +134,6 @@ function validateActivities(rows: ActivityRow[]): ActivityErrors {
     if (!a.startDate)                                   rowErr.startDate    = "Required";
     if (!a.endDate)                                     rowErr.endDate      = "Required";
     if (a.startDate && a.endDate && a.endDate < a.startDate) rowErr.endDate = "End must be after start";
-    // ── block dates before today (RSM cannot backdate) ──
     if (!rowErr.startDate && a.startDate < MIN_ACTIVITY_DATE) rowErr.startDate = "Cannot select a date in the past.";
     if (!rowErr.endDate   && a.endDate   < MIN_ACTIVITY_DATE) rowErr.endDate   = "Cannot select a date in the past.";
     if (!a.budget || num(a.budget) <= 0)               rowErr.budget       = "Required";
@@ -175,9 +151,6 @@ export default function RSMProposalForm() {
   const [searchParams] = useSearchParams();
   const account        = accounts[0];
 
-  // ── Dealer user detection ─────────────────────────────────────────────────
-  // When a dealer logs in (DealerJwt), their info is stored in localStorage.
-  // isDealerUser=true → lock the Dealer dropdown to their own dealership.
   const dealerUser = (() => {
     try {
       const raw = localStorage.getItem("bgauss_dealer_user");
@@ -185,7 +158,7 @@ export default function RSMProposalForm() {
     } catch { return null; }
   })();
   const isDealerUser = !!(dealerUser?.role === "Dealer");
-  const xlsxRef        = useRef<HTMLInputElement>(null);
+  const xlsxRef = useRef<HTMLInputElement>(null);
 
   const editId   = searchParams.get("edit");
   const editMode = !!editId;
@@ -226,7 +199,7 @@ export default function RSMProposalForm() {
   const [eligibility,        setEligibility]        = useState<DealerEligibility | null>(null);
   const [eligibilityLoading, setEligibilityLoading] = useState(false);
   const [cacWarning,         setCacWarning]         = useState<string | null>(null);
-  const [cacBlocking,        setCacBlocking]        = useState(false); // true = red, blocks submit
+  const [cacBlocking,        setCacBlocking]        = useState(false);
 
   const [activeSection,   setActiveSection]   = useState<"details"|"activities"|"summary">("details");
   const [showDealerPanel, setShowDealerPanel] = useState(false);
@@ -244,7 +217,6 @@ export default function RSMProposalForm() {
     fetchDealers(instance).then(setDealers).catch(() => setDealerError("Could not load dealer list.")).finally(() => setLoadingDealers(false));
   }, [instance]);
 
-  // ── Auto-select dealer for dealer-logged-in users once the list is ready ──
   useEffect(() => {
     if (!isDealerUser || !dealers.length || header.dealerId) return;
     const code = (dealerUser?.dealerCode as string | undefined);
@@ -282,7 +254,9 @@ export default function RSMProposalForm() {
           vendorName: p.vendorName ?? "", state: titleCase(p.state), stateId: null,
           location: titleCase(p.location), type: p.type, rsmName: titleCase(p.rsmName),
           tsmName:      titleCase(p.tsmName ?? p.commandoName ?? ""),
-          commandoName: p.commandoName ?? "", month: p.month, year: String(CURRENT_YEAR), // backend has no Year field yet
+          commandoName: p.commandoName ?? "",
+          month: p.month,
+          year: (p as any).year ? String((p as any).year) : String(CURRENT_YEAR),
           eligibility: p.eligibility, remarks: p.remarks ?? "",
         });
         setActivities(p.activities.map((a) => ({
@@ -317,7 +291,6 @@ export default function RSMProposalForm() {
   }, [activities]);
   const { totalBudget, totalLeadTarget, totalRetailTarget, totalBgauss, cac, cpl, hasSpecialApproval } = totals;
 
-  // ── CAC warning — updates live as Budget / BGauss% / Retail change ────────
   useEffect(() => {
     if (!eligibility || (totals.totalLeadTarget === 0 && totals.totalRetailTarget === 0)) {
       setCacWarning(null); setCacBlocking(false); return;
@@ -345,16 +318,43 @@ export default function RSMProposalForm() {
     }
   }, [cac, totals.totalLeadTarget, totals.totalRetailTarget, eligibility]);
 
+  // ── setField: reset activity dates when month or year changes ────────────
   const setField = (key: keyof ProposalHeader, value: string) => {
     setHeader((h) => ({ ...h, [key]: value }));
     if (fieldErrors[key as keyof FieldErrors])
       setFieldErrors((e) => { const n = { ...e }; delete n[key as keyof FieldErrors]; return n; });
-    // When month or year changes, clear all activity dates so RSM must re-pick
-    // dates that fall within the new month/year window
     if (key === "month" || key === "year") {
       setActivities(rows => rows.map(r => ({ ...r, startDate: "", endDate: "" })));
     }
   };
+
+  // ── monthOptions: no past months for current year ─────────────────────────
+  const monthOptions = useMemo(() => {
+    const allMonths = MONTHS.map((m, i) => ({ value: m, label: m, index: i }));
+    if (header.year === String(CURRENT_YEAR)) {
+      return allMonths
+        .filter(m => m.index >= new Date().getMonth())
+        .map(({ value, label }) => ({ value, label }));
+    }
+    return allMonths.map(({ value, label }) => ({ value, label }));
+  }, [header.year]);
+
+  // ── activityDateRange: dates constrained to selected month+year ───────────
+  const activityDateRange = useMemo(() => {
+    const monthIdx = MONTHS.indexOf(header.month);
+    const year = parseInt(header.year) || CURRENT_YEAR;
+    if (monthIdx < 0 || !header.month) {
+      return { min: TODAY_ISO, max: "" };
+    }
+    const firstDay  = new Date(year, monthIdx, 1);
+    const lastDay   = new Date(year, monthIdx + 1, 0);
+    const todayDate = new Date();
+    const minDate   = firstDay > todayDate ? firstDay : todayDate;
+    return {
+      min: minDate.toISOString().split("T")[0],
+      max: lastDay.toISOString().split("T")[0],
+    };
+  }, [header.month, header.year]);
 
   const handleDealerSelect = (customerCode: string) => {
     const dealer = dealers.find((d) => d.customerCode === customerCode);
@@ -375,9 +375,6 @@ export default function RSMProposalForm() {
         state:         titleCase(dealer.state ?? ""),
         stateId:       null,
         location:      titleCase(dealer.city ?? ""),
-        // rsmName:       titleCase(dealer.rsmName ?? dealer.rsmCode ?? ""),        // ← OLD (ERP-based) — kept for reference, do not delete
-        // tsmName:       titleCase(dealer.tsmName ?? dealer.tsmCode ?? ""),        // ← OLD (ERP-based) — kept for reference, do not delete
-        // commandoName:  titleCase(dealer.commandoName ?? ""),                    // ← OLD (ERP-based) — kept for reference, do not delete
         rsmName:       titleCase(csvTeam?.rsm || dealer.rsmName || dealer.rsmCode || ""),
         tsmName:       titleCase(csvTeam?.tsm || dealer.tsmName || dealer.tsmCode || ""),
         commandoName:  titleCase(csvTeam?.commando || dealer.commandoName || ""),
@@ -391,7 +388,11 @@ export default function RSMProposalForm() {
       fetchDealerEligibility(dealer.customerCode, instance)
         .then((elig) => {
           setEligibility(elig);
-          setHeader((h) => ({ ...h, type: elig.dealerType, eligibility: elig.isEligible ? "Eligible" : "Not Eligible" }));
+          // ── Old/New classification comes from ERP eligibility API ──
+      // Dealers onboarded within the last 4 months are "New", others are "Old".
+      // If the ERP marks a recently-onboarded dealer (e.g. Tejas Mobility, Shree Ganesh Traders)
+      // as "Old", it means their ERP onboarding date is > 4 months ago — contact ERP admin to fix.
+      setHeader((h) => ({ ...h, type: elig.dealerType, eligibility: elig.isEligible ? "Eligible" : "Not Eligible" }));
           setFieldErrors((e) => { const n = { ...e }; delete n.type; delete n.eligibility; return n; });
         })
         .catch(() => {}).finally(() => setEligibilityLoading(false));
@@ -457,17 +458,7 @@ export default function RSMProposalForm() {
       setActivityErrors((prev) => { const next = { ...prev }; if (next[id]) { next[id] = { ...next[id] }; delete next[id][key as keyof ActivityErrors[string]]; if (!Object.keys(next[id]).length) delete next[id]; } return next; });
   };
 
-  // ── "+ Add Activity" — new row's dates now default INSIDE the currently
-  // selected Month+Year window (activityDateRange), instead of always
-  // defaulting to today/+7 which could fall outside a future month's range.
-  const addActivity = () => {
-    const start = activityDateRange.min;
-    const naturalEnd = addDaysISO(start, 7);
-    const end = activityDateRange.max && naturalEnd > activityDateRange.max
-      ? activityDateRange.max
-      : naturalEnd;
-    setActivities((rows) => [...rows, { ...emptyActivity(), startDate: start, endDate: end }]);
-  };
+  const addActivity    = () => setActivities((rows) => [...rows, emptyActivity()]);
   const removeActivity = (id: string) => {
     setActivities((rows) => rows.length > 1 ? rows.filter((r) => r.id !== id) : rows);
     setActivityErrors((prev) => { const n = { ...prev }; delete n[id]; return n; });
@@ -511,7 +502,7 @@ export default function RSMProposalForm() {
 
   const goToSummary = () => {
     const errs = validateActivities(activities);
-    // Extra check: dates must be within selected month
+    // Extra: validate dates are within selected month/year
     if (header.month && header.year) {
       const { min, max } = activityDateRange;
       let hasDateError = false;
@@ -561,8 +552,23 @@ export default function RSMProposalForm() {
     const native = new Date(str); if (!isNaN(native.getTime())) return native.toISOString().split("T")[0];
     return "";
   };
-  const isSkippableRow = (rawType: string) =>
-    !rawType || rawType.startsWith("[") || rawType.startsWith("Valid:") || rawType.toLowerCase() === "activity type";
+  const isSkippableRow = (rawType: string) => {
+    if (!rawType) return true;
+    const t = rawType.trim().toLowerCase();
+    // Skip header/hint/reference rows from the template
+    return (
+      t.startsWith("[") ||
+      t.startsWith("valid:") ||
+      t === "activity type" ||
+      t === "activity name" ||          // column header row
+      t.startsWith("pick from dropdown") || // hint row
+      t.startsWith("★") ||              // group label row
+      t.startsWith("=== ") ||           // reference sheet markers
+      t.includes("example row") ||      // example rows in template
+      t.startsWith("bgauss btl") ||     // instructions sheet title
+      t.startsWith("how to fill")       // instructions content
+    );
+  };
 
   const handleExcelImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     setXlsxMsg(null); setXlsxAlert(null);
@@ -591,102 +597,245 @@ export default function RSMProposalForm() {
         if (unknownTypes.length > 0) setXlsxAlert({ unknownTypes, skippedRows: skippedCount });
         if (validRows.length === 0) { setXlsxMsg({ ok: false, text: `No valid rows — ${unknownTypes.length} unknown type(s).` }); return; }
         const mapped: ActivityRow[] = validRows.map((r) => {
-          const actName   = cellVal(r, "Activity Name", "activityName");
-          const subcat    = cellVal(r, "Subcategory", "subcategory");
-          const group     = activityGroups.find((g) => g.activityName.toLowerCase() === actName.toLowerCase());
-          const sub       = group?.subcategories.find((s) => s.subcategory.toLowerCase() === subcat.toLowerCase());
-          const shareRaw  = cellVal(r, "BGauss Share", "bgaussShare") || "100";
-          const shareVal  = BGAUSS_SHARE_OPTIONS.includes(shareRaw) ? shareRaw : "100";
-          const qtyRaw    = cellVal(r, "QTY", "qty") || "1";
-          const leadRaw   = cellVal(r, "Lead Target", "leadTarget", "Target", "target");
-          const salesPct  = cellVal(r, "Sales %", "Sales%", "salesPercent");
-          const retailRaw = cellVal(r, "Retail Target", "retailTarget");
+          // ── Read all columns (supports both new template and old column names) ──
+          const actName     = cellVal(r, "Activity Name", "activityName");
+          const subcat      = cellVal(r, "Subcategory", "subcategory");
+          const qtyRaw      = cellVal(r, "QTY", "qty") || "1";
+          const leadRaw     = cellVal(r, "Lead Target", "leadTarget", "Target", "target");
+          const salesPct    = cellVal(r, "Sales %", "Sales % (locks Retail)", "Sales%", "salesPercent");
+          const retailRaw   = cellVal(r, "Retail Target", "retailTarget");
+          const budgetRaw   = cellVal(r, "Budget (₹)", "Budget", "budget");
+          const addBudget   = cellVal(r, "Special Approval Budget (₹)", "Special Approval Budget",
+                                       "Additional Budget", "additionalBudget") || "0";
+          const shareRaw    = cellVal(r, "BGauss Share %", "BGauss Share", "bgaussShare") || "100";
+
+          // ── Activity group lookup for auto-fill ──────────────────────────────
+          const group    = activityGroups.find((g) =>
+            g.activityName.toLowerCase() === actName.toLowerCase());
+          const sub      = group?.subcategories.find((s) =>
+            s.subcategory.toLowerCase() === subcat.toLowerCase());
+          const maxQty   = sub?.maxQty ?? group?.subcategories?.[0]?.maxQty ?? 5;
+
+          // ── Category: from group if available, else from column D ────────────
+          const category = group?.activityType ?? cellVal(r, "Category (ATL/BTL)", "Category", "category");
+
+          // ── BGauss Share: clamp to valid options ─────────────────────────────
+          const shareVal = BGAUSS_SHARE_OPTIONS.includes(shareRaw) ? shareRaw : "100";
+
+          // ── Retail: auto-calculate from Lead × Sales% if Sales% is filled ───
           const computedRetail = calcRetailFromSales(leadRaw, salesPct);
+          const finalRetail    = computedRetail || retailRaw;
+          const retailLocked   = !!(computedRetail && computedRetail !== "0");
+
+          // ── QTY: clamp to maxQty ─────────────────────────────────────────────
+          const qtyNum = Math.min(parseInt(qtyRaw) || 1, maxQty);
+
+          // ── Calculations (recalculate regardless of what's in the Excel) ─────
+          const budgetNum   = parseFloat(budgetRaw)  || 0;
+          const addBudgNum  = parseFloat(addBudget)  || 0;
+          const shareNum    = parseFloat(shareVal)   || 100;
+          // BGauss Amount = (Budget + Special) × Share%   [informational — stored in budget fields]
+          // Total Budget  = Budget + Special Approval
+
           return {
-            id: crypto.randomUUID(), activityType: actName,
-            category: group ? group.activityType : cellVal(r, "Category", "category"),
-            categoryLocked: !!group, subcategory: subcat, qty: qtyRaw,
-            _maxQty: sub?.maxQty ?? group?.subcategories?.[0]?.maxQty ?? 5,
-            leadTarget: leadRaw, salesPercent: salesPct,
-            retailTarget: computedRetail || retailRaw, retailLocked: !!computedRetail,
-            startDate:        parseExcelDate(r["Start Date"] ?? r["startDate"] ?? ""),
-            endDate:          parseExcelDate(r["End Date"]   ?? r["endDate"]   ?? ""),
-            budget:           cellVal(r, "Budget", "budget"),
-            additionalBudget: cellVal(r, "Additional Budget", "additionalBudget") || "0",
-            bgaussShare: shareVal, remarks: cellVal(r, "Remarks", "remarks") || "",
-            mediaFiles: [],
+            id:               crypto.randomUUID(),
+            activityType:     actName,
+            category,
+            categoryLocked:   !!group,
+            subcategory:      subcat,
+            qty:              String(qtyNum),
+            _maxQty:          maxQty,
+            leadTarget:       leadRaw,
+            salesPercent:     salesPct,
+            retailTarget:     finalRetail,
+            retailLocked,
+            startDate:        parseExcelDate(r["Start Date (dd-MM-yyyy)"] ?? r["Start Date"] ?? r["startDate"] ?? ""),
+            endDate:          parseExcelDate(r["End Date (dd-MM-yyyy)"]   ?? r["End Date"]   ?? r["endDate"]   ?? ""),
+            budget:           budgetRaw || String(budgetNum),
+            additionalBudget: addBudget || "0",
+            bgaussShare:      shareVal,
+            remarks:          cellVal(r, "Remarks", "remarks") || "",
+            mediaFiles:       [],
           };
         });
         setActivities(mapped); setActivityErrors({});
         const skippedMsg = skippedCount > 0 ? ` · ${skippedCount} row(s) skipped` : "";
-        setXlsxMsg({ ok: true, text: `${mapped.length} row(s) imported${skippedMsg}.` });
+        // Summarise what was calculated
+        const withSales  = mapped.filter(r => r.salesPercent && parseFloat(r.salesPercent) > 0).length;
+        const withLocked = mapped.filter(r => r.retailLocked).length;
+        const withAdd    = mapped.filter(r => parseFloat(r.additionalBudget) > 0).length;
+        const calcNote   = [
+          withLocked > 0 ? `${withLocked} Retail auto-calculated` : "",
+          withAdd    > 0 ? `${withAdd} with Special Approval budget` : "",
+        ].filter(Boolean).join(" · ");
+        const skippedNote = skippedCount > 0 ? ` · ${skippedCount} header/example row(s) skipped` : "";
+        setXlsxMsg({ ok: true, text: `${mapped.length} activit${mapped.length!==1?"ies":"y"} imported${skippedNote}${calcNote ? " · " + calcNote : ""}.` });
       } catch { setXlsxMsg({ ok: false, text: "Could not parse the file. Please use the provided template." }); }
     };
     reader.onerror = () => setXlsxMsg({ ok: false, text: "Failed to read the file." });
     reader.readAsArrayBuffer(file); e.target.value = "";
   };
 
+  // NOTE: downloadTemplate() is now a fallback only.
+  // The ⬇ Template button links directly to /template/BTL_Activity_Template.xlsx
+  // which is the pre-built static file in wwwroot/template/ (generated from Activity Master DB).
+  // Re-run the generator script when Activity Master changes.
   const downloadTemplate = () => {
     const wb = XLSX.utils.book_new();
-    const actNames  = activityGroups.map((g) => g.activityName);
-    const header = [
-      "Activity Name", "Subcategory", "QTY", "Category (auto)",
-      "Lead Target", "Sales %", "Retail Target",
-      "Start Date", "End Date",
-      "Budget", "Special Approval", "BGauss Share %", "Remarks",
-    ];
-    const hint = [
-      "Select from dropdown", "Select from dropdown", "Select from dropdown", "Auto-filled from Activity Name",
-      "Number", "e.g. 3 (optional, locks Retail)", "Number (or leave blank if using Sales %)",
-      "dd-MM-yyyy", "dd-MM-yyyy",
-      "₹ amount", "₹ additional budget (Special Approval — bypasses CAC limit)", "100 or 70 or 50", "Optional notes",
-    ];
-    const exampleRow = activityGroups[0]
-      ? [
-          activityGroups[0].activityName,
-          activityGroups[0].subcategories?.[0]?.subcategory ?? "",
-          "1",
-          activityGroups[0].activityType,
-          "20", "3", "",
-          "01-07-2026", "31-07-2026",
-          "50000", "0", "100", "Sample row",
-        ]
-      : [];
 
-    const rows = [header, hint];
-    if (exampleRow.length) rows.push(exampleRow);
+    // ── Build flat lookup: activityName → subcategories[]
+    const actGroups = activityGroups;
+    const actNames  = actGroups.map((g) => g.activityName);
 
-    const ws = XLSX.utils.aoa_to_sheet(rows);
+    // ── Sheet 1: Activities (data entry) ─────────────────────────────────────
+    const MAX_ROWS = 30;
+
+    // Row 1: column group labels
+    const groupRow = [
+      "★ REQUIRED","★ REQUIRED","★ REQUIRED","Auto",
+      "★ REQUIRED","Optional","Auto / Manual",
+      "★ REQUIRED","★ REQUIRED","★ REQUIRED",
+      "Optional","★ REQUIRED","Auto","Auto","Optional",
+    ];
+    // Row 2: column names
+    const headerRow = [
+      "Activity Name","Subcategory","QTY","Category (ATL/BTL)",
+      "Lead Target","Sales % (locks Retail)","Retail Target",
+      "Start Date (dd-MM-yyyy)","End Date (dd-MM-yyyy)","Budget (₹)",
+      "Special Approval Budget (₹)","BGauss Share %",
+      "BGauss Amount (₹)","Total Budget (₹)","Remarks",
+    ];
+    // Row 3: hints
+    const hintRow = [
+      "Pick from dropdown ▼",
+      "Pick from dropdown ▼ (depends on Activity Name)",
+      "1 to 5 ▼",
+      "Auto-filled from Activity Name",
+      "Enter number e.g. 20",
+      "e.g. 3  →  Retail = Lead × Sales%",
+      "Auto if Sales% filled, else enter manually",
+      "e.g. 01-07-2026",
+      "e.g. 31-07-2026",
+      "e.g. 50000",
+      "0 if none (bypasses CAC limit)",
+      "100 / 70 / 50 ▼",
+      "= (Budget + Special) × BGauss%",
+      "= Budget + Special Approval",
+      "Notes for approver",
+    ];
+
+    // Rows 4+: example rows (one per activity group, first 3)
+    const exampleRows: (string|number)[][] = [];
+    actGroups.slice(0, 3).forEach((g, i) => {
+      const sub = g.subcategories?.[0];
+      const lead = 20;
+      const salesPct = 3;
+      const retail = Math.round(lead * salesPct / 100);
+      const budget = 50000;
+      const addBudget = 0;
+      const share = 100;
+      exampleRows.push([
+        g.activityName,
+        sub?.subcategory ?? "",
+        "1",
+        g.activityType,
+        lead,
+        salesPct,
+        retail,
+        "01-07-2026",
+        "31-07-2026",
+        budget,
+        addBudget,
+        share,
+        Math.round((budget + addBudget) * share / 100),
+        budget + addBudget,
+        i === 0 ? "EXAMPLE ROW — delete before importing" : "",
+      ]);
+    });
+
+    const allRows: (string|number|null)[][] = [groupRow, headerRow, hintRow, ...exampleRows];
+    for (let i = exampleRows.length; i < MAX_ROWS; i++) {
+      allRows.push(Array(15).fill(""));
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
     ws["!cols"] = [
-      {wch:24},{wch:26},{wch:6},{wch:16},{wch:12},{wch:10},{wch:14},
-      {wch:14},{wch:14},{wch:12},{wch:20},{wch:14},{wch:25},
+      {wch:28},{wch:30},{wch:6},{wch:14},{wch:12},{wch:22},{wch:14},
+      {wch:22},{wch:22},{wch:14},{wch:26},{wch:14},{wch:18},{wch:18},{wch:28},
     ];
-
     XLSX.utils.book_append_sheet(wb, ws, "Activities");
 
-    const refRows: (string | number)[][] = [
-      ["=== Valid Activity Names ==="],
+    // ── Sheet 2: _ActivityNames (Activity → Category + MaxQty) ───────────────
+    const namesRows: string[][] = [["Activity Name","Category","Max QTY"]];
+    actGroups.forEach((g) => {
+      namesRows.push([g.activityName, g.activityType, String(g.subcategories?.[0]?.maxQty ?? 5)]);
+    });
+    const wsNames = XLSX.utils.aoa_to_sheet(namesRows);
+    wsNames["!cols"] = [{wch:30},{wch:10},{wch:8}];
+    XLSX.utils.book_append_sheet(wb, wsNames, "_ActivityNames");
+
+    // ── Sheet 3: _Subcategories (Activity → Subcategory + MaxQty) ────────────
+    const subRows: string[][] = [["Activity Name","Subcategory","Max QTY"]];
+    actGroups.forEach((g) => {
+      (g.subcategories ?? []).forEach((s) => {
+        subRows.push([g.activityName, s.subcategory, String(s.maxQty ?? 5)]);
+      });
+    });
+    const wsSub = XLSX.utils.aoa_to_sheet(subRows);
+    wsSub["!cols"] = [{wch:30},{wch:32},{wch:8}];
+    XLSX.utils.book_append_sheet(wb, wsSub, "_Subcategories");
+
+    // ── Sheet 4: Valid Values (quick reference card) ──────────────────────────
+    const refRows: (string|number)[][] = [
+      ["=== VALID ACTIVITY NAMES ==="],
       ...actNames.map((n) => [n]),
       [""],
-      ["=== Valid BGauss Share ==="],
-      ["100"], ["70"], ["50"],
+      ["=== BGAUSS SHARE OPTIONS ==="],
+      ["100"],["70"],["50"],
       [""],
-      ["=== Date Format ==="],
+      ["=== DATE FORMAT ==="],
       ["dd-MM-yyyy  (e.g. 15-07-2026)"],
     ];
     const wsRef = XLSX.utils.aoa_to_sheet(refRows);
     wsRef["!cols"] = [{wch:40}];
     XLSX.utils.book_append_sheet(wb, wsRef, "Valid Values");
 
-    const subRows: string[][] = [["Activity Name", "Subcategory", "Max QTY"]];
-    for (const g of activityGroups) {
-      for (const s of (g.subcategories ?? [])) {
-        subRows.push([g.activityName, s.subcategory, String(s.maxQty ?? 5)]);
-      }
-    }
-    const wsSub = XLSX.utils.aoa_to_sheet(subRows);
-    wsSub["!cols"] = [{wch:28},{wch:28},{wch:10}];
-    XLSX.utils.book_append_sheet(wb, wsSub, "Subcategory List");
+    // ── Sheet 5: Instructions ─────────────────────────────────────────────────
+    const instrRows: (string|number)[][] = [
+      ["BGauss BTL — Activity Template Instructions"],
+      [""],
+      ["HOW TO FILL THE ACTIVITIES SHEET"],
+      [""],
+      ["Column A — Activity Name","Pick from the dropdown list (see Valid Values sheet for all options)"],
+      ["Column B — Subcategory","Pick from dropdown based on Activity Name selected in column A"],
+      ["Column C — QTY","Enter quantity: 1 to max QTY shown in _Subcategories sheet"],
+      ["Column D — Category","Do NOT edit — auto-filled from Activity Name on import"],
+      ["Column E — Lead Target","Expected number of leads from this activity (number only)"],
+      ["Column F — Sales %","Optional. e.g. 3 means Retail = Lead × 3% (auto-calculated on import)"],
+      ["Column G — Retail Target","Leave blank if Sales % is filled. Otherwise enter manually."],
+      ["Column H — Start Date","Activity start date. Format: dd-MM-yyyy (e.g. 01-07-2026)"],
+      ["Column I — End Date","Activity end date. Format: dd-MM-yyyy. Must be ≥ Start Date."],
+      ["Column J — Budget (₹)","Approved budget amount in ₹ (numbers only, no commas or ₹ symbol)"],
+      ["Column K — Special Approval Budget","Enter 0 if none. Additional budget beyond CAC limit (needs deviation approval)"],
+      ["Column L — BGauss Share %","100 = BGauss pays 100%, 70 = BGauss pays 70%, 50 = BGauss pays 50%"],
+      ["Column M — BGauss Amount","Auto-calculated: (Budget + Special) × BGauss Share %. Do not edit."],
+      ["Column N — Total Budget","Auto-calculated: Budget + Special Approval. Do not edit."],
+      ["Column O — Remarks","Optional notes for the approver"],
+      [""],
+      ["IMPORTANT"],
+      ["• Delete the EXAMPLE ROWS (rows 4-6) before importing"],
+      ["• Do NOT rename or delete sheets starting with _ (underscore)"],
+      ["• Do NOT change column order"],
+      ["• BGauss Amount and Total Budget are recalculated automatically on import"],
+      ["• CAC is automatically computed: BGauss Amount ÷ Retail Target"],
+      ["• If CAC exceeds limit, use Special Approval Budget column to add extra"],
+      [""],
+      ["SUBCATEGORY REFERENCE"],
+      ["See the _Subcategories sheet for the full list of valid subcategories per activity"],
+    ];
+    const wsInstr = XLSX.utils.aoa_to_sheet(instrRows);
+    wsInstr["!cols"] = [{wch:40},{wch:70}];
+    XLSX.utils.book_append_sheet(wb, wsInstr, "Instructions");
 
     XLSX.writeFile(wb, "BTL_Activity_Template.xlsx");
   };
@@ -709,8 +858,7 @@ export default function RSMProposalForm() {
         leadTarget: num(a.leadTarget), retailTarget: num(a.retailTarget),
         startDate: a.startDate, endDate: a.endDate,
         budget: num(a.budget), additionalBudget: num(a.additionalBudget),
-        bgaussShare: num(a.bgaussShare) || 100, vendorId: null,
-        remarks: a.remarks,
+        bgaussShare: num(a.bgaussShare) || 100, vendorId: null, remarks: a.remarks,
         mediaFiles: a.mediaFiles.map((m) => ({ fileUrl: m.fileUrl, fileName: m.fileName, fileType: m.fileType })),
       }));
       const payload = {
@@ -731,10 +879,21 @@ export default function RSMProposalForm() {
     } catch (ex) { setError(ex instanceof Error ? ex.message : "Something went wrong."); setSubmitting(false); }
   };
 
-  const dealerOptions = dealers.map((d) => ({
-    value: d.customerCode, label: titleCase(d.customerName),
-    sublabel: [d.city, d.state].filter((v): v is string => v !== null).map(titleCase).join(", ")
-  }));
+  // ── Filter ERP dealer list to only those present in the Excel team-mapping sheet ──
+  // Dealers not in the sheet have no RSM/TSM assigned and should not appear in the form.
+  const dealerOptions = dealers
+    .filter((d) => {
+      // Check if this dealer exists in the Excel mapping (by name fuzzy match)
+      const nameNorm = d.customerName.toLowerCase().trim().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ");
+      return DEALER_TEAM_MAP.some((m) => {
+        const mapNorm = m.dealerName.toLowerCase().trim().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ");
+        return mapNorm === nameNorm || mapNorm.includes(nameNorm) || nameNorm.includes(mapNorm);
+      });
+    })
+    .map((d) => ({
+      value: d.customerCode, label: titleCase(d.customerName),
+      sublabel: [d.city, d.state].filter((v): v is string => v !== null).map(titleCase).join(", ")
+    }));
   const vendorOptions = vendors.map((v) => ({ value: String(v.id), label: titleCase(v.vendorName) }));
   const rsmOptions = Array.from(new Map([
     ...dealers.filter((d) => d.rsmName || d.rsmCode).map((d) => { const val = d.rsmName ?? d.rsmCode!; return [titleCase(val), { value: val, label: titleCase(val) }] as [string, { value: string; label: string }]; }),
@@ -746,7 +905,6 @@ export default function RSMProposalForm() {
       return [titleCase(val), { value: val, label: titleCase(val) }] as [string, { value: string; label: string }];
     })
   ).values()).sort((a, b) => a.label.localeCompare(b.label));
-
   const commandoOptions = Array.from(new Map(
     dealers.filter((d) => d.commandoName).map((d) => {
       const val = d.commandoName!;
@@ -754,37 +912,6 @@ export default function RSMProposalForm() {
     })
   ).values()).sort((a, b) => a.label.localeCompare(b.label));
   const activityNameOptions = activityGroups.map((g) => ({ value: g.activityName, label: g.activityName }));
-  //const monthOptions        = MONTHS.map((m) => ({ value: m, label: m }));
-  const monthOptions = useMemo(() => {
-  const allMonths = MONTHS.map((m, i) => ({ value: m, label: m, index: i }));
-    if (header.year === String(CURRENT_YEAR)) {
-      // Only show current month and future months — no backdating
-      return allMonths
-        .filter(m => m.index >= new Date().getMonth())
-        .map(({ value, label }) => ({ value, label }));
-    }
-    // Next year: all months are valid
-    return allMonths.map(({ value, label }) => ({ value, label }));
-  }, [header.year]);
-
-  // Activity dates must fall within the selected month+year
-  const activityDateRange = useMemo(() => {
-    const monthIdx = MONTHS.indexOf(header.month);
-    const year = parseInt(header.year) || CURRENT_YEAR;
-    if (monthIdx < 0 || !header.month) {
-      return { min: TODAY_ISO, max: "" };
-    }
-    const firstDay  = new Date(year, monthIdx, 1);
-    const lastDay   = new Date(year, monthIdx + 1, 0);
-    const todayDate = new Date();
-    // min = whichever is later: today or first day of month
-    const minDate   = firstDay > todayDate ? firstDay : todayDate;
-    return {
-      min: isoDate(minDate),
-      max: isoDate(lastDay),
-    };
-  }, [header.month, header.year]);
-
 
   const fmtShort = (iso: string) => new Date(iso).toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" });
   const statusCls = (s: string) => {
@@ -837,6 +964,11 @@ export default function RSMProposalForm() {
     );
   };
 
+  // ── Date range hint shown under the date inputs ───────────────────────────
+  const dateHint = header.month && header.year
+    ? `Dates must be within ${header.month} ${header.year} (${activityDateRange.min} → ${activityDateRange.max})`
+    : "Select month & year first";
+
   return (
     <div className="rsm-page">
       <main className="rsm-main">
@@ -867,13 +999,10 @@ export default function RSMProposalForm() {
             <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(4,1fr)" }}>
               <div className="rsm-field">
                 <Label text="Dealer" required/>
-                {dealerError && !isDealerUser && (
-                  <span className="rsm-field-error">{dealerError}</span>
-                )}
+                {dealerError && !isDealerUser && <span className="rsm-field-error">{dealerError}</span>}
                 <div className="rsm-dealer-input-wrap">
                   <div style={{ flex:1, minWidth:0 }}>
                     {isDealerUser ? (
-                      // Dealer user: locked to their own dealership — cannot select another
                       <div>
                         <LockedField value={
                           header.dealerName
@@ -905,9 +1034,7 @@ export default function RSMProposalForm() {
                       onClick={() => setShowDealerPanel((v) => !v)}>ⓘ</button>
                   )}
                 </div>
-                {fieldErrors.dealerName && (
-                  <span className="rsm-field-error">{fieldErrors.dealerName}</span>
-                )}
+                {fieldErrors.dealerName && <span className="rsm-field-error">{fieldErrors.dealerName}</span>}
               </div>
 
               <div className="rsm-field">
@@ -917,15 +1044,7 @@ export default function RSMProposalForm() {
                   placeholder={loadingVendors?"Loading…":"Select vendor (optional)"} loading={loadingVendors} allowCreate={false}/>
               </div>
 
-              <div className="rsm-field">
-                <Label text="Month" required/>
-                <SearchableSelect options={monthOptions} value={header.month}
-                  onChange={(v) => setField("month", v)} placeholder="Select month" allowCreate={false}
-                  className={fieldErrors.month?"rsm-select-error-wrap":""}/>
-                {fieldErrors.month && <span className="rsm-field-error">{fieldErrors.month}</span>}
-              </div>
-
-              {/* Year — auto-selects the current year */}
+              {/* Year FIRST so month options are computed correctly */}
               <div className="rsm-field">
                 <Label text="Year" required/>
                 <select className={`rsm-select${fieldErrors.year?" rsm-input--error":""}`}
@@ -933,6 +1052,19 @@ export default function RSMProposalForm() {
                   {YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
                 </select>
                 {fieldErrors.year && <span className="rsm-field-error">{fieldErrors.year}</span>}
+              </div>
+
+              <div className="rsm-field">
+                <Label text="Month" required/>
+                <SearchableSelect options={monthOptions} value={header.month}
+                  onChange={(v) => setField("month", v)} placeholder="Select month" allowCreate={false}
+                  className={fieldErrors.month?"rsm-select-error-wrap":""}/>
+                {fieldErrors.month && <span className="rsm-field-error">{fieldErrors.month}</span>}
+                {header.year === String(CURRENT_YEAR) && (
+                  <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>
+                    Past months hidden for {CURRENT_YEAR}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1094,8 +1226,7 @@ export default function RSMProposalForm() {
                 {dealerAutoFilled && !editMode ? (
                   header.tsmName
                     ? <LockedField value={header.tsmName}/>
-                    : <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",
-                        border:"1.5px solid #e2e8f0",borderRadius:7,padding:"8px 11px",height:38,fontSize:13 }}>
+                    : <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",border:"1.5px solid #e2e8f0",borderRadius:7,padding:"8px 11px",height:38,fontSize:13 }}>
                         <span style={{ color:"#9ca3af",flex:1,fontSize:12 }}>Not assigned in ERP</span>
                         <span style={{ fontSize:11,color:"#e2e8f0" }}>🔒</span>
                       </div>
@@ -1104,9 +1235,7 @@ export default function RSMProposalForm() {
                     onChange={(v) => setField("tsmName", v)} placeholder="Search or type…" allowCreate={true}/>
                 )}
                 {dealerAutoFilled && !editMode && header.tsmName && (
-                  <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>
-                    Auto-filled from ERP
-                  </span>
+                  <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>Auto-filled from ERP</span>
                 )}
               </div>
               <div className="rsm-field">
@@ -1114,8 +1243,7 @@ export default function RSMProposalForm() {
                 {dealerAutoFilled && !editMode ? (
                   header.commandoName
                     ? <LockedField value={header.commandoName}/>
-                    : <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",
-                        border:"1.5px solid #e2e8f0",borderRadius:7,padding:"8px 11px",height:38,fontSize:13 }}>
+                    : <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",border:"1.5px solid #e2e8f0",borderRadius:7,padding:"8px 11px",height:38,fontSize:13 }}>
                         <span style={{ color:"#9ca3af",flex:1,fontSize:12 }}>Not assigned in ERP</span>
                         <span style={{ fontSize:11,color:"#e2e8f0" }}>🔒</span>
                       </div>
@@ -1124,9 +1252,7 @@ export default function RSMProposalForm() {
                     onChange={(v) => setField("commandoName", v)} placeholder="Search or type…" allowCreate={true}/>
                 )}
                 {dealerAutoFilled && !editMode && header.commandoName && (
-                  <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>
-                    Auto-filled from ERP (Sales Commando)
-                  </span>
+                  <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>Auto-filled from ERP (Sales Commando)</span>
                 )}
               </div>
             </div>
@@ -1150,13 +1276,31 @@ export default function RSMProposalForm() {
             action={
               <div className="rsm-card-actions">
                 <input ref={xlsxRef} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleExcelImport}/>
-                <button className="rsm-tpl-btn" onClick={downloadTemplate} type="button">⬇ Template</button>
+                <a
+                  href={`${(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "")}/template/BTL_Activity_Template.xlsx`}
+                  download="BTL_Activity_Template.xlsx"
+                  className="rsm-tpl-btn"
+                  style={{ textDecoration:"none",display:"inline-flex",alignItems:"center",gap:5 }}
+                  title="Download pre-built template with Activity Name and Subcategory dropdowns (from Activity Master DB)"
+                >
+                  ⬇ Template
+                </a>
                 <button className="rsm-xlsx-btn" type="button" onClick={() => xlsxRef.current?.click()} disabled={!activityTypesLoaded}>
                   {activityTypesLoaded?"📥 Import":"⏳ Loading…"}
                 </button>
                 <button className="rsm-add-row-btn" type="button" onClick={addActivity}>+ Add Activity</button>
               </div>
             }>
+
+            {/* Date range hint banner */}
+            {header.month && header.year && (
+              <div style={{ background:"#eff6ff",border:"1px solid #bfdbfe",borderLeft:"3px solid #3b82f6",
+                borderRadius:7,padding:"7px 14px",marginBottom:12,fontSize:12,color:"#1e40af",display:"flex",alignItems:"center",gap:8 }}>
+                <span>📅</span>
+                <span>Activity dates must be within <strong>{header.month} {header.year}</strong>
+                  &nbsp;({activityDateRange.min} → {activityDateRange.max})</span>
+              </div>
+            )}
 
             {showActErr && Object.keys(activityErrors).length > 0 && (
               <div className="rsm-validation-banner">
@@ -1199,20 +1343,19 @@ export default function RSMProposalForm() {
                     <th className="rsm-th" style={{ width:32 }}>#</th>
                     <th className="rsm-th" style={{ width:160 }}>Activity Name <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:80 }}>Type<div style={{ fontSize:9,fontWeight:400,opacity:0.7 }}>ATL/BTL</div></th>
-                    <th className="rsm-th" style={{ width:160 }}>Subcategory <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:160 }}>Subcategory</th>
                     <th className="rsm-th" style={{ width:62 }}>QTY</th>
                     <th className="rsm-th" style={{ width:82 }}>Lead Target <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th" style={{ width:78 }}>Sales %</th>
                     <th className="rsm-th" style={{ width:82 }}>Retail Target <span style={{ color:"#f87171" }}>*</span></th>
-                    <th className="rsm-th" style={{ width:120 }}>Start Date <span style={{ color:"#f87171" }}>*</span></th>
-                    <th className="rsm-th" style={{ width:120 }}>End Date <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:130 }}>Start Date <span style={{ color:"#f87171" }}>*</span></th>
+                    <th className="rsm-th" style={{ width:130 }}>End Date <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th rsm-th--right" style={{ width:100 }}>Budget (₹) <span style={{ color:"#f87171" }}>*</span></th>
                     <th className="rsm-th rsm-th--right" style={{ width:100 }}>Special Approval</th>
                     <th className="rsm-th" style={{ width:90 }}>BGauss%</th>
                     <th className="rsm-th rsm-th--right" style={{ width:100 }}>BGauss Amt</th>
                     <th className="rsm-th rsm-th--right" style={{ width:90 }}>Total (₹)</th>
                     <th className="rsm-th" style={{ width:110 }}>Remarks</th>
-                    {/* <th className="rsm-th" style={{ width:80 }}>Files</th> */}
                     <th className="rsm-th" style={{ width:32 }}></th>
                   </tr>
                 </thead>
@@ -1300,15 +1443,25 @@ export default function RSMProposalForm() {
                           )}
                           {rowErr?.retailTarget && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.retailTarget}</span>}
                         </td>
+                        {/* Start Date — constrained to selected month/year */}
                         <td className="rsm-td">
                           <input type="date" lang="en-GB" className={`rsm-input-sm${rowErr?.startDate?" rsm-input-sm--error":""}`}
-                            style={{ width:112 }} value={a.startDate} min={activityDateRange.min} max={activityDateRange.max || undefined}
+                            style={{ width:118 }} value={a.startDate}
+                            min={activityDateRange.min}
+                            max={activityDateRange.max || undefined}
+                            disabled={!header.month || !header.year}
+                            title={!header.month || !header.year ? "Select month and year first" : dateHint}
                             onChange={(e) => setActivity(a.id,"startDate",e.target.value)}/>
                           {rowErr?.startDate && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.startDate}</span>}
                         </td>
+                        {/* End Date — constrained to selected month/year */}
                         <td className="rsm-td">
                           <input type="date" lang="en-GB" className={`rsm-input-sm${rowErr?.endDate?" rsm-input-sm--error":""}`}
-                            style={{ width:112 }} value={a.endDate} min={a.startDate || activityDateRange.min} max={activityDateRange.max || undefined}
+                            style={{ width:118 }} value={a.endDate}
+                            min={a.startDate || activityDateRange.min}
+                            max={activityDateRange.max || undefined}
+                            disabled={!header.month || !header.year}
+                            title={!header.month || !header.year ? "Select month and year first" : dateHint}
                             onChange={(e) => setActivity(a.id,"endDate",e.target.value)}/>
                           {rowErr?.endDate && <span className="rsm-field-error" style={{ display:"block" }}>{rowErr.endDate}</span>}
                         </td>
@@ -1340,28 +1493,6 @@ export default function RSMProposalForm() {
                           <input type="text" className="rsm-input-sm" style={{ width:100 }}
                             placeholder="Note…" value={a.remarks} onChange={(e) => setActivity(a.id,"remarks",e.target.value)}/>
                         </td>
-                        {/* <td className="rsm-td">
-                          <label className="rsm-table-upload-btn">
-                            {uploadingMedia[a.id] ? "⏳" : `📎${a.mediaFiles.length>0?" "+a.mediaFiles.length:""}`}
-                            <input type="file" multiple accept="image/*,application/pdf,video/*" style={{ display:"none" }}
-                              onChange={(e) => e.target.files && handleMediaUpload(a.id, e.target.files)}/>
-                          </label>
-                          {a.mediaFiles.length > 0 && (
-                            <div className="rsm-table-media-list">
-                              {a.mediaFiles.map((m) => {
-                                const fullUrl = m.fileUrl.startsWith("http") ? m.fileUrl : `${import.meta.env.VITE_API_BASE_URL}${m.fileUrl}`;
-                                return (
-                                  <div key={m.id} className="rsm-table-media-chip">
-                                    <a href={fullUrl} target="_blank" rel="noopener noreferrer" title={m.fileName}>
-                                      {m.fileType.startsWith("image/")?"🖼":m.fileType.includes("pdf")?"📄":"🎬"}
-                                    </a>
-                                    <button type="button" onClick={() => removeMedia(a.id, m.id)}>✕</button>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </td> */}
                         <td className="rsm-td">
                           <button className="rsm-remove-btn" onClick={() => removeActivity(a.id)}
                             disabled={activities.length===1} type="button">×</button>
@@ -1406,12 +1537,12 @@ export default function RSMProposalForm() {
                 {header.vendorName && <ReviewRow label="Vendor" value={header.vendorName}/>}
                 <ReviewRow label="Location"     value={header.location?`${header.location}, ${header.state}`:"—"}/>
                 <ReviewRow label="Type"         value={header.type||"—"}/>
-                <ReviewRow label="Month"        value={header.month||"—"}/>
                 <ReviewRow label="Year"         value={header.year||"—"}/>
+                <ReviewRow label="Month"        value={header.month||"—"}/>
                 <ReviewRow label="Eligibility"  value={header.eligibility||"—"}/>
-                <ReviewRow label="RSM Name"    value={header.rsmName||"—"}/>
-                <ReviewRow label="TSM Name"    value={header.tsmName||"—"}/>
-                <ReviewRow label="Commando"    value={header.commandoName||"—"}/>
+                <ReviewRow label="RSM Name"     value={header.rsmName||"—"}/>
+                <ReviewRow label="TSM Name"     value={header.tsmName||"—"}/>
+                <ReviewRow label="Commando"     value={header.commandoName||"—"}/>
                 {header.remarks && <ReviewRow label="Remarks" value={header.remarks}/>}
               </ReviewGroup>
               <ReviewGroup title="Financial Summary">
@@ -1420,8 +1551,8 @@ export default function RSMProposalForm() {
                 <ReviewRow label="Retail Target" value={String(Math.round(totalRetailTarget))}/>
                 <ReviewRow label="Total Budget"  value={`₹ ${inr(totalBudget)}`} highlight/>
                 <ReviewRow label="BGauss Budget" value={`₹ ${inr(totalBgauss)}`}/>
-                <ReviewRow label="CAC"            value={`₹ ${cac.toLocaleString("en-IN",{maximumFractionDigits:2})}`}/>
-                <ReviewRow label="CPL"            value={`₹ ${cpl.toLocaleString("en-IN",{maximumFractionDigits:2})}`}/>
+                <ReviewRow label="CAC"           value={`₹ ${cac.toLocaleString("en-IN",{maximumFractionDigits:2})}`}/>
+                <ReviewRow label="CPL"           value={`₹ ${cpl.toLocaleString("en-IN",{maximumFractionDigits:2})}`}/>
                 {eligibility && <ReviewRow label="Allowed CAC" value={`₹ ${eligibility.baseCacPerVehicle.toLocaleString("en-IN")} (${eligibility.dealerType})`}/>}
               </ReviewGroup>
             </div>
@@ -1440,7 +1571,7 @@ export default function RSMProposalForm() {
                     <th className="rsm-th rsm-th--right">BGauss%</th>
                     <th className="rsm-th rsm-th--right">BGauss Amt</th>
                     <th className="rsm-th rsm-th--right">Total</th>
-                    <th className="rsm-th">Files</th>
+                    {/* <th className="rsm-th">Files</th> */}
                   </tr>
                 </thead>
                 <tbody>
@@ -1470,7 +1601,7 @@ export default function RSMProposalForm() {
                         ₹{inr(bgaussAmount(a.budget,a.additionalBudget,a.bgaussShare))}
                       </td>
                       <td className="rsm-td rsm-td--total">₹{inr(num(a.budget)+num(a.additionalBudget))}</td>
-                      <td className="rsm-td">{a.mediaFiles.length>0?`${a.mediaFiles.length} file(s)`:"—"}</td>
+                      {/* <td className="rsm-td">{a.mediaFiles.length>0?`${a.mediaFiles.length} file(s)`:"—"}</td> */}
                     </tr>
                   ))}
                 </tbody>

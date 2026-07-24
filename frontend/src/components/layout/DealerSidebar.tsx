@@ -13,16 +13,34 @@ interface DealerSidebarProps {
   dealerCode?:   string | null;
 }
 
+// ── Inline SVG icons — same as Sidebar.tsx ────────────────────────────────────
+const Icon = ({ name, size = 18 }: { name: string; size?: number }) => {
+  const s = { width: size, height: size, display: "block" as const, flexShrink: 0 };
+  switch (name) {
+    case "dashboard":   return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>;
+    case "newproposal": return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>;
+    case "logout":      return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>;
+    case "chevron-r":   return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9,18 15,12 9,6"/></svg>;
+    case "chevron-l":   return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15,18 9,12 15,6"/></svg>;
+    case "chevrons-r":  return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="13,17 18,12 13,7"/><polyline points="6,17 11,12 6,7"/></svg>;
+    case "close":       return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+    default:            return <span style={{ width: size, display: "inline-block" }}>•</span>;
+  }
+};
+
+const NAV_ITEMS = [
+  { to: "/dealer-dashboard", icon: "dashboard",   label: "Dashboard"    },
+  { to: "/dealer-proposal",  icon: "newproposal", label: "New Proposal" },
+];
+
 export default function DealerSidebar({
   collapsed, mobileOpen, onToggle, onMobileClose, onLogout,
   dealerName, dealerCode,
 }: DealerSidebarProps) {
   const location = useLocation();
 
-  // ── Auto-close mobile drawer on route change (same as Sidebar.tsx) ──────
   useEffect(() => { onMobileClose(); }, [location.pathname]);
 
-  // ── Escape key closes mobile drawer ──────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape" && mobileOpen) onMobileClose();
@@ -31,7 +49,6 @@ export default function DealerSidebar({
     return () => document.removeEventListener("keydown", handler);
   }, [mobileOpen, onMobileClose]);
 
-  // ── Prevent body scroll when mobile drawer is open ───────────────────────
   useEffect(() => {
     document.body.style.overflow = mobileOpen ? "hidden" : "";
     return () => { document.body.style.overflow = ""; };
@@ -40,11 +57,6 @@ export default function DealerSidebar({
   const initials = dealerName
     ? dealerName.split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase()
     : "D";
-
-  const navItems = [
-    { to: "/dealer-dashboard", icon: "ti-layout-dashboard", label: "Dashboard"    },
-    { to: "/dealer-proposal",  icon: "ti-file-plus",        label: "New Proposal" },
-  ];
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     "sb-link" + (isActive ? " sb-link--active" : "");
@@ -61,24 +73,33 @@ export default function DealerSidebar({
           collapsed  ? "sb--col"         : "",
           mobileOpen ? "sb--mobile-open" : "",
         ].filter(Boolean).join(" ")}
-        title={collapsed ? "Click to expand sidebar" : undefined}
+        title={collapsed ? "Click to expand menu" : undefined}
       >
+        {/* Toggle — desktop */}
+        <button
+          className="sb-toggle sb-toggle--desktop"
+          onClick={(e) => { e.stopPropagation(); onToggle(); }}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+          <Icon name={collapsed ? "chevron-r" : "chevron-l"} size={16} />
+        </button>
+
+        {/* Close — mobile */}
         <button className="sb-toggle sb-toggle--mobile"
           onClick={onMobileClose} aria-label="Close menu">
-          <i className="ti ti-x" />
+          <Icon name="close" size={16} />
         </button>
 
         {/* Logo */}
         <div className="sb-brand">
           <img src="/BGauss_Logo.png" alt="BGauss" className="sb-logo"
             style={{ background: "transparent", border: "none" }} />
-          {!collapsed && <span className="sb-brand-name"></span>}
+          {!collapsed && <span className="sb-brand-name">BGauss BTL</span>}
         </div>
 
         {/* Collapsed expand hint */}
         {collapsed && (
           <div className="sb-expand-hint" aria-hidden="true">
-            <i className="ti ti-chevrons-right" />
+            <Icon name="chevrons-r" size={14} />
           </div>
         )}
 
@@ -98,15 +119,15 @@ export default function DealerSidebar({
         <nav className="sb-nav" role="navigation">
           {!collapsed && <span className="sb-section-lbl">Menu</span>}
 
-          {navItems.map(({ to, icon, label }) => (
+          {NAV_ITEMS.map(({ to, icon, label }) => (
             <NavLink
               key={to}
               to={to}
               className={linkClass}
-              title={collapsed ? label : undefined}
+              title={label}
               onClick={(e) => e.stopPropagation()}
             >
-              <i className={`ti ${icon}`} aria-hidden="true" />
+              <Icon name={icon} />
               {!collapsed && <span className="sb-link-label">{label}</span>}
             </NavLink>
           ))}
@@ -127,8 +148,8 @@ export default function DealerSidebar({
           </div>
           <button className="sb-logout"
             onClick={(e) => { e.stopPropagation(); onLogout(); }}
-            title={collapsed ? "Sign out" : undefined}>
-            <i className="ti ti-logout" aria-hidden="true" />
+            title="Sign out">
+            <Icon name="logout" />
             {!collapsed && <span>Sign out</span>}
           </button>
         </div>

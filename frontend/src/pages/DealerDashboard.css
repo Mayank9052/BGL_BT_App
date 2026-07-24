@@ -1,0 +1,908 @@
+/* ═══════════════════════════════════════════════════════════════════════════════
+   src/pages/DealerDashboard.css
+   Complete, self-contained CSS for DealerDashboard.tsx
+   No dependency on DashboardPage.css — all dash-* and dd-* classes defined here.
+   Design mirrors main DashboardPage: same tokens, same layout, same components.
+═══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Design tokens ─────────────────────────────────────────────────────────── */
+:root {
+  --dd-navy:        #0a2540;
+  --dd-navy-mid:    #1e3a5f;
+  --dd-blue:        #2563eb;
+  --dd-blue-lt:     #eff6ff;
+  --dd-green:       #16a34a;
+  --dd-green-lt:    #dcfce7;
+  --dd-amber:       #f59e0b;
+  --dd-amber-lt:    #fef9c3;
+  --dd-red:         #dc2626;
+  --dd-red-lt:      #fee2e2;
+  --dd-purple:      #7c3aed;
+  --dd-purple-lt:   #f5f3ff;
+  --dd-border:      #e2e8f0;
+  --dd-surface:     #f8fafc;
+  --dd-bg:          #f1f5f9;
+  --dd-text:        #0a2540;
+  --dd-muted:       #64748b;
+  --dd-radius:      10px;
+  --dd-radius-sm:   7px;
+  --dd-shadow-sm:   0 1px 4px rgba(0,0,0,0.06);
+  --dd-shadow-md:   0 4px 16px rgba(0,0,0,0.10);
+  --dd-shadow-lg:   0 12px 40px rgba(0,0,0,0.20);
+  --dd-tr:          0.15s ease;
+}
+
+/* ── Reset / base ──────────────────────────────────────────────────────────── */
+.dash-root *,
+.dash-root *::before,
+.dash-root *::after { box-sizing: border-box; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   ROOT LAYOUT
+═══════════════════════════════════════════════════════════════════════════════ */
+.dash-root {
+  min-height: 100vh;
+  background: var(--dd-bg);
+  font-family: 'Segoe UI', system-ui, Arial, sans-serif;
+  font-size: 14px;
+  color: var(--dd-text);
+  padding: 24px 28px 72px;
+  max-width: 1360px;
+  margin: 0 auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   LOADING
+═══════════════════════════════════════════════════════════════════════════════ */
+.dash-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 60vh;
+  color: var(--dd-muted);
+  font-size: 14px;
+}
+.dash-loading p { margin: 0; }
+
+.dash-spinner {
+  width: 38px;
+  height: 38px;
+  border: 3px solid var(--dd-border);
+  border-top-color: var(--dd-blue);
+  border-radius: 50%;
+  animation: dd-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes dd-spin { to { transform: rotate(360deg); } }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   ERROR STATE
+═══════════════════════════════════════════════════════════════════════════════ */
+.dash-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 50vh;
+  text-align: center;
+  padding: 40px 20px;
+}
+.dash-error h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #991b1b;
+}
+.dash-error p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--dd-muted);
+}
+.dash-retry-btn {
+  margin-top: 8px;
+  background: var(--dd-navy);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 26px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--dd-tr);
+}
+.dash-retry-btn:hover { background: var(--dd-navy-mid); }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   PAGE HEADER
+═══════════════════════════════════════════════════════════════════════════════ */
+.dash-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.dash-title {
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--dd-navy);
+  margin: 0 0 4px;
+  letter-spacing: -0.4px;
+  line-height: 1.2;
+}
+.dash-subtitle {
+  font-size: 13px;
+  color: var(--dd-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+.dash-add-btn {
+  background: var(--dd-navy);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 22px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background var(--dd-tr), transform 0.1s;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dash-add-btn:hover  { background: var(--dd-navy-mid); transform: translateY(-1px); }
+.dash-add-btn:active { transform: translateY(0); }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   FILTER BAR
+═══════════════════════════════════════════════════════════════════════════════ */
+.dash-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: #fff;
+  border: 1.5px solid var(--dd-border);
+  border-radius: var(--dd-radius);
+  padding: 10px 14px;
+  box-shadow: var(--dd-shadow-sm);
+  margin-bottom: 14px;
+}
+
+.dash-filter-select {
+  height: 36px;
+  padding: 0 10px;
+  border: 1.5px solid var(--dd-border);
+  border-radius: var(--dd-radius-sm);
+  background: var(--dd-surface);
+  color: var(--dd-text);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--dd-tr), background var(--dd-tr);
+  min-width: 120px;
+}
+.dash-filter-select:focus  { border-color: var(--dd-blue); background: #fff; }
+.dash-filter-select:hover  { border-color: #94a3b8; }
+
+.dash-search {
+  flex: 1 1 180px;
+  height: 36px;
+  padding: 0 32px 0 12px;
+  border: 1.5px solid var(--dd-border);
+  border-radius: var(--dd-radius-sm);
+  background: #fff;
+  color: var(--dd-text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--dd-tr), box-shadow var(--dd-tr);
+}
+.dash-search:focus {
+  border-color: var(--dd-blue);
+  box-shadow: 0 0 0 3px rgba(37,99,235,0.08);
+}
+.dash-search::placeholder { color: #b0bec5; }
+
+.dash-clear-btn {
+  height: 36px;
+  padding: 0 14px;
+  background: none;
+  border: 1.5px solid var(--dd-border);
+  border-radius: var(--dd-radius-sm);
+  color: var(--dd-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: border-color var(--dd-tr), color var(--dd-tr), background var(--dd-tr);
+}
+.dash-clear-btn:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+  background: #fef2f2;
+}
+
+/* ── Filter active hint bar ───────────────────────────────────────────────── */
+.dash-filter-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--dd-blue-lt);
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #1e40af;
+  margin-bottom: 14px;
+}
+.dash-filter-hint strong { font-weight: 700; margin-right: 2px; }
+.dash-filter-hint span {
+  background: #dbeafe;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-weight: 600;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   KPI GRID
+═══════════════════════════════════════════════════════════════════════════════ */
+.dash-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.dash-kpi-card {
+  background: #fff;
+  border: 1.5px solid var(--dd-border);
+  border-top-width: 4px;           /* coloured top stripe — set via inline style */
+  border-radius: var(--dd-radius);
+  padding: 14px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: var(--dd-shadow-sm);
+  transition: box-shadow var(--dd-tr), transform 0.12s, background var(--dd-tr);
+  position: relative;
+  overflow: hidden;
+  text-align: left;
+  font-family: inherit;
+  width: 100%;
+  cursor: default;
+}
+.dash-kpi-card[style*="pointer"] { cursor: pointer; }
+.dash-kpi-card:hover {
+  box-shadow: var(--dd-shadow-md);
+  transform: translateY(-1px);
+}
+.dash-kpi-card:active { transform: translateY(0); }
+
+/* Active ring — applied via inline outline */
+.dash-kpi-card[style*="outline"] {
+  background: #f0f9ff;
+}
+
+.dash-kpi-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--dd-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1.3;
+}
+.dash-kpi-value {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--dd-navy);
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dash-kpi-sub {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   SECTION CARDS
+═══════════════════════════════════════════════════════════════════════════════ */
+.dash-section {
+  background: #fff;
+  border: 1px solid var(--dd-border);
+  border-radius: 12px;
+  padding: 20px 22px;
+  box-shadow: var(--dd-shadow-sm);
+  margin-bottom: 20px;
+}
+.dash-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.dash-section-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--dd-navy);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   PROPOSAL TABLE
+═══════════════════════════════════════════════════════════════════════════════ */
+.dash-table-wrap {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--dd-border);
+  -webkit-overflow-scrolling: touch;
+}
+.dash-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 580px;
+}
+
+/* ── Head ── */
+.dash-table thead tr          { background: var(--dd-navy); }
+.dash-table thead th {
+  padding: 10px 12px;
+  color: #e2e8f0;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 2px solid var(--dd-navy-mid);
+  letter-spacing: 0.3px;
+  user-select: none;
+}
+
+/* ── Body ── */
+.dash-table tbody tr {
+  border-bottom: 1px solid #f1f5f9;
+  transition: background 0.1s;
+}
+.dash-table tbody tr:nth-child(odd)  { background: #fff; }
+.dash-table tbody tr:nth-child(even) { background: var(--dd-surface); }
+.dash-table tbody tr:hover           { background: var(--dd-blue-lt); }
+.dash-table tbody td {
+  padding: 9px 12px;
+  color: #1e293b;
+  vertical-align: middle;
+  line-height: 1.4;
+}
+
+/* ── NeedsRevision row highlight ── */
+.dash-table tbody tr[style*="fffbeb"] { background: #fffbeb !important; }
+.dash-table tbody tr[style*="fffbeb"]:hover { background: #fef3c7 !important; }
+
+/* ── Foot ── */
+.dash-table tfoot tr { background: var(--dd-navy); border-top: 2px solid var(--dd-navy-mid); }
+.dash-table tfoot td { padding: 8px 12px; color: #e2e8f0; font-weight: 700; font-size: 12px; }
+
+/* ── Status pill in table ── */
+.dash-table .dd-status-pill {
+  display: inline-block;
+  border-radius: 12px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ── Edit button in table ── */
+.dd-edit-btn {
+  display: block;
+  margin-top: 4px;
+  background: var(--dd-amber);
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: background var(--dd-tr);
+}
+.dd-edit-btn:hover { background: #d97706; }
+
+/* ── View button in table ── */
+.dd-view-btn {
+  background: var(--dd-blue-lt);
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--dd-tr);
+}
+.dd-view-btn:hover { background: #dbeafe; }
+
+/* ── Empty state inside table ── */
+.dash-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--dd-muted);
+}
+.dd-empty-icon  { font-size: 2.8rem; margin-bottom: 4px; }
+.dd-empty-title { font-weight: 700; font-size: 15px; color: var(--dd-navy); }
+.dd-empty-sub   { font-size: 13px; color: var(--dd-muted); max-width: 360px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   NEEDS REVISION BANNER (top of page)
+═══════════════════════════════════════════════════════════════════════════════ */
+.dd-revision-banner-top {
+  background: var(--dd-amber-lt);
+  border: 1px solid #fde68a;
+  border-left: 4px solid var(--dd-amber);
+  border-radius: 8px;
+  padding: 12px 18px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.dd-revision-banner-title { font-weight: 700; color: #92400e; font-size: 13px; }
+.dd-revision-banner-sub   { font-size: 12px; color: #78350f; margin-top: 2px; }
+.dd-revision-top-btn {
+  margin-left: auto;
+  background: var(--dd-amber);
+  color: #fff;
+  border: none;
+  padding: 7px 16px;
+  border-radius: 7px;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: background var(--dd-tr);
+}
+.dd-revision-top-btn:hover { background: #d97706; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   DETAIL MODAL
+═══════════════════════════════════════════════════════════════════════════════ */
+.dd-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.52);
+  z-index: 1000;
+  overflow-y: auto;
+  padding: 20px 12px;
+}
+.dd-modal {
+  background: #fff;
+  border-radius: 14px;
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  box-shadow: var(--dd-shadow-lg);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Modal header */
+.dd-modal-header {
+  background: var(--dd-navy);
+  padding: 18px 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.dd-modal-token {
+  font-size: 10px;
+  color: rgba(255,255,255,0.5);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+.dd-modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  flex: 1;
+}
+.dd-modal-close {
+  background: rgba(255,255,255,0.12);
+  border: none;
+  color: #fff;
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 16px;
+  transition: background var(--dd-tr);
+  flex-shrink: 0;
+}
+.dd-modal-close:hover { background: rgba(255,255,255,0.22); }
+
+/* Modal body */
+.dd-modal-body { padding: 20px 24px; }
+
+/* ── Revision banner inside modal ── */
+.dd-revision-modal-banner {
+  background: var(--dd-amber-lt);
+  border: 1px solid #fde68a;
+  border-left: 4px solid var(--dd-amber);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+.dd-revision-modal-title  { font-weight: 700; color: #92400e; font-size: 14px; margin-bottom: 6px; }
+.dd-revision-note {
+  margin: 0 0 12px;
+  color: #78350f;
+  font-size: 13px;
+  background: #fffbeb;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.dd-revision-edit-btn {
+  background: var(--dd-amber);
+  color: #fff;
+  border: none;
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--dd-tr);
+}
+.dd-revision-edit-btn:hover { background: #d97706; }
+
+/* ── Info grid (proposal metadata) ── */
+.dd-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.dd-info-cell {
+  background: var(--dd-surface);
+  border: 1px solid var(--dd-border);
+  border-radius: 7px;
+  padding: 8px 12px;
+}
+.dd-info-label {
+  font-size: 10px;
+  color: var(--dd-muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+.dd-info-value { font-size: 13px; font-weight: 600; color: var(--dd-navy); }
+
+/* ── Checker note box ── */
+.dd-checker-note {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 7px;
+  padding: 9px 14px;
+  font-size: 12px;
+  color: #78350f;
+  margin-bottom: 12px;
+}
+.dd-checker-note strong { font-weight: 700; }
+
+/* ── Activities heading ── */
+.dd-activities-heading {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--dd-navy);
+  margin-bottom: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   ACTIVITY ACCORDION ITEM
+═══════════════════════════════════════════════════════════════════════════════ */
+.dd-activity-item {
+  border: 1px solid var(--dd-border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+/* Activity header row */
+.dd-activity-header {
+  background: var(--dd-surface);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.dd-activity-name  { font-weight: 700; color: var(--dd-navy); font-size: 13px; }
+.dd-activity-cat   { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+.dd-activity-cat--atl { background: var(--dd-blue-lt);  color: #1e40af; }
+.dd-activity-cat--btl { background: var(--dd-green-lt); color: #166534; }
+.dd-activity-dates  { font-size: 11px; color: var(--dd-muted); }
+.dd-activity-budget { font-size: 12px; font-weight: 700; color: var(--dd-navy); margin-left: auto; }
+.dd-activity-meta   { font-size: 11px; color: var(--dd-muted); }
+
+/* ── Post-Activity toggle button ── */
+.dd-postact-toggle {
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--dd-border);
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  font-family: inherit;
+  transition: background var(--dd-tr), color var(--dd-tr);
+}
+.dd-postact-toggle--closed {
+  background: #f0fdf4;
+  color: #166534;
+}
+.dd-postact-toggle--closed:hover { background: var(--dd-green-lt); }
+.dd-postact-toggle--open {
+  background: var(--dd-navy);
+  color: #fff;
+}
+
+/* ── Post-Activity expand panel ── */
+.dd-postact-panel {
+  padding: 14px 16px;
+  background: var(--dd-surface);
+  border-top: 1px solid var(--dd-border);
+}
+
+/* Date inputs row */
+.dd-postact-dates {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.dd-postact-date-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.dd-postact-date-input {
+  border: 1.5px solid #bbf7d0;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  background: #fff;
+  transition: border-color var(--dd-tr);
+}
+.dd-postact-date-input:focus { border-color: var(--dd-green); }
+
+/* ── Daily data table ── */
+.dd-daily-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--dd-border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.dd-daily-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 580px;
+}
+.dd-daily-table thead tr { background: var(--dd-navy); }
+.dd-daily-table thead th {
+  padding: 7px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+.dd-daily-table tbody tr:nth-child(odd)  { background: #fff; }
+.dd-daily-table tbody tr:nth-child(even) { background: var(--dd-surface); }
+.dd-daily-table tbody tr { border-bottom: 1px solid #f1f5f9; }
+.dd-daily-table tbody td { padding: 5px 6px; vertical-align: middle; }
+.dd-daily-table tfoot tr { background: var(--dd-navy); border-top: 2px solid var(--dd-navy-mid); }
+.dd-daily-table tfoot td { padding: 7px 8px; font-weight: 700; font-size: 12px; }
+
+.dd-daily-input {
+  width: 48px;
+  text-align: center;
+  border: 1.5px solid var(--dd-border);
+  border-radius: 5px;
+  padding: 3px 2px;
+  font-size: 11px;
+  outline: none;
+  font-family: inherit;
+  background: #fff;
+  transition: border-color var(--dd-tr);
+}
+.dd-daily-input:focus { border-color: var(--dd-blue); }
+
+/* ── Save button ── */
+.dd-save-btn {
+  background: var(--dd-green);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 22px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--dd-tr), opacity var(--dd-tr);
+}
+.dd-save-btn:hover:not(:disabled) { background: #15803d; }
+.dd-save-btn:disabled { background: #9ca3af; cursor: not-allowed; }
+
+/* ── Saved chip ── */
+.dd-saved-chip {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 10px;
+  background: var(--dd-green-lt);
+  color: #166534;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-weight: 700;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   BUDGET ADDITION PANEL
+═══════════════════════════════════════════════════════════════════════════════ */
+.dd-budget-panel {
+  background: var(--dd-surface);
+  border: 1px solid var(--dd-border);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-top: 8px;
+}
+.dd-budget-panel-title { font-weight: 700; font-size: 13px; color: var(--dd-navy); margin-bottom: 4px; }
+.dd-budget-panel-sub   { font-size: 12px; color: var(--dd-muted); margin: 0 0 10px; }
+.dd-budget-req-btn {
+  background: var(--dd-navy-mid);
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 18px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background var(--dd-tr);
+}
+.dd-budget-req-btn:hover { background: var(--dd-navy); }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   TOAST
+═══════════════════════════════════════════════════════════════════════════════ */
+.dd-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  border-radius: 10px;
+  padding: 12px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  animation: dd-toast-in 0.2s ease;
+  max-width: calc(100vw - 48px);
+}
+.dd-toast--ok  { background: #166534; }
+.dd-toast--err { background: #991b1b; }
+@keyframes dd-toast-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   RESPONSIVE
+═══════════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 1200px) {
+  .dash-kpi-grid { grid-template-columns: repeat(4, 1fr); }
+}
+@media (max-width: 960px) {
+  .dash-root    { padding: 16px 16px 56px; }
+  .dash-kpi-grid { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .dash-kpi-value { font-size: 19px; }
+  .dd-info-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .dash-filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .dash-filter-select,
+  .dash-search,
+  .dash-clear-btn {
+    width: 100%;
+    min-width: 0;
+  }
+  .dd-revision-banner-top { flex-direction: column; align-items: flex-start; }
+  .dd-revision-top-btn    { margin-left: 0; width: 100%; text-align: center; }
+  .dd-postact-dates       { flex-direction: column; }
+  .dd-modal-body          { padding: 14px 14px; }
+}
+@media (max-width: 480px) {
+  .dash-root     { padding: 12px 10px 48px; }
+  .dash-kpi-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .dash-kpi-card { padding: 10px 12px; }
+  .dash-kpi-value { font-size: 17px; }
+  .dash-kpi-sub   { display: none; }
+  .dash-title     { font-size: 19px; }
+  .dash-header    { flex-direction: column; align-items: flex-start; }
+  .dash-section   { padding: 14px 12px; }
+  .dd-modal-header { padding: 14px 16px; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   PRINT
+═══════════════════════════════════════════════════════════════════════════════ */
+@media print {
+  .dash-root    { padding: 0; background: #fff; max-width: 100%; }
+  .dash-header .dash-add-btn,
+  .dash-filter-bar,
+  .dd-revision-banner-top,
+  .dd-postact-toggle,
+  .dd-postact-panel,
+  .dd-save-btn,
+  .dd-budget-panel { display: none !important; }
+  .dash-kpi-grid  { grid-template-columns: repeat(4, 1fr); }
+  .dash-kpi-card  { border: 1px solid var(--dd-border); box-shadow: none; }
+  .dash-table-wrap { overflow: visible; }
+  .dash-table     { font-size: 11px; }
+  .dash-table thead tr {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

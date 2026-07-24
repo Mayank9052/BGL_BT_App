@@ -1,721 +1,775 @@
 // src/pages/DealerDashboard.tsx
+// Mirrors DashboardPage.tsx — same KPI cards, state/dealer tables, filters, year filter.
+// Dealer-specific: uses JWT auth, shows only their own proposals, adds Post-Activity + Revision edit.
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchMyDealerProposals, dealerSendBack } from "../services/proposalService";
-import { getDealerUser, dealerLogout } from "../services/dealerAuthService";
-import type { ProposalResponse, ActivityResponse } from "../services/proposalService";
-import "./DashboardPage.css";
+import { fetchMyDealerProposals, type ProposalResponse } from "../services/proposalService";
+import "./DealerDashboard.css";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 const inr = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
 const inrCompact = (v: number): string => {
   if (v >= 1_00_000) return `₹${(v / 1_00_000).toFixed(1)}L`;
   if (v >= 1_000)    return `₹${(v / 1_000).toFixed(0)}K`;
   return `₹${v}`;
 };
-const fmtDate = (iso: string | null | undefined): string => {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" });
+const fmtDate = (d?: string | null) => d ? new Date(d).toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" }) : "—";
+
+type ActiveFilter = "All" | "Pending" | "Approved" | "Rejected" | "NeedsRevision";
+interface SummaryStats {
+  totalProposals: number; pendingCount: number; approvedCount: number;
+  rejectedCount: number; needsRevision: number;
+  totalBudget: number; approvedBudget: number; pendingBudget: number;
+  totalRetailTarget: number; totalLeadTarget: number;
+  avgCac: number; avgCpl: number;
+}
+function computeStats(proposals: ProposalResponse[]): SummaryStats {
+  const approved = proposals.filter(p => p.status === "Approved");
+  const pending  = proposals.filter(p => p.status === "Pending");
+  const cacList  = proposals.filter(p => p.cac > 0).map(p => p.cac);
+  const cplList  = proposals.filter(p => p.cpl > 0).map(p => p.cpl);
+  return {
+    totalProposals: proposals.length,
+    pendingCount:   pending.length,
+    approvedCount:  approved.length,
+    rejectedCount:  proposals.filter(p => p.status === "Rejected").length,
+    needsRevision:  proposals.filter(p => p.status === "NeedsRevision").length,
+    totalBudget:    proposals.reduce((s, p) => s + p.totalBudget, 0),
+    approvedBudget: approved.reduce((s, p) => s + p.totalBudget, 0),
+    pendingBudget:  pending.reduce((s, p) => s + p.totalBudget, 0),
+    totalRetailTarget: proposals.reduce((s, p) => s + p.totalRetailTarget, 0),
+    totalLeadTarget:   proposals.reduce((s, p) => s + p.totalLeadTarget, 0),
+    avgCac: cacList.length > 0 ? cacList.reduce((a, b) => a + b, 0) / cacList.length : 0,
+    avgCpl: cplList.length > 0 ? cplList.reduce((a, b) => a + b, 0) / cplList.length : 0,
+  };
+}
+
+interface DailyEntry {
+  date: string; enquiryPlanned: number; enquiryActual: number;
+  testDrivePlanned: number; testDriveActual: number;
+  bookingActual: number; retailActual: number; leadsPunched: number;
+}
+function buildDailyEntries(start: string, end: string): DailyEntry[] {
+  const entries: DailyEntry[] = [];
+  const s = new Date(start), e = new Date(end), today = new Date();
+  const cap = e < today ? e : today;
+  for (const d = new Date(s); d <= cap; d.setDate(d.getDate() + 1)) {
+    entries.push({ date: d.toISOString().split("T")[0],
+      enquiryPlanned:0, enquiryActual:0, testDrivePlanned:0, testDriveActual:0,
+      bookingActual:0, retailActual:0, leadsPunched:0 });
+  }
+  return entries;
+}
+
+// ── Status badge ──────────────────────────────────────────────────────────────
+const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
+  Pending:       { bg: "#fef3c7", color: "#92400e" },
+  Approved:      { bg: "#dcfce7", color: "#166534" },
+  Rejected:      { bg: "#fee2e2", color: "#991b1b" },
+  NeedsRevision: { bg: "#fef9c3", color: "#713f12" },
 };
-const fmtShort = (iso: string | null | undefined): string => {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-IN", { day:"2-digit", month:"short" });
+const StatusPill = ({ status }: { status: string }) => {
+  const c = STATUS_COLORS[status] ?? { bg: "#f1f5f9", color: "#374151" };
+  const labels: Record<string, string> = { NeedsRevision: "↩ Needs Revision" };
+  return (
+    <span style={{ background: c.bg, color: c.color, borderRadius: 12,
+      padding: "2px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>
+      {labels[status] ?? status}
+    </span>
+  );
 };
 
-type ActiveFilter = "All" | "Pending" | "Approved" | "Rejected";
-interface DealerDashboardProps { onLogout?: () => void; }
+// ── KPI Card ─────────────────────────────────────────────────────────────────
+const KpiCard = ({ label, value, sub, color, active, onClick, hint }: {
+  label: string; value: string; sub?: string; color: string;
+  active?: boolean; onClick?: () => void; hint?: string;
+}) => (
+  <div className="dash-kpi-card" onClick={onClick}
+    style={{ borderTop: `4px solid ${color}`, cursor: onClick ? "pointer" : "default",
+      outline: active ? `2px solid ${color}` : "none", background: active ? "#f0f9ff" : "#fff" }}
+    title={hint}>
+    <div className="dash-kpi-label">{label}</div>
+    <div className="dash-kpi-value" style={{ color }}>{value}</div>
+    {sub && <div className="dash-kpi-sub">{sub}</div>}
+  </div>
+);
 
-export default function DealerDashboard({ onLogout }: DealerDashboardProps) {
-  const navigate    = useNavigate();
-  const [dealerUser] = useState(() => getDealerUser());
+// ── Post-Activity state per activity ─────────────────────────────────────────
+interface PostActState {
+  actualStartDate: string;
+  actualEndDate: string;
+  entries: DailyEntry[];
+  saving: boolean;
+  saved: boolean;
+}
 
-  const [proposals,       setProposals]       = useState<ProposalResponse[]>([]);
-  const [loadingData,     setLoadingData]     = useState(true);
-  const [dataError,       setDataError]       = useState<string|null>(null);
-  const [activeFilter,    setActiveFilter]    = useState<ActiveFilter>("All");
-  const [monthFilter,     setMonthFilter]     = useState("All");
-  const [selected,        setSelected]        = useState<ProposalResponse|null>(null);
-  const [showSendBack,    setShowSendBack]    = useState(false);
-  const [sendBackNote,    setSendBackNote]    = useState("");
-  const [sendBackLoading, setSendBackLoading] = useState(false);
-  const [toast,           setToast]           = useState<{msg:string;ok:boolean}|null>(null);
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
-  const dealerEmail = dealerUser?.email ?? "";
+// ═══════════════════════════════════════════════════════════════════════════════
+export default function DealerDashboard() {
+  const navigate = useNavigate();
+
+  const [proposals,    setProposals]    = useState<ProposalResponse[]>([]);
+  const [loadingData,  setLoadingData]  = useState(true);
+  const [dataError,    setDataError]    = useState<string | null>(null);
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter>("All");
+  const [monthFilter,  setMonthFilter]  = useState("All");
+  const [yearFilter,   setYearFilter]   = useState("All");
+  const [sharedSearch, setSharedSearch] = useState("");
+  const [toast,        setToast]        = useState<{ msg: string; ok: boolean } | null>(null);
+
+  // ── Detail modal ──────────────────────────────────────────────────────────
+  const [selected,     setSelected]     = useState<ProposalResponse | null>(null);
+  const [openPostAct,  setOpenPostAct]  = useState<Record<string, boolean>>({});
+  const [postAct,      setPostAct]      = useState<Record<string, PostActState>>({});
 
   const showToast = (msg: string, ok: boolean) => {
-    setToast({msg,ok}); setTimeout(()=>setToast(null), 3500);
+    setToast({ msg, ok });
+    setTimeout(() => setToast(null), 3500);
   };
 
-  // Lock body scroll when full-page detail is open
+  // ── Load proposals ────────────────────────────────────────────────────────
   useEffect(() => {
-    document.body.style.overflow = selected ? "hidden" : "";
-    return () => { document.body.style.overflow = ""; };
-  }, [selected]);
-
-  useEffect(() => {
-    if (!dealerUser) { onLogout?.(); navigate("/",{replace:true}); return; }
-    let cancelled = false;
     setLoadingData(true);
     fetchMyDealerProposals()
-      .then((data) => { if (!cancelled) setProposals(data); })
-      .catch((e) => {
-        if (cancelled) return;
-        const msg = e instanceof Error ? e.message : "Failed to load your proposals.";
-        setDataError(msg);
-        if (msg.includes("401") || msg.includes("Not signed in")) {
-          dealerLogout(); onLogout?.(); navigate("/",{replace:true});
-        }
-      })
-      .finally(() => { if (!cancelled) setLoadingData(false); });
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+      .then(setProposals)
+      .catch(e => setDataError(e instanceof Error ? e.message : "Failed to load."))
+      .finally(() => setLoadingData(false));
   }, []);
 
-  const months = useMemo(
-    ()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],
-    [proposals],
-  );
-  const filtered = useMemo(()=>
-    proposals.filter((p)=>{
-      if (activeFilter!=="All" && p.status!==activeFilter) return false;
-      if (monthFilter!=="All"  && p.month!==monthFilter)   return false;
-      return true;
-    }),
-  [proposals,activeFilter,monthFilter]);
+  // ── Derived filter options ────────────────────────────────────────────────
+  const months = useMemo(() =>
+    ["All", ...Array.from(new Set(proposals.map(p => p.month))).sort()], [proposals]);
+  const years = useMemo(() =>
+    ["All", ...Array.from(new Set(proposals.map(p => (p as any).year).filter(Boolean))).sort()], [proposals]);
 
-  const stats = useMemo(()=>{
-    const approved = filtered.filter((p)=>p.status==="Approved");
-    const cacList  = filtered.filter((p)=>p.cac>0).map((p)=>p.cac);
-    const cplList  = filtered.filter((p)=>p.cpl>0).map((p)=>p.cpl);
-    return {
-      total:           filtered.length,
-      pending:         filtered.filter((p)=>p.status==="Pending").length,
-      approved:        approved.length,
-      rejected:        filtered.filter((p)=>p.status==="Rejected").length,
-      totalBudget:     filtered.reduce((s,p)=>s+p.totalBudget,0),
-      approvedBudget:  approved.reduce((s,p)=>s+p.totalBudget,0),
-      totalLeadTarget: filtered.reduce((s,p)=>s+p.totalLeadTarget,0),
-      avgCac: cacList.length>0 ? cacList.reduce((a,b)=>a+b,0)/cacList.length : 0,
-      avgCpl: cplList.length>0 ? cplList.reduce((a,b)=>a+b,0)/cplList.length : 0,
-      activitiesCount: filtered.reduce((s,p)=>s+p.activities.length,0),
-    };
-  },[filtered]);
+  const handleKpiClick = (f: ActiveFilter) =>
+    setActiveFilter(prev => prev === f ? "All" : f);
 
-  const activityBreakdown = useMemo(()=>{
-    const map: Record<string,{
-      activityType:string; count:number; leadTarget:number;
-      retailTarget:number; budget:number;
-      pending:number; approved:number; rejected:number;
-    }> = {};
-    for (const p of filtered) {
-      for (const a of p.activities) {
-        if (!map[a.activityType]) map[a.activityType]={
-          activityType:a.activityType, count:0, leadTarget:0,
-          retailTarget:0, budget:0, pending:0, approved:0, rejected:0,
-        };
-        const r=map[a.activityType];
-        r.count++; r.leadTarget+=a.leadTarget; r.retailTarget+=a.retailTarget;
-        r.budget+=a.budget+a.additionalBudget;
-        if (p.status==="Pending")  r.pending++;
-        if (p.status==="Approved") r.approved++;
-        if (p.status==="Rejected") r.rejected++;
-      }
-    }
-    return Object.values(map).sort((a,b)=>b.budget-a.budget);
-  },[filtered]);
+  // ── Filter pipeline ───────────────────────────────────────────────────────
+  const baseFiltered = useMemo(() => proposals.filter(p => {
+    if (activeFilter !== "All" && p.status !== activeFilter) return false;
+    if (monthFilter  !== "All" && p.month  !== monthFilter)  return false;
+    if (yearFilter   !== "All" && (p as any).year !== yearFilter) return false;
+    return true;
+  }), [proposals, activeFilter, monthFilter, yearFilter]);
 
-  const handleDealerSendBack = async ()=>{
-    if (!selected||!sendBackNote.trim()) return;
-    if (!dealerEmail) { showToast("Could not determine your email. Please contact support.",false); return; }
-    setSendBackLoading(true);
-    try {
-      const updated = await dealerSendBack(selected.id,{
-        dealerEmail, requestNote:sendBackNote.trim(),
-      });
-      setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
-      setSelected(updated); setShowSendBack(false); setSendBackNote("");
-      showToast("Budget add-on request sent. You will be contacted shortly.",true);
-    } catch(err) {
-      showToast(err instanceof Error?err.message:"Failed to send request.",false);
-    } finally { setSendBackLoading(false); }
+  const hasActiveFilter = activeFilter !== "All" || monthFilter !== "All" || yearFilter !== "All";
+
+  const stats = useMemo(
+    () => computeStats(hasActiveFilter ? baseFiltered : proposals),
+    [baseFiltered, proposals, hasActiveFilter]);
+
+  const searchFiltered = useMemo(() => {
+    const q = sharedSearch.toLowerCase().trim();
+    if (!q) return baseFiltered;
+    return baseFiltered.filter(p =>
+      [p.dealerName, p.month, p.location, p.status, p.tokenNumber]
+        .join(" ").toLowerCase().includes(q));
+  }, [baseFiltered, sharedSearch]);
+
+  const clearAllFilters = () => {
+    setActiveFilter("All"); setMonthFilter("All"); setYearFilter("All"); setSharedSearch("");
   };
 
-  const openDetail  = (p: ProposalResponse) => { setSelected(p); setShowSendBack(false); setSendBackNote(""); };
-  const closeDetail = () => { setSelected(null); setShowSendBack(false); setSendBackNote(""); };
-  const toggleFilter = (f: ActiveFilter) => setActiveFilter((cur)=>cur===f?"All":f);
+  // ── Activity breakdown per proposal (for table) ───────────────────────────
+  const proposalRows = useMemo(() =>
+    searchFiltered.slice().sort((a, b) =>
+      new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()),
+    [searchFiltered]);
 
-  if (!dealerUser) return null;
+  // ── Activity-wise summary ─────────────────────────────────────────────────
+  const activitySummary = useMemo(() => {
+    const map: Record<string, { count: number; budget: number; retail: number; lead: number }> = {};
+    for (const p of searchFiltered) {
+      for (const a of p.activities) {
+        const key = a.activityType ?? "—";
+        if (!map[key]) map[key] = { count: 0, budget: 0, retail: 0, lead: 0 };
+        map[key].count++;
+        map[key].budget += a.budget ?? 0;
+        map[key].retail += a.retailTarget ?? 0;
+        map[key].lead   += a.leadTarget   ?? 0;
+      }
+    }
+    return Object.entries(map).sort((a, b) => b[1].budget - a[1].budget);
+  }, [searchFiltered]);
 
-  const statusBadge = (s:string) =>
-    s==="Approved" ? "dash-badge dash-badge--approved"
-    : s==="Rejected" ? "dash-badge dash-badge--rejected"
-    : "dash-badge dash-badge--pending";
+  // ── Post-Activity helpers ─────────────────────────────────────────────────
+  const initPostAct = (activityId: string) => {
+    if (postAct[activityId]) return;
+    setPostAct(prev => ({
+      ...prev,
+      [activityId]: { actualStartDate: "", actualEndDate: "", entries: [], saving: false, saved: false },
+    }));
+  };
+  const setPA = (actId: string, patch: Partial<PostActState>) =>
+    setPostAct(prev => ({ ...prev, [actId]: { ...prev[actId], ...patch } }));
 
-  const isSentBack   = (p:ProposalResponse) => !!(p as any).dealerSentBack;
-  const sentBackNote = (p:ProposalResponse) => (p as any).dealerSendBackNote as string|null;
-  const sentBackAt   = (p:ProposalResponse) => (p as any).dealerSentBackAt   as string|null;
+  const savePostActivity = async (proposalId: string, activityId: string) => {
+    const pa = postAct[activityId];
+    if (!pa?.actualStartDate || !pa?.actualEndDate) {
+      showToast("Set both actual start and end dates first.", false); return;
+    }
+    setPA(activityId, { saving: true });
+    try {
+      const jwt = localStorage.getItem("bgauss_dealer_token");
+      const payload = [{ activityId, actualStartDate: pa.actualStartDate,
+        actualEndDate: pa.actualEndDate, mediaFileUrl: null, mediaFileName: null,
+        mediaFileType: null, dailyData: pa.entries.length ? JSON.stringify(pa.entries) : null }];
+      const resp = await fetch(`${API_BASE}/api/proposals/${proposalId}/actuals`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${jwt}` },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      setPA(activityId, { saving: false, saved: true });
+      showToast("Post-activity data saved.", true);
+    } catch (e) {
+      setPA(activityId, { saving: false });
+      showToast(e instanceof Error ? e.message : "Save failed.", false);
+    }
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  if (loadingData) return (
+    <div className="dash-loading">
+      <div className="dash-spinner" />
+      <p>Loading your proposals…</p>
+    </div>
+  );
+  if (dataError) return (
+    <div className="dash-error">
+      <h3>Failed to load proposals</h3>
+      <p>{dataError}</p>
+      <button className="dash-retry-btn" onClick={() => window.location.reload()}>Retry</button>
+    </div>
+  );
 
   return (
     <div className="dash-root">
+      {/* Toast */}
+      {toast && (
+        <div style={{ position:"fixed",bottom:24,right:24,zIndex:9999,
+          background: toast.ok ? "#166534" : "#991b1b",
+          color:"#fff",borderRadius:10,padding:"12px 20px",
+          fontSize:13,fontWeight:600,boxShadow:"0 4px 20px rgba(0,0,0,0.25)",
+          display:"flex",alignItems:"center",gap:8 }}>
+          {toast.ok ? "✓" : "✕"} {toast.msg}
+        </div>
+      )}
 
-      {/* ── Page header ── */}
-      <div style={{ marginBottom:20,display:"flex",alignItems:"flex-start",
-        justifyContent:"space-between",flexWrap:"wrap",gap:12 }}>
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="dash-header">
         <div>
-          <h1 style={{ fontSize:22,color:"#0a2540",margin:0,fontWeight:800 }}>
-            {dealerUser.dealerName||dealerUser.displayName}
-          </h1>
-          <p style={{ fontSize:13,color:"#64748b",margin:"4px 0 0" }}>
-            Dealer Code: <strong>{dealerUser.dealerCode??"—"}</strong>
-            {" · "}Logged in as: <strong>{dealerEmail}</strong>
+          <h1 className="dash-title">My Proposals</h1>
+          <p className="dash-subtitle">
+            {proposals.length} proposal{proposals.length !== 1 ? "s" : ""} ·{" "}
+            {proposals.filter(p => p.status === "Approved").length} approved ·{" "}
+            {proposals.filter(p => p.status === "Pending").length} pending
+            {proposals.filter(p => p.status === "NeedsRevision").length > 0 && (
+              <span style={{ color: "#f59e0b", fontWeight: 700 }}>
+                {" "}· {proposals.filter(p => p.status === "NeedsRevision").length} need revision
+              </span>
+            )}
           </p>
         </div>
-        {/* Quick action buttons */}
-        <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
-          <button onClick={()=>navigate("/dealer-proposal")}
-            style={{ background:"#0a2540",color:"#fff",border:"none",
-              padding:"10px 20px",borderRadius:8,fontWeight:600,fontSize:13,
-              cursor:"pointer",display:"flex",alignItems:"center",gap:6 }}>
-            📋 New Proposal
+        <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+          <button className="dash-add-btn" onClick={() => navigate("/dealer-proposal")}>
+            + New Proposal
           </button>
         </div>
       </div>
 
-      {loadingData?(
-        <div className="dash-loading-inline">
-          <div className="dash-spinner dash-spinner--sm"/><span>Loading your proposals…</span>
-        </div>
-      ):dataError?(
-        <div className="dash-error-banner">⚠ {dataError}</div>
-      ):proposals.length===0?(
-        <div className="dash-empty">
-          <span className="dash-empty-icon">📋</span>
-          <p>No BTL proposals found for your dealership yet.</p>
-          <p style={{ fontSize:12,color:"#94a3b8" }}>
-            Your RSM will submit activity proposals on your behalf — they'll appear here once submitted.
-          </p>
-        </div>
-      ):(
-        <>
-          {/* KPI cards */}
-          <div className="dash-kpi-grid">
-            <KpiCard icon="📄" label="Total Proposals" value={String(stats.total)}
-              sub={`${stats.activitiesCount} activities`} accent="blue"
-              active={activeFilter==="All"} onClick={()=>setActiveFilter("All")}/>
-            <KpiCard icon="⏳" label="Pending" value={String(stats.pending)}
-              sub="Awaiting approval" accent="amber"
-              active={activeFilter==="Pending"} onClick={()=>toggleFilter("Pending")}/>
-            <KpiCard icon="✅" label="Approved" value={String(stats.approved)}
-              sub={`Budget: ${inrCompact(stats.approvedBudget)}`} accent="green"
-              active={activeFilter==="Approved"} onClick={()=>toggleFilter("Approved")}/>
-            <KpiCard icon="❌" label="Rejected" value={String(stats.rejected)}
-              sub="" accent="red"
-              active={activeFilter==="Rejected"} onClick={()=>toggleFilter("Rejected")}/>
-            <KpiCard icon="💰" label="Total Budget" value={inrCompact(stats.totalBudget)}
-              sub={`Avg CAC ₹${Math.round(stats.avgCac).toLocaleString("en-IN")}`}
-              accent="purple" active={false} onClick={()=>setActiveFilter("All")}/>
-            <KpiCard icon="📊" label="Avg CPL"
-              value={`₹${Math.round(stats.avgCpl).toLocaleString("en-IN")}`}
-              sub={`${stats.totalLeadTarget.toLocaleString("en-IN")} total leads`}
-              accent="blue" active={false} onClick={()=>setActiveFilter("All")}/>
-          </div>
-
-          {/* Month + active filter bar */}
-          <div className="dash-global-filter-bar">
-            <div className="dash-global-filter-left">
-              <span className="dash-filter-label">Month:</span>
-              <select className="dash-filter-select dash-filter-select--inline"
-                value={monthFilter} onChange={(e)=>setMonthFilter(e.target.value)}>
-                {months.map((m)=>(<option key={m} value={m}>{m==="All"?"All Months":m}</option>))}
-              </select>
+      {/* ── Needs Revision banner ──────────────────────────────────────────── */}
+      {proposals.filter(p => p.status === "NeedsRevision").length > 0 && (
+        <div style={{ background:"#fef9c3", border:"1px solid #fde68a",
+          borderLeft:"4px solid #f59e0b", borderRadius:8,
+          padding:"12px 18px", marginBottom:16, display:"flex",
+          alignItems:"center", gap:14, flexWrap:"wrap" }}>
+          <span style={{ fontSize:22 }}>↩</span>
+          <div>
+            <div style={{ fontWeight:700, color:"#92400e", fontSize:13 }}>
+              {proposals.filter(p => p.status === "NeedsRevision").length} proposal(s) sent back for revision
             </div>
-            {activeFilter!=="All"&&(
-              <div style={{ fontSize:12,color:"#1e40af",fontWeight:600,
-                background:"#eff6ff",border:"1px solid #bfdbfe",
-                borderRadius:6,padding:"4px 12px",display:"flex",alignItems:"center",gap:8 }}>
-                Filtering: {activeFilter}
-                <button onClick={()=>setActiveFilter("All")}
-                  style={{ background:"none",border:"none",color:"#6b7280",
-                    cursor:"pointer",fontSize:14,padding:0,lineHeight:1 }}>✕</button>
-              </div>
-            )}
-          </div>
-
-          {/* Activity breakdown table */}
-          {activityBreakdown.length>0&&(
-            <section className="dash-section">
-              <h2 className="dash-section-title">
-                Activity Breakdown
-                <span className="dash-count-chip">{activityBreakdown.length}</span>
-              </h2>
-              <div className="dash-table-wrap">
-                <table className="dash-table">
-                  <thead><tr>
-                    <th className="dash-th">Activity Type</th>
-                    <th className="dash-th dash-th--right">Count</th>
-                    <th className="dash-th dash-th--right">Lead Target</th>
-                    <th className="dash-th dash-th--right">Retail Target</th>
-                    <th className="dash-th dash-th--right">Budget (₹)</th>
-                    <th className="dash-th dash-th--right">Pending</th>
-                    <th className="dash-th dash-th--right">Approved</th>
-                    <th className="dash-th dash-th--right">Rejected</th>
-                  </tr></thead>
-                  <tbody>
-                    {activityBreakdown.map((row,i)=>(
-                      <tr key={row.activityType} className={i%2===0?"dash-row-even":"dash-row-odd"}>
-                        <td className="dash-td dash-dealer-name">{row.activityType}</td>
-                        <td className="dash-td dash-td--right">{row.count}</td>
-                        <td className="dash-td dash-td--right">{row.leadTarget}</td>
-                        <td className="dash-td dash-td--right">{row.retailTarget}</td>
-                        <td className="dash-td dash-td--right dash-td--mono">{inr(row.budget)}</td>
-                        <td className="dash-td dash-td--right">
-                          {row.pending>0?<span className="dash-badge dash-badge--pending">{row.pending}</span>:<span className="dash-muted">—</span>}
-                        </td>
-                        <td className="dash-td dash-td--right">
-                          {row.approved>0?<span className="dash-badge dash-badge--approved">{row.approved}</span>:<span className="dash-muted">—</span>}
-                        </td>
-                        <td className="dash-td dash-td--right">
-                          {row.rejected>0?<span className="dash-badge dash-badge--rejected">{row.rejected}</span>:<span className="dash-muted">—</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
-
-          {/* Proposals list */}
-          <section className="dash-section">
-            <h2 className="dash-section-title">
-              Your Proposals
-              <span className="dash-count-chip">{filtered.length}</span>
-              {activeFilter!=="All"&&(
-                <span style={{ fontSize:11,color:"#64748b",fontWeight:400,marginLeft:8 }}>
-                  (filtered: {activeFilter})
-                </span>
-              )}
-            </h2>
-            <div className="dash-table-wrap">
-              <table className="dash-table">
-                <thead><tr>
-                  <th className="dash-th">Action</th>
-                  <th className="dash-th">Token</th>
-                  <th className="dash-th">Month</th>
-                  <th className="dash-th">Activities</th>
-                  <th className="dash-th dash-th--right">Lead</th>
-                  <th className="dash-th dash-th--right">Retail</th>
-                  <th className="dash-th dash-th--right">Budget (₹)</th>
-                  <th className="dash-th">Submitted</th>
-                  <th className="dash-th">Budget Request</th>
-                  <th className="dash-th">Status</th>
-                </tr></thead>
-                <tbody>
-                  {filtered.map((p,i)=>(
-                    <tr key={p.id} className={i%2===0?"dash-row-even":"dash-row-odd"}
-                      style={{ cursor:"pointer" }} onClick={()=>openDetail(p)}>
-                      <td className="dash-td" onClick={(e)=>e.stopPropagation()}>
-                        <button onClick={()=>openDetail(p)}
-                          style={{ background:"#1e3a5f",color:"#fff",border:"none",
-                            padding:"4px 12px",borderRadius:6,fontSize:12,fontWeight:600,cursor:"pointer" }}>
-                          View
-                        </button>
-                      </td>
-                      <td className="dash-td" style={{ fontFamily:"monospace",fontSize:12 }}>
-                        {p.tokenNumber??"—"}
-                      </td>
-                      <td className="dash-td">{p.month}</td>
-                      <td className="dash-td">
-                        {p.activities.slice(0,2).map((a:ActivityResponse,ai:number)=>(
-                          <span key={ai} className="dash-state-tag" style={{ marginRight:4 }}>
-                            {a.activityType}
-                          </span>
-                        ))}
-                        {p.activities.length>2&&<span className="dash-muted">+{p.activities.length-2}</span>}
-                      </td>
-                      <td className="dash-td dash-td--right">{p.totalLeadTarget}</td>
-                      <td className="dash-td dash-td--right">{p.totalRetailTarget}</td>
-                      <td className="dash-td dash-td--right dash-td--mono">{inr(p.totalBudget)}</td>
-                      <td className="dash-td" style={{ fontSize:12,color:"#64748b" }}>{fmtDate(p.createdAt)}</td>
-                      <td className="dash-td">
-                        {isSentBack(p)?(
-                          <span style={{ fontSize:11,color:"#92400e",background:"#fef9c3",
-                            padding:"2px 8px",borderRadius:10,fontWeight:600 }}>↩ Sent</span>
-                        ):p.status==="Approved"?(
-                          <span style={{ fontSize:11,color:"#166534",background:"#f0fdf4",
-                            padding:"2px 8px",borderRadius:10 }}>Can request</span>
-                        ):<span className="dash-muted">—</span>}
-                      </td>
-                      <td className="dash-td">
-                        <span className={statusBadge(p.status)}>
-                          {p.status==="NeedsRevision"?"Needs Revision":p.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div style={{ fontSize:12, color:"#78350f" }}>
+              The checker has requested changes. Click ✏ Edit on each proposal below.
             </div>
-          </section>
-        </>
+          </div>
+          <button onClick={() => setActiveFilter("NeedsRevision")}
+            style={{ marginLeft:"auto", background:"#f59e0b", color:"#fff",
+              border:"none", padding:"7px 16px", borderRadius:7,
+              fontWeight:700, fontSize:12, cursor:"pointer" }}>
+            View Revision Requests
+          </button>
+        </div>
       )}
 
-      {/* ══════════ FULL-PAGE PROPOSAL DETAIL ══════════
-          Same pattern as ApproverDashboard fullscreen modal:
-          position:fixed, inset:0, flex column, scrollable body  */}
-      {selected&&(
-        <div style={{ position:"fixed",inset:0,zIndex:900,background:"#f1f5f9",
-          display:"flex",flexDirection:"column",overflow:"hidden" }}>
+      {/* ── Filter bar ─────────────────────────────────────────────────────── */}
+      <div className="dash-filter-bar" style={{ marginBottom:16 }}>
+        {/* Status filter */}
+        <select className="dash-filter-select" value={activeFilter}
+          onChange={e => setActiveFilter(e.target.value as ActiveFilter)}>
+          <option value="All">All Statuses</option>
+          <option value="Pending">Pending</option>
+          <option value="Approved">Approved</option>
+          <option value="Rejected">Rejected</option>
+          <option value="NeedsRevision">Needs Revision</option>
+        </select>
+        {/* Month filter */}
+        <select className="dash-filter-select" value={monthFilter}
+          onChange={e => setMonthFilter(e.target.value)}>
+          {months.map(m => <option key={m} value={m}>{m === "All" ? "All Months" : m}</option>)}
+        </select>
+        {/* Year filter */}
+        <select className="dash-filter-select" value={yearFilter}
+          onChange={e => setYearFilter(e.target.value)}>
+          {years.map(y => <option key={y} value={y}>{y === "All" ? "All Years" : y}</option>)}
+        </select>
+        {/* Search */}
+        <div style={{ position:"relative", flex:"1 1 200px" }}>
+          <input className="dash-search" value={sharedSearch}
+            onChange={e => setSharedSearch(e.target.value)}
+            placeholder="Search proposals…" />
+          {sharedSearch && (
+            <button onClick={() => setSharedSearch("")}
+              style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)",
+                background:"none", border:"none", cursor:"pointer", color:"#94a3b8", fontSize:14 }}>✕</button>
+          )}
+        </div>
+        {hasActiveFilter && (
+          <button className="dash-clear-btn" onClick={clearAllFilters}>Clear all ✕</button>
+        )}
+      </div>
 
-          {/* ── Top bar ── */}
-          <div style={{ background:"#0a2540",color:"#fff",padding:"0 24px",height:58,flexShrink:0,
-            display:"flex",alignItems:"center",justifyContent:"space-between",
-            boxShadow:"0 2px 8px rgba(0,0,0,0.2)" }}>
-            <div style={{ display:"flex",alignItems:"center",gap:14,minWidth:0 }}>
-              <span style={{ fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:20,
-                flexShrink:0,color:"#fff",
-                background:selected.status==="Approved"?"#16a34a"
-                  :selected.status==="Rejected"?"#dc2626"
-                  :selected.status==="NeedsRevision"?"#f59e0b":"#64748b" }}>
-                {selected.status==="Approved"?"✓ Approved"
-                  :selected.status==="Rejected"?"✕ Rejected"
-                  :selected.status==="NeedsRevision"?"Needs Revision"
-                  :"⏳ Pending"}
-              </span>
-              <div style={{ minWidth:0 }}>
-                <span style={{ fontWeight:700,fontSize:16,color:"#fff" }}>
-                  {selected.tokenNumber??selected.id.slice(-8)}
-                </span>
-                <span style={{ color:"#94a3b8",fontSize:12,marginLeft:12 }}>
-                  {selected.dealerName} · {selected.location}, {selected.state} · {selected.month}
-                </span>
-              </div>
+      {/* ── KPI Cards ──────────────────────────────────────────────────────── */}
+      <div className="dash-kpi-grid">
+        <KpiCard label="Total Proposals" value={String(stats.totalProposals)}
+          sub={inrCompact(stats.totalBudget) + " total budget"} color="#0a2540"
+          active={activeFilter === "All"} onClick={() => handleKpiClick("All")} />
+        <KpiCard label="⏳ Pending" value={String(stats.pendingCount)}
+          sub={inrCompact(stats.pendingBudget)} color="#f59e0b"
+          active={activeFilter === "Pending"} onClick={() => handleKpiClick("Pending")} />
+        <KpiCard label="✓ Approved" value={String(stats.approvedCount)}
+          sub={inrCompact(stats.approvedBudget)} color="#16a34a"
+          active={activeFilter === "Approved"} onClick={() => handleKpiClick("Approved")} />
+        <KpiCard label="✕ Rejected" value={String(stats.rejectedCount)}
+          color="#dc2626" active={activeFilter === "Rejected"}
+          onClick={() => handleKpiClick("Rejected")} />
+        <KpiCard label="↩ Needs Revision" value={String(stats.needsRevision)}
+          color="#f59e0b" active={activeFilter === "NeedsRevision"}
+          onClick={() => handleKpiClick("NeedsRevision")}
+          hint="Checker sent these back — edit and resubmit" />
+        <KpiCard label="🎯 Retail Target" value={String(stats.totalRetailTarget)}
+          sub={`${stats.totalLeadTarget} lead target`} color="#7c3aed" />
+        <KpiCard label="₹ Total Budget" value={inrCompact(stats.totalBudget)}
+          sub={`Avg CAC: ${inrCompact(stats.avgCac)}`} color="#0369a1" />
+      </div>
+
+      {hasActiveFilter && (
+        <div className="dash-filter-hint">
+          <strong>KPI counts filtered:</strong>
+          {monthFilter !== "All" && <span>Month: <b>{monthFilter}</b></span>}
+          {yearFilter  !== "All" && <span>Year: <b>{yearFilter}</b></span>}
+          {activeFilter !== "All" && <span>Status: <b>{activeFilter}</b></span>}
+        </div>
+      )}
+
+      {/* ── Proposals Table ─────────────────────────────────────────────────── */}
+      <div className="dash-section">
+        <div className="dash-section-head">
+          <h2 className="dash-section-title" style={{ fontSize:16 }}>
+            📋 My Proposals
+            <span style={{ fontSize:12, fontWeight:400, color:"#64748b", marginLeft:10 }}>
+              {searchFiltered.length} of {proposals.length}
+            </span>
+          </h2>
+        </div>
+
+        {proposalRows.length === 0 ? (
+          <div style={{ textAlign:"center", padding:"60px 20px", color:"#94a3b8" }}>
+            <div style={{ fontSize:40, marginBottom:10 }}>📭</div>
+            <div style={{ fontWeight:700, fontSize:15, color:"#0a2540", marginBottom:6 }}>
+              {proposals.length === 0 ? "No proposals yet" : "No proposals match your filters"}
             </div>
-            <button onClick={closeDetail}
-              style={{ background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",
-                color:"#fff",borderRadius:7,padding:"6px 14px",fontSize:13,cursor:"pointer",fontWeight:600 }}>
-              ✕ Close
-            </button>
+            <div style={{ fontSize:13 }}>
+              {proposals.length === 0
+                ? "Click '+ New Proposal' to create your first BTL activity proposal."
+                : "Try clearing filters above."}
+            </div>
+            {proposals.length === 0 && (
+              <button className="dash-add-btn" style={{ marginTop:16 }}
+                onClick={() => navigate("/dealer-proposal")}>
+                + Create Proposal
+              </button>
+            )}
           </div>
+        ) : (
+          <div className="dash-table-wrap" style={{ overflowX:"auto" }}>
+            <table className="dash-table">
+              <thead><tr>
+                <th>Token</th>
+                <th>Month</th>
+                <th>Year</th>
+                <th>Activities</th>
+                <th>Budget</th>
+                <th>Retail Target</th>
+                <th>Status</th>
+                <th>Submitted</th>
+                <th>Action</th>
+              </tr></thead>
+              <tbody>
+                {proposalRows.map(p => (
+                  <tr key={p.id} style={{ cursor:"pointer",
+                    background: p.status === "NeedsRevision" ? "#fffbeb" : undefined }}
+                    onClick={() => setSelected(p)}>
+                    <td style={{ fontFamily:"monospace", fontSize:11, color:"#1e3a5f", fontWeight:600 }}>
+                      {p.tokenNumber ?? "—"}
+                    </td>
+                    <td>{p.month}</td>
+                    <td>{(p as any).year ?? "—"}</td>
+                    <td style={{ fontSize:11 }}>
+                      {p.activities.slice(0, 2).map(a => a.activityType).join(", ")}
+                      {p.activities.length > 2 && <span style={{ color:"#94a3b8" }}> +{p.activities.length - 2}</span>}
+                    </td>
+                    <td style={{ fontWeight:600 }}>{inrCompact(p.totalBudget)}</td>
+                    <td>{p.totalRetailTarget}</td>
+                    <td>
+                      <StatusPill status={p.status} />
+                      {p.status === "NeedsRevision" && (
+                        <button onClick={e => { e.stopPropagation(); navigate(`/dealer-proposal?edit=${p.id}`); }}
+                          style={{ display:"block", marginTop:4, background:"#f59e0b", color:"#fff",
+                            border:"none", borderRadius:5, padding:"2px 8px",
+                            fontSize:10, fontWeight:700, cursor:"pointer" }}>
+                          ✏ Edit
+                        </button>
+                      )}
+                    </td>
+                    <td style={{ fontSize:11, color:"#6b7280" }}>
+                      {p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-IN", { day:"2-digit", month:"short" }) : "—"}
+                    </td>
+                    <td onClick={e => e.stopPropagation()}>
+                      <button onClick={() => setSelected(p)}
+                        style={{ background:"#eff6ff", color:"#1e40af", border:"1px solid #bfdbfe",
+                          borderRadius:6, padding:"4px 10px", fontSize:11, fontWeight:600, cursor:"pointer" }}>
+                        View
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
-          {/* ── Scrollable body ── */}
-          <div style={{ flex:1,overflowY:"auto",padding:"24px 24px 40px" }}>
-            <div style={{ maxWidth:1200,margin:"0 auto" }}>
+      {/* ── Activity-wise Summary ───────────────────────────────────────────── */}
+      {activitySummary.length > 0 && (
+        <div className="dash-section" style={{ marginTop:20 }}>
+          <div className="dash-section-head">
+            <h2 className="dash-section-title" style={{ fontSize:16 }}>📊 Activity Breakdown</h2>
+          </div>
+          <div style={{ overflowX:"auto" }}>
+            <table className="dash-table">
+              <thead><tr>
+                <th>Activity Type</th>
+                <th style={{ textAlign:"center" }}>Count</th>
+                <th style={{ textAlign:"right" }}>Budget</th>
+                <th style={{ textAlign:"center" }}>Retail Target</th>
+                <th style={{ textAlign:"center" }}>Lead Target</th>
+                <th style={{ textAlign:"right" }}>CAC</th>
+              </tr></thead>
+              <tbody>
+                {activitySummary.map(([name, d]) => (
+                  <tr key={name}>
+                    <td style={{ fontWeight:600, color:"#0a2540" }}>{name}</td>
+                    <td style={{ textAlign:"center" }}>{d.count}</td>
+                    <td style={{ textAlign:"right", fontWeight:600 }}>{inrCompact(d.budget)}</td>
+                    <td style={{ textAlign:"center" }}>{d.retail}</td>
+                    <td style={{ textAlign:"center" }}>{d.lead}</td>
+                    <td style={{ textAlign:"right", fontSize:11, color:"#6b7280" }}>
+                      {d.retail > 0 ? inrCompact(d.budget / d.retail) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
-              {/* Proposal info grid */}
-              <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",
-                gap:10,marginBottom:20 }}>
+      {/* ════════════════════════════════════════════════════════════════════
+          PROPOSAL DETAIL MODAL
+      ════════════════════════════════════════════════════════════════════ */}
+      {selected && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
+          zIndex:1000, overflowY:"auto", padding:"20px 0" }}
+          onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
+          <div style={{ background:"#fff", borderRadius:12, maxWidth:900, margin:"0 auto",
+            padding:"0 0 24px", boxShadow:"0 20px 60px rgba(0,0,0,0.3)", position:"relative" }}>
+
+            {/* Modal header */}
+            <div style={{ background:"#0a2540", borderRadius:"12px 12px 0 0", padding:"16px 24px",
+              display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ flex:1 }}>
+                <div style={{ color:"rgba(255,255,255,0.6)", fontSize:11, marginBottom:2 }}>
+                  {selected.tokenNumber}
+                </div>
+                <div style={{ color:"#fff", fontWeight:700, fontSize:16 }}>
+                  {selected.dealerName} · {selected.month} {(selected as any).year ?? ""}
+                </div>
+              </div>
+              <StatusPill status={selected.status} />
+              <button onClick={() => setSelected(null)}
+                style={{ background:"rgba(255,255,255,0.1)", border:"none", color:"#fff",
+                  borderRadius:8, padding:"6px 12px", cursor:"pointer", fontSize:14 }}>✕</button>
+            </div>
+
+            <div style={{ padding:"20px 24px 0" }}>
+
+              {/* ── Revision banner ──────────────────────────────────────── */}
+              {selected.status === "NeedsRevision" && (
+                <div style={{ background:"#fef9c3", border:"1px solid #fde68a",
+                  borderLeft:"4px solid #f59e0b", borderRadius:8,
+                  padding:"14px 18px", marginBottom:16 }}>
+                  <div style={{ fontWeight:700, color:"#92400e", fontSize:14, marginBottom:6 }}>
+                    ↩ Revision Requested — Please edit and resubmit
+                  </div>
+                  {selected.approverNote && (
+                    <p style={{ margin:"0 0 12px", color:"#78350f", fontSize:13,
+                      background:"#fffbeb", borderRadius:6, padding:"8px 12px" }}>
+                      <strong>Changes required:</strong> {selected.approverNote}
+                    </p>
+                  )}
+                  {(selected as any).checkerRemarks && (
+                    <p style={{ margin:"0 0 12px", color:"#78350f", fontSize:13,
+                      background:"#fffbeb", borderRadius:6, padding:"8px 12px" }}>
+                      <strong>Checker note:</strong> {(selected as any).checkerRemarks}
+                    </p>
+                  )}
+                  <button onClick={() => navigate(`/dealer-proposal?edit=${selected.id}`)}
+                    style={{ background:"#f59e0b", color:"#fff", border:"none",
+                      padding:"10px 22px", borderRadius:8, fontWeight:700,
+                      fontSize:14, cursor:"pointer" }}>
+                    ✏ Edit &amp; Resubmit Proposal →
+                  </button>
+                </div>
+              )}
+
+              {/* ── Proposal info grid ──────────────────────────────────── */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
                 {[
-                  {label:"Token No.",    value:selected.tokenNumber??"—"},
-                  {label:"Month",        value:selected.month},
-                  {label:"Dealer",       value:selected.dealerName},
-                  {label:"Location",     value:`${selected.location}, ${selected.state}`},
-                  {label:"RSM / TSM",    value:selected.rsmName},
-                  {label:"Commando",     value:selected.commandoName||"—"},
-                  {label:"Eligibility",  value:selected.eligibility},
-                  {label:"Dealer Type",  value:selected.type},
-                  {label:"Vendor",       value:selected.vendorName||"—"},
-                  {label:"Submitted by", value:selected.submittedByDisplayName??selected.submittedBy},
-                ].map(({label,value})=>(
-                  <div key={label} style={{ background:"#fff",border:"1px solid #e2e8f0",
-                    borderRadius:8,padding:"10px 12px" }}>
-                    <div style={{ fontSize:10,color:"#6b7280",fontWeight:700,
-                      textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4 }}>{label}</div>
-                    <div style={{ fontWeight:600,fontSize:13,color:"#0a2540",
-                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{value}</div>
+                  ["Location",    selected.location],
+                  ["State",       selected.state],
+                  ["Month",       selected.month],
+                  ["Year",        (selected as any).year ?? "—"],
+                  ["RSM",         selected.rsmName],
+                  ["TSM",         selected.tsmName ?? "—"],
+                  ["Eligibility", selected.eligibility],
+                  ["Type",        selected.type],
+                  ["Total Budget", inr(selected.totalBudget)],
+                  ["Retail Target", String(selected.totalRetailTarget)],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ background:"#f8fafc", borderRadius:6,
+                    padding:"8px 12px", border:"1px solid #e2e8f0" }}>
+                    <div style={{ fontSize:10, color:"#6b7280", fontWeight:700,
+                      textTransform:"uppercase", letterSpacing:"0.04em" }}>{label}</div>
+                    <div style={{ fontSize:13, color:"#0a2540", fontWeight:600 }}>{value}</div>
                   </div>
                 ))}
               </div>
 
-              {/* Status banner */}
-              <div style={{
-                background:selected.status==="Approved"?"#f0fdf4"
-                  :selected.status==="Rejected"?"#fef2f2":"#fffbeb",
-                border:`1px solid ${selected.status==="Approved"?"#bbf7d0"
-                  :selected.status==="Rejected"?"#fecaca":"#fde68a"}`,
-                borderLeft:`4px solid ${selected.status==="Approved"?"#16a34a"
-                  :selected.status==="Rejected"?"#dc2626":"#f59e0b"}`,
-                borderRadius:8,padding:"12px 16px",marginBottom:20,fontSize:13 }}>
-                <strong style={{ color:selected.status==="Approved"?"#166534"
-                  :selected.status==="Rejected"?"#991b1b":"#92400e" }}>
-                  {selected.status==="Approved"?"✓ Approved"
-                   :selected.status==="Rejected"?"✕ Rejected"
-                   :selected.status==="NeedsRevision"?"↩ Needs Revision"
-                   :"⏳ Pending Review"}
-                </strong>
-                {selected.approverNote&&(
-                  <p style={{ margin:"4px 0 0",color:"#374151",fontSize:12 }}>{selected.approverNote}</p>
-                )}
-                {selected.decidedAt&&(
-                  <p style={{ margin:"4px 0 0",color:"#6b7280",fontSize:11 }}>
-                    {fmtDate(selected.decidedAt)}{selected.approvedBy&&` · ${selected.approvedBy}`}
-                  </p>
-                )}
-              </div>
-
-              {/* RSM remarks */}
-              {selected.remarks&&(
-                <div style={{ background:"#fffbeb",border:"1px solid #fde68a",
-                  borderLeft:"3px solid #f59e0b",borderRadius:8,
-                  padding:"10px 14px",marginBottom:16,fontSize:13 }}>
-                  <span style={{ fontWeight:600,color:"#92400e",fontSize:11,
-                    textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>
-                    RSM Remarks
-                  </span>
-                  <p style={{ margin:0,color:"#78350f" }}>{selected.remarks}</p>
+              {/* ── Checker remarks ─────────────────────────────────────── */}
+              {(selected as any).checkerRemarks && selected.status !== "NeedsRevision" && (
+                <div style={{ background:"#fef9c3", border:"1px solid #fde68a",
+                  borderRadius:8, padding:"10px 14px", marginBottom:12, fontSize:13 }}>
+                  <strong>Checker note:</strong> {(selected as any).checkerRemarks}
                 </div>
               )}
 
-              {/* ── Activity plan cross-tab ── */}
-              <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,
-                overflow:"hidden",marginBottom:20 }}>
-                <div style={{ background:"#0a2540",padding:"12px 16px" }}>
-                  <span style={{ color:"#fff",fontWeight:700,fontSize:14 }}>
-                    Activity Plan ({selected.activities.length})
-                  </span>
-                </div>
-                <div style={{ overflowX:"auto" }}>
-                  <table style={{ width:"100%",borderCollapse:"collapse",fontSize:13,
-                    minWidth:600 }}>
-                    <thead>
-                      <tr style={{ background:"#f8fafc",borderBottom:"2px solid #e2e8f0" }}>
-                        <th style={{ padding:"9px 14px",textAlign:"left",fontSize:11,fontWeight:700,
-                          color:"#374151",borderRight:"2px solid #e2e8f0",
-                          minWidth:180,whiteSpace:"nowrap" }}>Parameter</th>
-                        {selected.activities.map((a,i)=>(
-                          <th key={a.id} style={{ padding:"9px 14px",textAlign:"left",
-                            fontSize:12,color:"#0a2540",borderLeft:"1px solid #e2e8f0",
-                            minWidth:150 }}>
-                            <span style={{ fontWeight:700 }}>{String.fromCharCode(65+i)})</span>
-                            {" "}{a.activityType}
-                            {a.category&&(
-                              <span style={{ marginLeft:6,fontSize:10,fontWeight:700,
-                                padding:"1px 6px",borderRadius:3,
-                                background:a.category==="ATL"?"#eff6ff":"#f0fdf4",
-                                color:a.category==="ATL"?"#1e40af":"#166534" }}>
-                                {a.category}
-                              </span>
-                            )}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[
-                        {label:"No. of Days", even:true, render:(a:ActivityResponse)=>{
-                          const d=a.startDate&&a.endDate
-                            ?Math.round((new Date(a.endDate).getTime()-new Date(a.startDate).getTime())/(86400000))+1:0;
-                          return `${d} days`;
-                        }},
-                        {label:"Dates", even:false, render:(a:ActivityResponse)=>
-                          `${fmtShort(a.startDate)} – ${fmtDate(a.endDate)}`},
-                        {label:"Expected Leads",  even:true,  render:(a:ActivityResponse)=>String(a.leadTarget)},
-                        {label:"Expected Retail", even:false, render:(a:ActivityResponse)=>String(a.retailTarget)},
-                        {label:"Budget",  even:true, render:(a:ActivityResponse)=>
-                          inr(a.budget+a.additionalBudget)},
-                        {label:"Add. Budget", even:false, render:(a:ActivityResponse)=>
-                          a.additionalBudget>0?inr(a.additionalBudget):"—"},
-                        {label:"BGauss Share", even:true, render:(a:ActivityResponse)=>
-                          a.bgaussShare&&a.bgaussShare>0?`${a.bgaussShare}%`:"100%"},
-                        {label:"CPL", even:false, render:(a:ActivityResponse)=>{
-                          const cpl=a.leadTarget>0?Math.round((a.budget+a.additionalBudget)/a.leadTarget):0;
-                          return inr(cpl);
-                        }},
-                      ].map(({label,even,render})=>(
-                        <tr key={label}>
-                          <td style={{ padding:"8px 14px",color:"#6b7280",fontSize:11,fontWeight:600,
-                            borderBottom:"1px solid #f1f5f9",borderRight:"2px solid #e2e8f0",
-                            background:even?"#f8fafc":"#fff",whiteSpace:"nowrap" }}>
-                            {label}
-                          </td>
-                          {selected.activities.map((a)=>(
-                            <td key={a.id} style={{ padding:"8px 14px",fontSize:13,
-                              background:even?"#f8fafc":"#fff",
-                              borderBottom:"1px solid #f1f5f9",borderLeft:"1px solid #e2e8f0" }}>
-                              {render(a)}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                      {/* CAC with over-limit highlight */}
-                      <tr>
-                        <td style={{ padding:"8px 14px",color:"#6b7280",fontSize:11,fontWeight:600,
-                          borderBottom:"1px solid #f1f5f9",borderRight:"2px solid #e2e8f0",
-                          background:"#f8fafc",whiteSpace:"nowrap" }}>CAC</td>
-                        {selected.activities.map((a)=>{
-                          const cac=a.retailTarget>0
-                            ?Math.round((a.budget+a.additionalBudget)/a.retailTarget):0;
-                          const over=cac>4000;
-                          return <td key={a.id} style={{ padding:"8px 14px",fontSize:13,
-                            background:"#f8fafc",borderBottom:"1px solid #f1f5f9",
-                            borderLeft:"1px solid #e2e8f0",
-                            color:over?"#dc2626":"inherit",fontWeight:over?700:400 }}>
-                            {inr(cac)}
-                            {over&&<em style={{ fontSize:10,marginLeft:4,fontStyle:"italic" }}>
-                              (exceeds limit)</em>}
-                          </td>;
-                        })}
-                      </tr>
-                      {/* Footer total row */}
-                      <tr style={{ background:"#0a2540" }}>
-                        <td style={{ padding:"10px 14px",color:"#94a3b8",fontSize:11,
-                          fontWeight:700,borderRight:"2px solid #1e3a5f",whiteSpace:"nowrap" }}>
-                          Total
-                        </td>
-                        <td colSpan={selected.activities.length}
-                          style={{ padding:"10px 14px",color:"#fff",fontSize:13 }}>
-                          <strong>Budget:</strong> {inr(selected.totalBudget)}
-                          &nbsp;·&nbsp;
-                          <strong>CPL:</strong> {inr(Math.round(selected.cpl))}
-                          &nbsp;·&nbsp;
-                          <strong style={{ color:selected.cac>4000?"#fca5a5":"#fff" }}>
-                            CAC:
-                          </strong>{" "}
-                          {inr(Math.round(selected.cac))}
-                          {selected.cac>4000&&(
-                            <em style={{ fontSize:11,marginLeft:6,color:"#fca5a5" }}>
-                              (exceeds limit)
-                            </em>
-                          )}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+              {/* ── Activities list ─────────────────────────────────────── */}
+              <div style={{ fontWeight:700, fontSize:13, color:"#0a2540", marginBottom:8 }}>
+                Activities ({selected.activities.length})
               </div>
-
-              {/* ── Already sent-back banner ── */}
-              {isSentBack(selected)&&sentBackNote(selected)&&(
-                <div style={{ background:"#fef9c3",border:"1px solid #fde68a",
-                  borderLeft:"4px solid #f59e0b",borderRadius:8,
-                  padding:"12px 16px",marginBottom:16,fontSize:13 }}>
-                  <strong style={{ color:"#92400e" }}>
-                    ↩ Budget add-on request sent
-                    {sentBackAt(selected)&&(
-                      <span style={{ fontWeight:400,color:"#78350f",marginLeft:8,fontSize:11 }}>
-                        on {fmtDate(sentBackAt(selected))}
+              <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:16 }}>
+                {selected.activities.map((a, ai) => (
+                  <div key={a.id} style={{ border:"1px solid #e2e8f0", borderRadius:8, overflow:"hidden" }}>
+                    {/* Activity header */}
+                    <div style={{ background:"#f8fafc", padding:"10px 14px",
+                      display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+                      <span style={{ fontWeight:700, color:"#0a2540", fontSize:13 }}>
+                        {String.fromCharCode(65 + ai)}) {a.activityType}
                       </span>
-                    )}
-                  </strong>
-                  <p style={{ margin:"6px 0 0",color:"#78350f",fontSize:12,whiteSpace:"pre-wrap" }}>
-                    {sentBackNote(selected)}
-                  </p>
-                  <p style={{ margin:"4px 0 0",color:"#92400e",fontSize:11 }}>
-                    Sent from: <strong>{dealerEmail}</strong>
-                  </p>
-                </div>
-              )}
-
-              {/* ── Budget add-on request — Approved proposals only ── */}
-              {selected.status==="Approved"&&(
-                <div style={{ background:"#fff",border:"1px solid #e2e8f0",
-                  borderRadius:10,padding:"20px",marginBottom:20 }}>
-                  <div style={{ display:"flex",justifyContent:"space-between",
-                    alignItems:"flex-start",marginBottom:showSendBack?12:0 }}>
-                    <div>
-                      <p style={{ fontSize:14,fontWeight:700,color:"#0a2540",margin:0 }}>
-                        Request Budget Addition
-                      </p>
-                      <p style={{ fontSize:12,color:"#6b7280",margin:"4px 0 0" }}>
-                        Request will be sent from <strong>{dealerEmail}</strong>{" "}
-                        to Mayank Maheshwari (CC: RSM)
-                      </p>
+                      {a.category && (
+                        <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px",
+                          borderRadius:3, background: a.category === "ATL" ? "#eff6ff" : "#dcfce7",
+                          color: a.category === "ATL" ? "#1e40af" : "#166534" }}>
+                          {a.category}
+                        </span>
+                      )}
+                      <span style={{ fontSize:11, color:"#6b7280" }}>
+                        {fmtDate(a.startDate)} → {fmtDate(a.endDate)}
+                      </span>
+                      <span style={{ fontSize:12, fontWeight:700, color:"#0a2540", marginLeft:"auto" }}>
+                        {inrCompact(a.budget)}
+                      </span>
+                      <span style={{ fontSize:11, color:"#6b7280" }}>
+                        Retail: {a.retailTarget} | Lead: {a.leadTarget}
+                      </span>
                     </div>
-                    {!isSentBack(selected)&&!showSendBack&&(
-                      <button onClick={()=>setShowSendBack(true)}
-                        style={{ background:"#92400e",color:"#fff",border:"none",
-                          padding:"9px 18px",borderRadius:8,fontWeight:600,
-                          fontSize:13,cursor:"pointer",whiteSpace:"nowrap" }}>
-                        ↩ Request Addition
-                      </button>
+
+                    {/* ── Post-Activity panel (Approved proposals only) ── */}
+                    {selected.status === "Approved" && (
+                      <div style={{ borderTop:"1px solid #e2e8f0" }}>
+                        {/* Toggle button */}
+                        <button
+                          onClick={() => {
+                            initPostAct(a.id);
+                            setOpenPostAct(prev => ({ ...prev, [a.id]: !prev[a.id] }));
+                          }}
+                          style={{ width:"100%", background: openPostAct[a.id] ? "#0a2540" : "#f0fdf4",
+                            color: openPostAct[a.id] ? "#fff" : "#166534",
+                            border:"none", padding:"8px 14px", fontSize:12, fontWeight:700,
+                            cursor:"pointer", display:"flex", alignItems:"center", gap:8,
+                            justifyContent:"space-between" }}>
+                          <span>
+                            📊 Post-Activity Data
+                            {postAct[a.id]?.saved && <span style={{ marginLeft:8, fontSize:10, background:"#dcfce7", color:"#166534", borderRadius:10, padding:"1px 8px" }}>✓ Saved</span>}
+                          </span>
+                          <span style={{ fontSize:10 }}>{openPostAct[a.id] ? "▲ Close" : "▼ Enter Data"}</span>
+                        </button>
+
+                        {openPostAct[a.id] && (
+                          <div style={{ padding:"14px 16px", background:"#f8fafc" }}>
+                            {/* Dates */}
+                            <div style={{ display:"flex", gap:14, marginBottom:12, flexWrap:"wrap", alignItems:"flex-end" }}>
+                              <div>
+                                <label style={{ fontSize:10, fontWeight:700, color:"#374151",
+                                  textTransform:"uppercase", letterSpacing:"0.04em",
+                                  display:"block", marginBottom:4 }}>Actual Start Date</label>
+                                <input type="date"
+                                  value={postAct[a.id]?.actualStartDate ?? ""}
+                                  style={{ border:"1px solid #bbf7d0", borderRadius:6, padding:"6px 9px", fontSize:12, outline:"none" }}
+                                  onChange={e => {
+                                    const start = e.target.value;
+                                    const end   = postAct[a.id]?.actualEndDate ?? "";
+                                    setPA(a.id, { actualStartDate: start,
+                                      entries: start && end ? buildDailyEntries(start, end) : [] });
+                                  }} />
+                              </div>
+                              <div>
+                                <label style={{ fontSize:10, fontWeight:700, color:"#374151",
+                                  textTransform:"uppercase", letterSpacing:"0.04em",
+                                  display:"block", marginBottom:4 }}>Actual End Date</label>
+                                <input type="date"
+                                  value={postAct[a.id]?.actualEndDate ?? ""}
+                                  min={postAct[a.id]?.actualStartDate ?? undefined}
+                                  style={{ border:"1px solid #bbf7d0", borderRadius:6, padding:"6px 9px", fontSize:12, outline:"none" }}
+                                  onChange={e => {
+                                    const end   = e.target.value;
+                                    const start = postAct[a.id]?.actualStartDate ?? "";
+                                    setPA(a.id, { actualEndDate: end,
+                                      entries: start && end ? buildDailyEntries(start, end) : [] });
+                                  }} />
+                              </div>
+                              {postAct[a.id]?.entries.length > 0 && (
+                                <span style={{ fontSize:11, color:"#166534", fontWeight:600 }}>
+                                  {postAct[a.id].entries.length} day(s) to fill
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Daily data table */}
+                            {(postAct[a.id]?.entries?.length ?? 0) > 0 && (
+                              <div style={{ overflowX:"auto", border:"1px solid #e2e8f0", borderRadius:8, marginBottom:12 }}>
+                                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12, minWidth:600 }}>
+                                  <thead>
+                                    <tr style={{ background:"#0a2540" }}>
+                                      <th style={{ padding:"7px 10px", textAlign:"left", color:"#e2e8f0", fontSize:10, width:95 }}>Date</th>
+                                      <th style={{ padding:"7px 8px", textAlign:"center", color:"#93c5fd", fontSize:10 }}>Enq Plan</th>
+                                      <th style={{ padding:"7px 8px", textAlign:"center", color:"#6ee7b7", fontSize:10 }}>Enq Actual</th>
+                                      <th style={{ padding:"7px 8px", textAlign:"center", color:"#93c5fd", fontSize:10 }}>TD Plan</th>
+                                      <th style={{ padding:"7px 8px", textAlign:"center", color:"#6ee7b7", fontSize:10 }}>TD Actual</th>
+                                      <th style={{ padding:"7px 8px", textAlign:"center", color:"#c4b5fd", fontSize:10 }}>Booking</th>
+                                      <th style={{ padding:"7px 8px", textAlign:"center", color:"#fbbf24", fontSize:10 }}>Retail</th>
+                                      <th style={{ padding:"7px 8px", textAlign:"center", color:"#a5b4fc", fontSize:10 }}>LMS Punched</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {postAct[a.id].entries.map((entry, ei) => (
+                                      <tr key={entry.date} style={{ background: ei % 2 === 0 ? "#fff" : "#f8fafc", borderBottom:"1px solid #f1f5f9" }}>
+                                        <td style={{ padding:"5px 10px", fontWeight:600, color:"#374151", fontSize:11 }}>{entry.date}</td>
+                                        {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map(key => (
+                                          <td key={key} style={{ padding:"4px 5px", textAlign:"center" }}>
+                                            <input type="number" min={0}
+                                              style={{ width:48, textAlign:"center", border:"1px solid #e2e8f0", borderRadius:4, padding:"3px", fontSize:11, outline:"none" }}
+                                              value={(entry[key] as number) || ""}
+                                              placeholder="0"
+                                              onChange={ev => setPA(a.id, {
+                                                entries: postAct[a.id].entries.map(en =>
+                                                  en.date === entry.date
+                                                    ? { ...en, [key]: parseInt(ev.target.value) || 0 }
+                                                    : en
+                                                )
+                                              })} />
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                  <tfoot>
+                                    <tr style={{ background:"#0a2540" }}>
+                                      <td style={{ padding:"6px 10px", color:"#fbbf24", fontWeight:700, fontSize:11 }}>TOTAL</td>
+                                      {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key, ki) => (
+                                        <td key={key} style={{ padding:"6px 6px", textAlign:"center", fontWeight:700, fontSize:12,
+                                          color: [0,2].includes(ki) ? "#93c5fd" : [1,3].includes(ki) ? "#6ee7b7" : ki===4 ? "#c4b5fd" : ki===5 ? "#fbbf24" : "#a5b4fc" }}>
+                                          {postAct[a.id].entries.reduce((s, en) => s + ((en[key] as number) || 0), 0)}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  </tfoot>
+                                </table>
+                              </div>
+                            )}
+
+                            <button
+                              disabled={postAct[a.id]?.saving || !postAct[a.id]?.actualStartDate || !postAct[a.id]?.actualEndDate}
+                              onClick={() => savePostActivity(selected.id, a.id)}
+                              style={{ background: (!postAct[a.id]?.actualStartDate || !postAct[a.id]?.actualEndDate) ? "#9ca3af" : "#16a34a",
+                                color:"#fff", border:"none", padding:"8px 20px", borderRadius:7,
+                                fontWeight:700, fontSize:13, cursor:"pointer" }}>
+                              {postAct[a.id]?.saving ? "Saving…" : "💾 Save Post-Activity Data"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
+                ))}
+              </div>
 
-                  {!isSentBack(selected)&&showSendBack&&(
-                    <div style={{ background:"#fefce8",border:"1px solid #fde68a",
-                      borderRadius:8,padding:16 }}>
-                      <p style={{ fontSize:13,fontWeight:600,color:"#0a2540",margin:"0 0 4px" }}>
-                        Describe the additional budget needed
-                      </p>
-                      <p style={{ fontSize:11,color:"#9ca3af",margin:"0 0 10px" }}>
-                        Specify which activity, how much additional budget is required, and why.
-                      </p>
-                      <div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",
-                        borderRadius:6,padding:"8px 12px",marginBottom:12,fontSize:12 }}>
-                        <span style={{ color:"#166534" }}>
-                          📧 Sending from: <strong>{dealerEmail}</strong>
-                          {" "}· Dealer: <strong>{dealerUser.dealerName||dealerUser.displayName}</strong>
-                        </span>
-                      </div>
-                      <textarea rows={6} value={sendBackNote}
-                        onChange={(e)=>setSendBackNote(e.target.value)}
-                        placeholder={
-                          "Example:\nRequesting ₹25,000 additional budget for Test Drive Camp (Activity A).\n\n"+
-                          "Current approved budget: ₹45,000\nRequested additional: ₹25,000\n\n"+
-                          "Reason: Venue rates increased due to festival season."
-                        }
-                        style={{ width:"100%",padding:"10px 12px",borderRadius:7,
-                          border:"1px solid #d1d5db",fontSize:13,resize:"vertical",
-                          boxSizing:"border-box" as const,minHeight:140 }}/>
-                      <div style={{ display:"flex",gap:10,marginTop:12 }}>
-                        <button onClick={handleDealerSendBack}
-                          disabled={sendBackLoading||!sendBackNote.trim()}
-                          style={{ background:"#92400e",color:"#fff",border:"none",
-                            padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,
-                            cursor:sendBackLoading||!sendBackNote.trim()?"not-allowed":"pointer",
-                            opacity:sendBackLoading||!sendBackNote.trim()?0.6:1 }}>
-                          {sendBackLoading?"Sending…":"📩 Send Request"}
-                        </button>
-                        <button onClick={()=>{setShowSendBack(false);setSendBackNote("");}}
-                          style={{ background:"#f1f5f9",color:"#374151",
-                            border:"1px solid #e2e8f0",padding:"10px 20px",
-                            borderRadius:8,fontWeight:500,fontSize:14,cursor:"pointer" }}>
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
+              {/* ── Budget add-on request (for approved proposals) ────────── */}
+              {selected.status === "Approved" && (
+                <div style={{ background:"#f8fafc", border:"1px solid #e2e8f0",
+                  borderRadius:8, padding:"12px 16px", marginTop:4 }}>
+                  <div style={{ fontWeight:700, fontSize:13, color:"#0a2540", marginBottom:4 }}>
+                    Need additional budget?
+                  </div>
+                  <p style={{ fontSize:12, color:"#6b7280", margin:"0 0 8px" }}>
+                    If you need more budget than approved, you can request an addition from the Checker.
+                  </p>
+                  <button
+                    onClick={() => navigate(`/dealer-proposal?budget=${selected.id}`)}
+                    style={{ background:"#1e3a5f", color:"#fff", border:"none",
+                      padding:"8px 18px", borderRadius:7, fontWeight:700,
+                      fontSize:12, cursor:"pointer" }}>
+                    Request Budget Addition
+                  </button>
                 </div>
               )}
-
             </div>
           </div>
         </div>
       )}
-
-      {/* Toast */}
-      {toast&&(
-        <div style={{ position:"fixed",bottom:24,right:24,zIndex:9999,
-          background:toast.ok?"#166534":"#991b1b",color:"#fff",
-          padding:"12px 20px",borderRadius:8,fontSize:14,fontWeight:600,
-          boxShadow:"0 4px 20px rgba(0,0,0,0.25)",maxWidth:360 }}>
-          {toast.ok?"✓":"✕"}&nbsp;{toast.msg}
-        </div>
-      )}
     </div>
-  );
-}
-
-function KpiCard({ icon,label,value,sub,accent,active,onClick }: {
-  icon:string; label:string; value:string; sub:string;
-  accent:"blue"|"amber"|"green"|"red"|"purple";
-  active?:boolean; onClick:()=>void;
-}) {
-  return (
-    <button type="button"
-      className={[
-        "dash-kpi-card","dash-kpi-card--clickable",`dash-kpi-card--${accent}`,
-        active?"dash-kpi-card--active":"",
-      ].filter(Boolean).join(" ")}
-      onClick={onClick}
-      title={active?"Click to clear filter":undefined}>
-      <div className="dash-kpi-icon">{icon}</div>
-      <div className="dash-kpi-body">
-        <div className="dash-kpi-label">{label}</div>
-        <div className="dash-kpi-value">{value}</div>
-        {sub&&<div className="dash-kpi-sub">{sub}</div>}
-      </div>
-      {active&&<div className="dash-kpi-active-dot"/>}
-    </button>
   );
 }

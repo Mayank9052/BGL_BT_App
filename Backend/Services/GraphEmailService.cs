@@ -106,9 +106,24 @@ public class GraphEmailService : IEmailService
             subject: BuildSubject("Budget Add-On Request from Dealer", p),
             body:    BuildDealerSendBackBody(p, dealerEmail, requestNote));
 
-    // Step 6: Checker forwards summary → Final Approver (ONE consolidated email)
+    // Step 6: Checker forwards → Final Approver
+    // When Email:SuppressIndividualForwardMails = "true", this method is a NO-OP.
+    // Instead, the Checker should use the bulk-forward panel which calls
+    // SendConsolidatedForwardSummaryAsync once for all forwarded proposals.
     public async Task SendForwardEmailAsync(ProposalResponseDto proposal, string checkerName)
     {
+        // ── SUPPRESSION CHECK ────────────────────────────────────────────────
+        // If suppress flag is on, skip individual forward mails entirely.
+        // Only the consolidated summary (state-wise) should be sent.
+        var suppress = _config["Email:SuppressIndividualForwardMails"];
+        if (suppress?.Equals("true", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            _logger.LogInformation(
+                "Individual forward mail suppressed for {Token} (SuppressIndividualForwardMails=true)",
+                proposal.TokenNumber);
+            return; // NO-OP — consolidated mail sent separately by the Checker
+        }
+        // ── SEND (only reaches here when suppress=false) ─────────────────────
         var finalApproverEmail = _config["FinalApproverEmail"] ?? _settings.FinalApproverEmail;
         var approverEmail      = _config["ApproverEmail"]      ?? _settings.ApproverEmail;
         var portalUrl          = _config["PortalUrl"]          ?? _settings.PortalBaseUrl;
@@ -122,6 +137,30 @@ public class GraphEmailService : IEmailService
             body:    body,
             cc:      new[] { approverEmail }
         );
+    }
+
+    // Step 6b: Consolidated state-wise summary — Checker sends ONE email covering ALL
+    // forwarded proposals for a state/batch. Called manually from the portal "📤 Send Summary" button.
+    public async Task SendConsolidatedForwardSummaryAsync(
+        IEnumerable<ProposalResponseDto> proposals,
+        string checkerName,
+        string graphToken)
+    {
+        var finalApproverEmail = _config["FinalApproverEmail"] ?? _settings.FinalApproverEmail;
+        var approverEmail      = _config["ApproverEmail"]      ?? _settings.ApproverEmail;
+        var portalUrl          = _config["PortalUrl"]          ?? _settings.PortalBaseUrl;
+
+        var proposalList = proposals.ToList();
+        if (!proposalList.Any()) return;
+
+        // Group by State for the subject
+        var states   = string.Join(", ", proposalList.Select(p => p.State).Distinct().Take(4));
+        var months   = proposalList.Select(p => p.Month).Distinct().FirstOrDefault() ?? "—";
+        var subject  = $"[BTL Approval] {proposalList.Count} Proposals Ready for Final Approval — {states} · {months}";
+
+        var body = BuildConsolidatedSummaryBody(proposalList, checkerName, portalUrl);
+
+        await SendAsync(graphToken, finalApproverEmail, approverEmail, subject, body);
     }
 
     // Step 7: Checker sends budget addition for re-approval → Final Approver
@@ -820,6 +859,94 @@ public class GraphEmailService : IEmailService
             </div>
           </div>
           <div style="background:#fffbeb;border-top:1px solid #fde68a;padding:14px 28px;font-size:11px;color:#94a3b8;text-align:center">
+            BGauss BTL Activity Management System ·
+            <a href="{portalUrl}" style="color:#2563eb">Open Portal</a>
+          </div>
+        </div>
+        """;
+    }
+
+    // 9. Consolidated state-wise summary for final approver
+    private string BuildConsolidatedSummaryBody(
+        List<ProposalResponseDto> proposals,
+        string checkerName,
+        string portalUrl)
+    {
+        var byState = proposals.GroupBy(p => p.State ?? "—").OrderBy(g => g.Key);
+        var stateRows = new System.Text.StringBuilder();
+
+        foreach (var grp in byState)
+        {
+            var totalBudget  = grp.Sum(p => p.TotalBudget);
+            var totalRetail  = grp.Sum(p => p.TotalRetailTarget);
+            var totalLead    = grp.Sum(p => p.TotalLeadTarget);
+            var dealers      = string.Join(", ", grp.Select(p => p.DealerName).Take(5));
+            if (grp.Count() > 5) dealers += $" +{grp.Count()-5} more";
+
+            stateRows.Append($"""
+                <tr>
+                  <td style="padding:8px 12px;font-weight:700;color:#0a2540;border-bottom:1px solid #e2e8f0;white-space:nowrap">{grp.Key}</td>
+                  <td style="padding:8px 12px;text-align:center;border-bottom:1px solid #e2e8f0">{grp.Count()}</td>
+                  <td style="padding:8px 12px;text-align:right;border-bottom:1px solid #e2e8f0;font-weight:600">₹{totalBudget:N0}</td>
+                  <td style="padding:8px 12px;text-align:center;border-bottom:1px solid #e2e8f0">{totalRetail}</td>
+                  <td style="padding:8px 12px;text-align:center;border-bottom:1px solid #e2e8f0">{totalLead}</td>
+                  <td style="padding:8px 12px;font-size:11px;color:#6b7280;border-bottom:1px solid #e2e8f0">{dealers}</td>
+                </tr>
+                """);
+        }
+
+        var grandBudget = proposals.Sum(p => p.TotalBudget);
+        var grandRetail = proposals.Sum(p => p.TotalRetailTarget);
+        var grandLead   = proposals.Sum(p => p.TotalLeadTarget);
+        var month       = proposals.FirstOrDefault()?.Month ?? "—";
+
+        return $"""
+        <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:720px;margin:0 auto;
+                    background:#fff;border:2px solid #0a2540;border-radius:10px;overflow:hidden">
+          <div style="background:#0a2540;padding:20px 28px">
+            <div style="color:#fff;font-size:18px;font-weight:700">
+              ✅ {proposals.Count} BTL Proposals — Final Approval Required
+            </div>
+            <div style="color:rgba(255,255,255,0.7);font-size:12px;margin-top:4px">
+              Reviewed &amp; forwarded by {checkerName} · {month} · {DateTime.Now:dd-MMM-yyyy HH:mm}
+            </div>
+          </div>
+          <div style="padding:24px 28px">
+            <p style="margin:0 0 16px;font-size:14px;color:#374151">
+              All proposals listed below have been reviewed by the Manager and are ready for your approval.
+              Please review each proposal in the portal and take action.
+            </p>
+
+            <!-- Summary by state -->
+            <div style="font-size:13px;font-weight:700;color:#374151;margin-bottom:8px">State-wise Summary</div>
+            <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:20px">
+              <thead><tr style="background:#0a2540">
+                <th style="color:#fff;font-size:11px;padding:8px 12px;text-align:left">State</th>
+                <th style="color:#fff;font-size:11px;padding:8px 12px;text-align:center">Proposals</th>
+                <th style="color:#fff;font-size:11px;padding:8px 12px;text-align:right">Total Budget</th>
+                <th style="color:#fff;font-size:11px;padding:8px 12px;text-align:center">Retail Target</th>
+                <th style="color:#fff;font-size:11px;padding:8px 12px;text-align:center">Lead Target</th>
+                <th style="color:#fff;font-size:11px;padding:8px 12px;text-align:left">Dealers</th>
+              </tr></thead>
+              <tbody>{stateRows}</tbody>
+              <tfoot><tr style="background:#f0fdf4">
+                <td style="padding:8px 12px;font-weight:700;color:#166534">Grand Total</td>
+                <td style="padding:8px 12px;text-align:center;font-weight:700;color:#166534">{proposals.Count}</td>
+                <td style="padding:8px 12px;text-align:right;font-weight:700;color:#166534">₹{grandBudget:N0}</td>
+                <td style="padding:8px 12px;text-align:center;font-weight:700;color:#166534">{grandRetail}</td>
+                <td style="padding:8px 12px;text-align:center;font-weight:700;color:#166534">{grandLead}</td>
+                <td></td>
+              </tr></tfoot>
+            </table>
+
+            <div style="text-align:center;margin-top:24px">
+              <a href="{portalUrl}/approver" style="background:#0a2540;color:#fff;text-decoration:none;
+                        padding:12px 32px;border-radius:8px;font-weight:700;font-size:14px;display:inline-block">
+                Review All Proposals in Portal →
+              </a>
+            </div>
+          </div>
+          <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:14px 28px;font-size:11px;color:#94a3b8;text-align:center">
             BGauss BTL Activity Management System ·
             <a href="{portalUrl}" style="color:#2563eb">Open Portal</a>
           </div>

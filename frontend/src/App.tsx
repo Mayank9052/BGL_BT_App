@@ -48,7 +48,7 @@ export default function App() {
         <Routes>
           <Route element={<DealerLayout onLogout={refreshDealer} />}>
             {/* Dashboard — proposal history, KPIs, send-back */}
-            <Route path="/dealer-dashboard" element={<DealerDashboard onLogout={refreshDealer} />} />
+            <Route path="/dealer-dashboard" element={<DealerDashboard />} />
             {/* New Proposal — same RSMForm but under dealer route */}
             <Route path="/dealer-proposal"  element={<RSMProposalForm />} />
             <Route path="/" element={<Navigate to="/dealer-dashboard" replace />} />
