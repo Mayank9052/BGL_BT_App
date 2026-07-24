@@ -1,393 +1,363 @@
-/* ─── frontend\src\components\layout\Sidebar.css Sidebar ────────────────────────────────────────────────────────────── */
-.sb {
-  width: 240px;
-  flex-shrink: 0;
-  background: #0f1b2d;
-  color: #d7dee8;
-  display: flex;
-  flex-direction: column;
-  padding: 16px 12px;
-  position: relative;
-  transition: width 0.22s ease;
-  overflow: hidden;
-  /* ↓ change these two lines */
-  min-height: 100%;        /* stretch with flex parent, not just viewport */
-  align-self: stretch;     /* fill full height of the flex row */
-  z-index: 300;
+/* ─────────────────────────────────────────────────────────────────────────────
+   Sidebar.css  —  BGauss BTL
+   Used by: Sidebar.tsx  +  DealerSidebar.tsx
+───────────────────────────────────────────────────────────────────────────── */
+
+/* ── CSS tokens ─────────────────────────────────────────────────────────── */
+:root {
+  --sb-width-exp:  240px;
+  --sb-width-col:   64px;
+  --sb-bg:         #0a2540;
+  --sb-bg-hover:   #112d4e;
+  --sb-bg-active:  #16a34a;
+  --sb-text:       rgba(255,255,255,0.82);
+  --sb-text-muted: rgba(255,255,255,0.42);
+  --sb-border:     rgba(255,255,255,0.08);
+  --sb-radius:     9px;
+  --sb-speed:      0.22s;
 }
 
-.sb--col {
-  width: 68px;
-  padding: 16px 8px;
-}
-
-/* ─── Mobile overlay ─────────────────────────────────────────────────────── */
+/* ── Overlay (mobile) ───────────────────────────────────────────────────── */
 .sb-overlay {
-  display: none;
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  z-index: 299;
-  backdrop-filter: blur(1px);
-  animation: fadeIn 0.2s ease;
+  background: rgba(0,0,0,0.45);
+  z-index: 199;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+/* ── Sidebar shell ──────────────────────────────────────────────────────── */
+.sb {
+  width: var(--sb-width-exp);
+  min-height: 100vh;
+  background: var(--sb-bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width var(--sb-speed) ease;
+  position: relative;
+  z-index: 200;
+  flex-shrink: 0;
 }
 
-/* ─── Brand ──────────────────────────────────────────────────────────────── */
+/* Collapsed state */
+.sb--col {
+  width: var(--sb-width-col);
+  cursor: pointer;
+}
+.sb--col:hover {
+  background: #0d2d4e;
+}
+
+/* ── Toggle buttons ─────────────────────────────────────────────────────── */
+.sb-toggle {
+  position: absolute;
+  top: 14px;
+  right: 10px;
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: var(--sb-text);
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  z-index: 10;
+}
+.sb-toggle:hover {
+  background: rgba(255,255,255,0.15);
+}
+.sb-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* Desktop toggle visible; mobile hidden */
+
+.sb-toggle--mobile  { display: none; }
+
+/* ── Brand / logo ───────────────────────────────────────────────────────── */
 .sb-brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 4px 8px 20px;
+  padding: 14px 14px 10px;
+  min-height: 56px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--sb-border);
+  margin-bottom: 8px;
+}
+.sb-logo {
+  width: 75px;
+  height: 32px;
+  object-fit: contain;
+  border-radius: 6px;
+  flex-shrink: 0;
+  background: #fff;
+  padding: 2px;
+}
+.sb-brand-name {
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+  white-space: nowrap;
+  letter-spacing: -0.2px;
+  overflow: hidden;
+}
+
+/* ── Expand hint (collapsed state) ─────────────────────────────────────── */
+
+.sb--col:hover 
+.sb--col:hover 
+
+/* ── Section label ──────────────────────────────────────────────────────── */
+.sb-section-lbl {
+  display: block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--sb-text-muted);
+  padding: 0 16px 5px;
   white-space: nowrap;
   overflow: hidden;
 }
 
-.sb-logo {
-  height: 26px;
-  width: auto;
-  flex-shrink: 0;
+/* ── Divider ────────────────────────────────────────────────────────────── */
+.sb-divider {
+  height: 1px;
+  background: var(--sb-border);
+  margin: 8px 12px;
 }
 
-.sb-brand-name {
-  font-size: 16px;
-  font-weight: 500;
-  color: #fff;
-  letter-spacing: -0.3px;
-}
-
-/* ─── Toggle buttons ─────────────────────────────────────────────────────── */
-.sb-toggle {
-  position: absolute;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 0.5px solid #2a3a52;
-  background: #1a2b42;
-  color: #aab6c6;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10;
-  padding: 0;
-  font-size: 12px;
-  transition: background 0.15s, color 0.15s;
-}
-
-.sb-toggle:hover {
-  background: #24395a;
-  color: #fff;
-}
-
-/* Desktop toggle — right edge */
-.sb-toggle--desktop {
-  top: 16px;
-  right: -12px;
-}
-
-/* Mobile close button — top-right inside sidebar */
-.sb-toggle--mobile {
-  display: none;
-  top: 14px;
-  right: 14px;
-  position: absolute;
-  width: 28px;
-  height: 28px;
-  font-size: 14px;
-  border-radius: 6px;
-  border: 1px solid #2a3a52;
-}
-
-/* ─── Nav ────────────────────────────────────────────────────────────────── */
+/* ── Navigation ─────────────────────────────────────────────────────────── */
 .sb-nav {
   flex: 1;
   display: flex;
   flex-direction: column;
+  padding: 0 8px;
   gap: 2px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
 }
+.sb-nav::-webkit-scrollbar { display: none; }
 
-.sb-section-lbl {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #4d6070;
-  padding: 0 10px 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  display: block;
-}
-
-.sb-divider {
-  height: 0.5px;
-  background: rgba(255, 255, 255, 0.1);
-  margin: 10px 6px;
-}
-
-/* ─── Links ──────────────────────────────────────────────────────────────── */
+/* ── Nav link ───────────────────────────────────────────────────────────── */
 .sb-link {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 9px 10px;
-  border-radius: 8px;
-  color: #aab6c6;
+  border-radius: var(--sb-radius);
+  color: var(--sb-text);
   text-decoration: none;
   font-size: 13px;
-  font-weight: 400;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.14s, color 0.14s;
   position: relative;
+  flex-shrink: 0;
+}
+.sb-link svg {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.sb-link:hover {
+  background: rgba(255,255,255,0.09);
+  color: #fff;
+}
+.sb-link:hover svg {
+  opacity: 1;
+}
+.sb-link--active {
+  background: var(--sb-bg-active);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(22,163,74,0.35);
+}
+.sb-link--active svg {
+  opacity: 1;
 }
 
+/* Collapsed: center the icon */
 .sb--col .sb-link {
   justify-content: center;
-  padding: 9px;
+  padding: 11px 0;
+}
+.sb--col .sb-link svg {
+  opacity: 0.75;
+}
+.sb--col .sb-link:hover {
+  background: rgba(255,255,255,0.1);
+  box-shadow: inset 2px 0 0 #16a34a;
+}
+.sb--col .sb-link:hover svg {
+  opacity: 1;
+}
+.sb--col .sb-link--active {
+  box-shadow: 0 2px 8px rgba(22,163,74,0.3), inset 2px 0 0 #86efac;
 }
 
-.sb-link:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
-}
-
-.sb-link--active {
-  background: #16a34a;
-  color: #fff;
-}
-
-.sb-link i {
-  font-size: 16px;
-  flex-shrink: 0;
-  width: 18px;
-  text-align: center;
-}
-
+/* Link label — hidden when collapsed */
 .sb-link-label {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* ─── Badge / Dot ────────────────────────────────────────────────────────── */
+/* ── Badge (pending count) ──────────────────────────────────────────────── */
 .sb-badge {
-  margin-left: auto;
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
+  background: #ef4444;
+  color: #fff;
+  border-radius: 10px;
+  padding: 1px 7px;
   font-size: 10px;
-  font-weight: 500;
-  padding: 2px 6px;
-  border-radius: 99px;
-  white-space: nowrap;
+  font-weight: 800;
   flex-shrink: 0;
+  min-width: 20px;
+  text-align: center;
+  line-height: 1.4;
 }
-
+/* Dot badge for collapsed sidebar */
 .sb-dot {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 7px;
-  height: 7px;
+  top: 7px;
+  right: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: #fbbf24;
-}
-
-/* ─── Footer ─────────────────────────────────────────────────────────────── */
-.sb-footer {
-  margin-top: auto;
-}
-
-.sb-user-card {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 9px 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 0.5px solid rgba(255, 255, 255, 0.07);
-  margin-bottom: 6px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.sb--col .sb-user-card {
-  justify-content: center;
-  padding: 9px;
-}
-
-.sb-avatar {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: #16a34a;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 500;
-  color: #fff;
+  background: #ef4444;
+  border: 2px solid var(--sb-bg);
   flex-shrink: 0;
 }
 
-.sb-user-info {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-width: 0;
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+.sb-footer {
+  padding: 8px 8px 12px;
+  flex-shrink: 0;
 }
 
-.sb-user-name {
-  font-size: 12px;
-  font-weight: 500;
-  color: #e2e8f0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sb-user-role {
-  font-size: 10px;
-  color: #4d6070;
-}
-
-.sb-logout {
+/* ── User card ──────────────────────────────────────────────────────────── */
+.sb-user-card {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 8px;
-  border: none;
-  background: transparent;
-  color: #aab6c6;
-  font-size: 13px;
-  cursor: pointer;
-  width: 100%;
+  border-radius: var(--sb-radius);
+  margin-bottom: 4px;
+  overflow: hidden;
+}
+.sb-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #16a34a;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  letter-spacing: -0.5px;
+}
+.sb-user-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.sb-user-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
   white-space: nowrap;
   overflow: hidden;
-  transition: background 0.15s, color 0.15s;
+  text-overflow: ellipsis;
+}
+.sb-user-role {
+  font-size: 10px;
+  color: var(--sb-text-muted);
+  white-space: nowrap;
 }
 
+/* ── Logout button ──────────────────────────────────────────────────────── */
+.sb-logout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--sb-radius);
+  color: rgba(255,255,255,0.6);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.14s, color 0.14s;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.sb-logout:hover {
+  background: rgba(239,68,68,0.15);
+  color: #fca5a5;
+  border-color: rgba(239,68,68,0.3);
+}
+.sb-logout svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.sb-logout:hover svg {
+  opacity: 1;
+}
 .sb--col .sb-logout {
   justify-content: center;
-  padding: 8px;
-}
-
-.sb-logout i {
-  font-size: 16px;
-  flex-shrink: 0;
-}
-
-.sb-logout:hover {
-  background: rgba(239, 68, 68, 0.12);
-  color: #f87171;
+  padding: 11px 0;
+  border: none;
+  background: none;
 }
 
 /* ══════════════════════════════════════════════════════
-   RESPONSIVE — Tablet & Mobile (≤ 768px)
-   Sidebar becomes a slide-in drawer on mobile
+   MOBILE  ≤ 768px
 ══════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-  /* Hide desktop toggle */
-  .sb-toggle--desktop { display: none; }
-
-  /* Show mobile close button */
-  .sb-toggle--mobile { display: flex; }
-
-  /* Sidebar hidden off-screen by default on mobile */
+  /* Sidebar is a fixed slide-in drawer on mobile */
   .sb {
     position: fixed;
     top: 0;
     left: 0;
-    height: 100vh;
-    width: 260px !important; /* always full width on mobile, ignore collapsed */
+    bottom: 0;
+    width: var(--sb-width-exp);
     transform: translateX(-100%);
-    transition: transform 0.25s ease;
+    transition: transform var(--sb-speed) ease;
+    z-index: 200;
     box-shadow: none;
-    min-height: 0;
   }
-
-  /* Collapsed class has no effect on mobile */
-  .sb--col {
-    width: 260px !important;
-    padding: 16px 12px;
-  }
-
-  /* Hover highlight on collapsed sidebar — shows it's clickable */
-.sb--col:hover {
-  background: #111f33;
-}
-
-/* Small expand hint icon shown in collapsed state */
-.sb-expand-hint {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin: 0 0 10px;
-  opacity: 0;
-  transition: opacity 0.2s;
-  color: #4d6070;
-  font-size: 14px;
-}
-
-.sb--col:hover .sb-expand-hint {
-  opacity: 1;
-}
-
-/* Subtle pulse animation on the expand hint to guide users */
-.sb--col:hover .sb-expand-hint i {
-  animation: sb-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes sb-pulse {
-  0%, 100% { transform: translateX(0);   opacity: 0.5; }
-  50%       { transform: translateX(3px); opacity: 1;   }
-}
-
-  /* Collapsed sidebar nav links — show a faint hover glow to hint clickability */
-  .sb--col .sb-link:hover {
-    background: rgba(255,255,255,0.09);
-    box-shadow: inset 2px 0 0 #16a34a;
-  }
-
-  /* Cursor changes to indicate the whole sidebar is clickable when collapsed */
-  .sb--col {
-    cursor: pointer;
-  }
-
-  /* But the individual links/buttons still get their own cursor */
-  .sb--col .sb-link,
-  .sb--col .sb-logout,
-  .sb--col .sb-toggle {
-    cursor: pointer;
-  }
-
-
-  /* Show sidebar when mobileOpen */
+  /* When open */
   .sb--mobile-open {
     transform: translateX(0);
-    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.3);
+    box-shadow: 4px 0 24px rgba(0,0,0,0.35);
   }
-
-  /* Show overlay */
-  .sb--mobile-open ~ .sb-overlay,
-  .sb-overlay { display: block; }
-
-  /* Force expanded appearance on mobile */
-  .sb--col .sb-link   { justify-content: flex-start; padding: 9px 10px; }
-  .sb--col .sb-user-card { justify-content: flex-start; padding: 9px 10px; }
-  .sb--col .sb-logout { justify-content: flex-start; padding: 8px 10px; }
-
-  /* Always show labels on mobile */
-  .sb--col .sb-link-label { display: block !important; }
-  .sb--col .sb-brand-name { display: block !important; }
-  .sb--col .sb-user-info  { display: flex !important; }
-  .sb--col .sb-section-lbl{ display: block !important; }
-
-  /* Larger touch targets on mobile */
-  .sb-link { padding: 11px 12px; font-size: 14px; }
-  .sb-link i { font-size: 18px; width: 20px; }
+  /* Hide desktop toggle, show mobile close */
+  
+  .sb-toggle--mobile  { display: flex; }
+  /* Always expanded on mobile (no collapsed state) */
+  .sb--col {
+    width: var(--sb-width-exp);
+    transform: translateX(-100%);
+  }
+  .sb--col.sb--mobile-open {
+    transform: translateX(0);
+  }
 }

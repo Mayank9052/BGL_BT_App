@@ -87,14 +87,6 @@ export default function Sidebar({
         ].filter(Boolean).join(" ")}
         title={collapsed ? "Click to expand menu" : undefined}
       >
-        {/* Toggle — desktop */}
-        <button
-          className="sb-toggle sb-toggle--desktop"
-          onClick={(e) => { e.stopPropagation(); onToggle(); }}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
-          <Icon name={collapsed ? "chevron-r" : "chevron-l"} size={16} />
-        </button>
-
         {/* Close — mobile */}
         <button className="sb-toggle sb-toggle--mobile"
           onClick={onMobileClose} aria-label="Close menu">
@@ -106,13 +98,6 @@ export default function Sidebar({
           <img src="/BGauss_Logo.png" alt="BGauss" className="sb-logo" />
           {!collapsed && <span className="sb-brand-name">BGauss BTL</span>}
         </div>
-
-        {/* Collapsed expand hint */}
-        {collapsed && (
-          <div className="sb-expand-hint" aria-hidden="true">
-            <Icon name="chevrons-r" size={14} />
-          </div>
-        )}
 
         {/* Navigation */}
         <nav className="sb-nav" role="navigation">

@@ -75,14 +75,6 @@ export default function DealerSidebar({
         ].filter(Boolean).join(" ")}
         title={collapsed ? "Click to expand menu" : undefined}
       >
-        {/* Toggle — desktop */}
-        <button
-          className="sb-toggle sb-toggle--desktop"
-          onClick={(e) => { e.stopPropagation(); onToggle(); }}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
-          <Icon name={collapsed ? "chevron-r" : "chevron-l"} size={16} />
-        </button>
-
         {/* Close — mobile */}
         <button className="sb-toggle sb-toggle--mobile"
           onClick={onMobileClose} aria-label="Close menu">
@@ -93,15 +85,8 @@ export default function DealerSidebar({
         <div className="sb-brand">
           <img src="/BGauss_Logo.png" alt="BGauss" className="sb-logo"
             style={{ background: "transparent", border: "none" }} />
-          {!collapsed && <span className="sb-brand-name">BGauss BTL</span>}
+          {!collapsed && <span className="sb-brand-name"></span>}
         </div>
-
-        {/* Collapsed expand hint */}
-        {collapsed && (
-          <div className="sb-expand-hint" aria-hidden="true">
-            <Icon name="chevrons-r" size={14} />
-          </div>
-        )}
 
         {/* Dealer badge */}
         {!collapsed && (
