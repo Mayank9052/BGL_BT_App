@@ -1,0 +1,813 @@
+// src/pages/AnalyticsDashboard.tsx
+// Full analytics dashboard — region/state/activity/budget/lead/daily data insights
+import { useState, useMemo, useEffect } from "react";
+import { useMsal } from "@azure/msal-react";
+import { fetchProposals, type ProposalResponse } from "../services/proposalService";
+import "./AnalyticsDashboard.css";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const inr = (v: number) => "₹" + Math.round(v).toLocaleString("en-IN");
+const inrL = (v: number) => {
+  if (v >= 1_00_00_000) return `₹${(v / 1_00_00_000).toFixed(1)}Cr`;
+  if (v >= 1_00_000)    return `₹${(v / 1_00_000).toFixed(1)}L`;
+  if (v >= 1_000)       return `₹${(v / 1_000).toFixed(0)}K`;
+  return `₹${Math.round(v)}`;
+};
+const pct = (a: number, b: number) => b > 0 ? Math.round((a / b) * 100) : 0;
+const clamp = (v: number, max = 100) => Math.min(v, max);
+
+const MONTHS = ["January","February","March","April","May","June",
+                "July","August","September","October","November","December"];
+const MONTH_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const CURRENT_YEAR = new Date().getFullYear();
+
+// ─── Bar component ────────────────────────────────────────────────────────────
+const Bar = ({ value, max, color, height = 8 }: { value: number; max: number; color: string; height?: number }) => (
+  <div style={{ background:"#f1f5f9", borderRadius:99, height, overflow:"hidden", flex:1 }}>
+    <div style={{ background:color, height:"100%", width:`${clamp(pct(value,max))}%`,
+      borderRadius:99, transition:"width 0.6s cubic-bezier(.4,0,.2,1)" }}/>
+  </div>
+);
+
+// ─── Mini sparkline ────────────────────────────────────────────────────────────
+const Sparkline = ({ data, color }: { data: number[]; color: string }) => {
+  if (!data.length) return null;
+  const max = Math.max(...data, 1);
+  const w = 80, h = 28, pad = 2;
+  const pts = data.map((v, i) => {
+    const x = pad + (i / Math.max(data.length - 1, 1)) * (w - pad * 2);
+    const y = h - pad - ((v / max) * (h - pad * 2));
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg width={w} height={h} style={{ display:"block" }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+};
+
+// ─── KPI Card ──────────────────────────────────────────────────────────────────
+const KPI = ({ label, value, sub, color, trend, spark, onClick, active }: {
+  label: string; value: string; sub?: string; color: string;
+  trend?: { val: number; label: string }; spark?: number[];
+  onClick?: () => void; active?: boolean;
+}) => (
+  <div
+    className={`an-kpi${onClick ? " an-kpi--clickable" : ""}${active ? " an-kpi--active" : ""}`}
+    onClick={onClick}
+    style={{ borderTop:`3px solid ${color}`, outline: active ? `2px solid ${color}` : "none" }}
+    title={onClick ? `Filter by ${label}` : undefined}
+  >
+    <div className="an-kpi-top">
+      <div>
+        <div className="an-kpi-label">{label}</div>
+        <div className="an-kpi-value" style={{ color }}>{value}</div>
+        {sub && <div className="an-kpi-sub">{sub}</div>}
+      </div>
+      {spark && <Sparkline data={spark} color={color}/>}
+    </div>
+    {trend && (
+      <div className="an-kpi-trend" style={{ color: trend.val >= 0 ? "#16a34a" : "#dc2626" }}>
+        {trend.val >= 0 ? "▲" : "▼"} {Math.abs(trend.val)}% {trend.label}
+      </div>
+    )}
+    <div className="an-kpi-bar" style={{ background:`${color}22` }}>
+      <div style={{ background:color, height:"3px", width:"60%", borderRadius:2 }}/>
+    </div>
+  </div>
+);
+
+// ─── Section Card ──────────────────────────────────────────────────────────────
+const Section = ({ title, subtitle, children, action }: {
+  title: string; subtitle?: string; children: React.ReactNode; action?: React.ReactNode;
+}) => (
+  <div className="an-card">
+    <div className="an-card-head">
+      <div>
+        <div className="an-card-title">{title}</div>
+        {subtitle && <div className="an-card-sub">{subtitle}</div>}
+      </div>
+      {action && <div>{action}</div>}
+    </div>
+    {children}
+  </div>
+);
+
+// ─── Types ─────────────────────────────────────────────────────────────────────
+type DailyEntry = {
+  date: string; enquiryPlanned: number; enquiryActual: number;
+  testDrivePlanned: number; testDriveActual: number;
+  bookingActual: number; retailActual: number; leadsPunched: number;
+};
+
+interface StateRow { state:string; proposals:number; budget:number; approved:number; lead:number; retail:number; cac:number; }
+interface ActivityRow { name:string; count:number; budget:number; lead:number; retail:number; atl:number; btl:number; }
+interface MonthRow { month:string; proposals:number; budget:number; lead:number; retail:number; }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+export default function AnalyticsDashboard() {
+  const { instance } = useMsal();
+  const [proposals, setProposals] = useState<ProposalResponse[]>([]);
+  const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState<string|null>(null);
+  const [yearFilter, setYearFilter] = useState(String(CURRENT_YEAR));
+  const [monthFilter, setMonthFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [activeTab,   setActiveTab]   = useState<"overview"|"region"|"activity"|"daily"|"budget">("overview");
+  const [activeKpi,   setActiveKpi]   = useState<string|null>(null);
+
+  const toggleKpi = (key: string, filter: () => void, reset: () => void) => {
+    if (activeKpi === key) { setActiveKpi(null); reset(); }
+    else { setActiveKpi(key); filter(); }
+  };
+
+  useEffect(() => {
+    fetchProposals(instance)
+      .then(setProposals)
+      .catch(e => setError(e instanceof Error ? e.message : "Failed to load"))
+      .finally(() => setLoading(false));
+  }, [instance]);
+
+  // ── Filtered proposals ──────────────────────────────────────────────────────
+  const filtered = useMemo(() => proposals.filter(p => {
+    if (yearFilter   !== "All" && (p as any).year !== yearFilter)    return false;
+    if (monthFilter  !== "All" && p.month !== monthFilter)           return false;
+    if (statusFilter !== "All" && p.status !== statusFilter)         return false;
+    return true;
+  }), [proposals, yearFilter, monthFilter, statusFilter]);
+
+  const approved  = useMemo(() => filtered.filter(p => p.status === "Approved"),  [filtered]);
+  const pending   = useMemo(() => filtered.filter(p => p.status === "Pending"),   [filtered]);
+  const rejected  = useMemo(() => filtered.filter(p => p.status === "Rejected"),  [filtered]);
+  const revision  = useMemo(() => filtered.filter(p => p.status === "NeedsRevision"), [filtered]);
+
+  const years = useMemo(() =>
+    ["All", ...Array.from(new Set(proposals.map(p => (p as any).year).filter(Boolean))).sort()],
+    [proposals]);
+
+  // ── KPI numbers ──────────────────────────────────────────────────────────────
+  const totalBudget   = useMemo(() => filtered.reduce((s,p) => s + p.totalBudget, 0), [filtered]);
+  const approvedBudget = useMemo(() => approved.reduce((s,p) => s + p.totalBudget, 0), [approved]);
+  const totalLead     = useMemo(() => filtered.reduce((s,p) => s + p.totalLeadTarget, 0), [filtered]);
+  const totalRetail   = useMemo(() => filtered.reduce((s,p) => s + p.totalRetailTarget, 0), [filtered]);
+  const avgCac        = useMemo(() => {
+    const list = filtered.filter(p => p.cac > 0).map(p => p.cac);
+    return list.length ? list.reduce((a,b) => a+b,0)/list.length : 0;
+  }, [filtered]);
+
+  // ── All daily data aggregated ─────────────────────────────────────────────────
+  const dailyAgg = useMemo(() => {
+    const map: Record<string, DailyEntry> = {};
+    for (const p of approved) {
+      for (const a of p.activities) {
+        const raw = (a as any).dailyData;
+        if (!raw) continue;
+        try {
+          const entries: DailyEntry[] = JSON.parse(raw);
+          for (const e of entries) {
+            if (!map[e.date]) map[e.date] = { date:e.date, enquiryPlanned:0, enquiryActual:0,
+              testDrivePlanned:0, testDriveActual:0, bookingActual:0, retailActual:0, leadsPunched:0 };
+            const d = map[e.date];
+            d.enquiryPlanned  += e.enquiryPlanned  || 0;
+            d.enquiryActual   += e.enquiryActual   || 0;
+            d.testDrivePlanned += e.testDrivePlanned || 0;
+            d.testDriveActual += e.testDriveActual || 0;
+            d.bookingActual   += e.bookingActual   || 0;
+            d.retailActual    += e.retailActual    || 0;
+            d.leadsPunched    += e.leadsPunched    || 0;
+          }
+        } catch {}
+      }
+    }
+    return Object.values(map).sort((a,b) => a.date.localeCompare(b.date));
+  }, [approved]);
+
+  const dailyTotals = useMemo(() => ({
+    enquiryActual:  dailyAgg.reduce((s,d) => s + d.enquiryActual, 0),
+    testDriveActual: dailyAgg.reduce((s,d) => s + d.testDriveActual, 0),
+    bookingActual:  dailyAgg.reduce((s,d) => s + d.bookingActual, 0),
+    retailActual:   dailyAgg.reduce((s,d) => s + d.retailActual, 0),
+    leadsPunched:   dailyAgg.reduce((s,d) => s + d.leadsPunched, 0),
+  }), [dailyAgg]);
+
+  // ── State-wise aggregation ───────────────────────────────────────────────────
+  const stateRows: StateRow[] = useMemo(() => {
+    const map: Record<string,StateRow> = {};
+    for (const p of filtered) {
+      const s = p.state || "Unknown";
+      if (!map[s]) map[s] = { state:s, proposals:0, budget:0, approved:0, lead:0, retail:0, cac:0 };
+      map[s].proposals++;
+      map[s].budget += p.totalBudget;
+      if (p.status === "Approved") map[s].approved++;
+      map[s].lead   += p.totalLeadTarget;
+      map[s].retail += p.totalRetailTarget;
+    }
+    for (const r of Object.values(map)) {
+      r.cac = r.retail > 0 ? Math.round(r.budget / r.retail) : 0;
+    }
+    return Object.values(map).sort((a,b) => b.budget - a.budget);
+  }, [filtered]);
+
+  // ── Activity-wise aggregation ─────────────────────────────────────────────────
+  const activityRows: ActivityRow[] = useMemo(() => {
+    const map: Record<string,ActivityRow> = {};
+    for (const p of filtered) {
+      for (const a of p.activities) {
+        const n = a.activityType || "Unknown";
+        if (!map[n]) map[n] = { name:n, count:0, budget:0, lead:0, retail:0, atl:0, btl:0 };
+        map[n].count++;
+        map[n].budget += a.budget || 0;
+        map[n].lead   += a.leadTarget   || 0;
+        map[n].retail += a.retailTarget || 0;
+        if ((a as any).category === "ATL") map[n].atl++;
+        else map[n].btl++;
+      }
+    }
+    return Object.values(map).sort((a,b) => b.budget - a.budget);
+  }, [filtered]);
+
+  const maxActBudget = Math.max(...activityRows.map(r => r.budget), 1);
+
+  // ── Month-wise aggregation ────────────────────────────────────────────────────
+  const monthRows: MonthRow[] = useMemo(() => {
+    const map: Record<string,MonthRow> = {};
+    for (const p of filtered) {
+      const m = p.month || "Unknown";
+      if (!map[m]) map[m] = { month:m, proposals:0, budget:0, lead:0, retail:0 };
+      map[m].proposals++;
+      map[m].budget += p.totalBudget;
+      map[m].lead   += p.totalLeadTarget;
+      map[m].retail += p.totalRetailTarget;
+    }
+    return MONTHS.map(m => map[m] || { month:m, proposals:0, budget:0, lead:0, retail:0 });
+  }, [filtered]);
+
+  const maxMonthBudget = Math.max(...monthRows.map(r => r.budget), 1);
+  const monthSparkBudget = monthRows.map(r => r.budget);
+  const monthSparkLead   = monthRows.map(r => r.lead);
+
+  // ── RSM-wise aggregation ─────────────────────────────────────────────────────
+  const rsmRows = useMemo(() => {
+    const map: Record<string,{ rsm:string; proposals:number; budget:number; approved:number; lead:number; }> = {};
+    for (const p of filtered) {
+      const r = p.rsmName || "Unknown";
+      if (!map[r]) map[r] = { rsm:r, proposals:0, budget:0, approved:0, lead:0 };
+      map[r].proposals++;
+      map[r].budget   += p.totalBudget;
+      map[r].lead     += p.totalLeadTarget;
+      if (p.status === "Approved") map[r].approved++;
+    }
+    return Object.values(map).sort((a,b) => b.budget - a.budget).slice(0,12);
+  }, [filtered]);
+
+  const maxRsmBudget = Math.max(...rsmRows.map(r => r.budget), 1);
+
+  // ── Top dealers by budget ─────────────────────────────────────────────────────
+  const dealerRows = useMemo(() => {
+    const map: Record<string,{ dealer:string; proposals:number; budget:number; retail:number; }> = {};
+    for (const p of filtered) {
+      const d = p.dealerName || "Unknown";
+      if (!map[d]) map[d] = { dealer:d, proposals:0, budget:0, retail:0 };
+      map[d].proposals++;
+      map[d].budget += p.totalBudget;
+      map[d].retail += p.totalRetailTarget;
+    }
+    return Object.values(map).sort((a,b) => b.budget - a.budget).slice(0,10);
+  }, [filtered]);
+
+  const maxDealerBudget = Math.max(...dealerRows.map(r => r.budget), 1);
+
+  if (loading) return (
+    <div className="an-loading">
+      <div className="an-spinner"/>
+      <p>Loading analytics…</p>
+    </div>
+  );
+
+  if (error) return (
+    <div className="an-error">
+      <h3>Failed to load data</h3>
+      <p>{error}</p>
+      <button onClick={() => window.location.reload()}>Retry</button>
+    </div>
+  );
+
+  const approvalRate = pct(approved.length, filtered.length);
+
+  return (
+    <div className="an-root">
+
+      {/* ── Page Header ──────────────────────────────────────────────────────── */}
+      <div className="an-header">
+        <div>
+          <h1 className="an-title">Analytics Dashboard</h1>
+          <p className="an-subtitle">
+            {filtered.length} proposals · {stateRows.length} states ·{" "}
+            {activityRows.length} activity types · {approved.length} approved
+          </p>
+        </div>
+        <div className="an-filters">
+          <select className="an-select" value={yearFilter} onChange={e => setYearFilter(e.target.value)}>
+            {years.map(y => <option key={y} value={y}>{y === "All" ? "All Years" : y}</option>)}
+          </select>
+          <select className="an-select" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}>
+            <option value="All">All Months</option>
+            {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <select className="an-select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+            <option value="All">All Statuses</option>
+            <option value="Approved">Approved</option>
+            <option value="Pending">Pending</option>
+            <option value="Rejected">Rejected</option>
+            <option value="NeedsRevision">Needs Revision</option>
+          </select>
+          {(yearFilter !== "All" || monthFilter !== "All" || statusFilter !== "All") && (
+            <button className="an-clear" onClick={() => { setYearFilter(String(CURRENT_YEAR)); setMonthFilter("All"); setStatusFilter("All"); }}>
+              Clear ✕
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Tab Nav ──────────────────────────────────────────────────────────── */}
+      <div className="an-tabs">
+        {([
+          ["overview",  "📊 Overview"],
+          ["region",    "🗺 Region"],
+          ["activity",  "🎯 Activities"],
+          ["daily",     "📅 Daily Data"],
+          ["budget",    "💰 Budget"],
+        ] as [typeof activeTab, string][]).map(([tab, label]) => (
+          <button key={tab} className={`an-tab ${activeTab === tab ? "an-tab--active" : ""}`}
+            onClick={() => setActiveTab(tab)}>{label}</button>
+        ))}
+      </div>
+
+      {/* ════════════════════════════════════════════════════════════════════════
+          OVERVIEW TAB
+      ════════════════════════════════════════════════════════════════════════ */}
+      {activeTab === "overview" && (
+        <>
+          {/* KPI row */}
+          <div className="an-kpi-grid">
+            <KPI label="Total Proposals"    value={String(filtered.length)}    color="#0a2540" sub={`${stateRows.length} states`} spark={monthSparkBudget} active={activeKpi==="total"} onClick={()=>toggleKpi("total",()=>setStatusFilter("All"),()=>setStatusFilter("All"))}/>
+            <KPI label="Total Budget"        value={inrL(totalBudget)}          color="#2563eb" sub={`Approved: ${inrL(approvedBudget)}`} active={activeKpi==="budget_kpi"} onClick={()=>toggleKpi("budget_kpi",()=>setActiveTab("budget"),()=>setActiveTab("overview"))}/>
+            <KPI label="Approval Rate"       value={`${approvalRate}%`}         color="#16a34a" sub={`${approved.length} of ${filtered.length}`} active={activeKpi==="approved"} onClick={()=>toggleKpi("approved",()=>setStatusFilter("Approved"),()=>setStatusFilter("All"))}/>
+            <KPI label="Lead Target"         value={String(totalLead)}          color="#7c3aed" sub={`Retail: ${totalRetail}`} spark={monthSparkLead} active={activeKpi==="lead"} onClick={()=>toggleKpi("lead",()=>setActiveTab("activity"),()=>setActiveTab("overview"))}/>
+            <KPI label="Avg CAC"             value={inrL(avgCac)}               color="#f59e0b" sub="per retail" active={activeKpi==="cac"} onClick={()=>toggleKpi("cac",()=>setActiveTab("budget"),()=>setActiveTab("overview"))}/>
+            <KPI label="Pending"             value={String(pending.length)}     color="#f59e0b" sub={inrL(pending.reduce((s,p)=>s+p.totalBudget,0))} active={activeKpi==="pending"} onClick={()=>toggleKpi("pending",()=>setStatusFilter("Pending"),()=>setStatusFilter("All"))}/>
+            <KPI label="Enquiries (Actual)"  value={String(dailyTotals.enquiryActual)}  color="#0891b2" sub="from post-activity" active={activeKpi==="enq_ov"} onClick={()=>toggleKpi("enq_ov",()=>setActiveTab("daily"),()=>setActiveTab("overview"))}/>
+            <KPI label="LMS Leads Punched"   value={String(dailyTotals.leadsPunched)}   color="#6366f1" sub="from post-activity" active={activeKpi==="lms_ov"} onClick={()=>toggleKpi("lms_ov",()=>setActiveTab("daily"),()=>setActiveTab("overview"))}/>
+          </div>
+
+          {/* Status donut + month trend side by side */}
+          <div className="an-row-2">
+            {/* Status breakdown */}
+            <Section title="Proposal Status Breakdown" subtitle="All filtered proposals">
+              {[
+                { label:"Approved",       count:approved.length,  color:"#16a34a", bg:"#f0fdf4" },
+                { label:"Pending",        count:pending.length,   color:"#f59e0b", bg:"#fefce8" },
+                { label:"Rejected",       count:rejected.length,  color:"#dc2626", bg:"#fef2f2" },
+                { label:"Needs Revision", count:revision.length,  color:"#f97316", bg:"#fff7ed" },
+              ].map(s => (
+                <div key={s.label} className="an-status-row" style={{ background:s.bg }}>
+                  <div className="an-status-dot" style={{ background:s.color }}/>
+                  <span className="an-status-label">{s.label}</span>
+                  <Bar value={s.count} max={filtered.length} color={s.color}/>
+                  <span className="an-status-count" style={{ color:s.color }}>{s.count}</span>
+                  <span className="an-status-pct">{pct(s.count, filtered.length)}%</span>
+                </div>
+              ))}
+              <div className="an-status-total">
+                <span>Total</span>
+                <span style={{ fontWeight:800 }}>{filtered.length}</span>
+              </div>
+            </Section>
+
+            {/* Month trend bars */}
+            <Section title="Monthly Budget Trend" subtitle="Total budget per month">
+              <div className="an-month-bars">
+                {monthRows.map((m, i) => (
+                  <div key={m.month} className="an-month-col">
+                    <div className="an-month-bar-wrap">
+                      <div className="an-month-bar"
+                        style={{ height:`${clamp(pct(m.budget, maxMonthBudget), 100)}%`, background:"#2563eb" }}
+                        title={`${m.month}: ${inrL(m.budget)}`}/>
+                    </div>
+                    <div className="an-month-lbl">{MONTH_SHORT[i]}</div>
+                    {m.proposals > 0 && <div className="an-month-count">{m.proposals}</div>}
+                  </div>
+                ))}
+              </div>
+            </Section>
+          </div>
+
+          {/* Top states + top activities */}
+          <div className="an-row-2">
+            <Section title="Top States by Budget" subtitle={`${stateRows.length} total states`}>
+              <table className="an-table">
+                <thead><tr>
+                  <th>State</th><th>Proposals</th><th>Approved</th>
+                  <th>Budget</th><th>Lead</th><th>Retail</th><th>CAC</th>
+                </tr></thead>
+                <tbody>
+                  {stateRows.slice(0,8).map(r => (
+                    <tr key={r.state}>
+                      <td className="an-td-bold">{r.state}</td>
+                      <td className="an-td-center">{r.proposals}</td>
+                      <td className="an-td-center">
+                        <span style={{ color:"#16a34a",fontWeight:700 }}>{r.approved}</span>
+                      </td>
+                      <td className="an-td-right an-td-bold">{inrL(r.budget)}</td>
+                      <td className="an-td-center">{r.lead}</td>
+                      <td className="an-td-center">{r.retail}</td>
+                      <td className="an-td-right" style={{ color: r.cac > 4000 ? "#dc2626" : "#374151", fontWeight: r.cac > 4000 ? 700 : 400 }}>
+                        {inrL(r.cac)}
+                        {r.cac > 4000 && " ⚠"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Section>
+
+            <Section title="Top Activities by Budget" subtitle={`${activityRows.length} activity types`}>
+              <div style={{ display:"flex",flexDirection:"column",gap:8 }}>
+                {activityRows.slice(0,8).map(r => (
+                  <div key={r.name} className="an-act-row">
+                    <div className="an-act-name">{r.name}</div>
+                    <div style={{ display:"flex",flexDirection:"column",gap:2,flex:1 }}>
+                      <Bar value={r.budget} max={maxActBudget} color="#2563eb" height={6}/>
+                      <div className="an-act-meta">
+                        <span>{inrL(r.budget)}</span>
+                        <span>×{r.count}</span>
+                        <span style={{ color:"#7c3aed" }}>Lead:{r.lead}</span>
+                        <span style={{ color:"#16a34a" }}>Retail:{r.retail}</span>
+                      </div>
+                    </div>
+                    <div className="an-act-badges">
+                      {r.atl > 0 && <span className="an-badge-atl">ATL×{r.atl}</span>}
+                      {r.btl > 0 && <span className="an-badge-btl">BTL×{r.btl}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Section>
+          </div>
+        </>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════════
+          REGION TAB
+      ════════════════════════════════════════════════════════════════════════ */}
+      {activeTab === "region" && (
+        <>
+          <Section title="State-wise Performance" subtitle={`${stateRows.length} states · all metrics`}>
+            <div className="an-table-wrap">
+              <table className="an-table an-table-full">
+                <thead><tr>
+                  <th>#</th><th>State</th><th>Proposals</th><th>Approved</th>
+                  <th>Pending</th><th>Budget</th><th>Approved Budget</th>
+                  <th>Lead Target</th><th>Retail Target</th><th>CAC</th>
+                  <th>Approval Rate</th>
+                </tr></thead>
+                <tbody>
+                  {stateRows.map((r,i) => {
+                    const approvedBudget = filtered.filter(p => p.state===r.state && p.status==="Approved").reduce((s,p) => s+p.totalBudget,0);
+                    const statePending   = filtered.filter(p => p.state===r.state && p.status==="Pending").length;
+                    const rate = pct(r.approved, r.proposals);
+                    return (
+                      <tr key={r.state}>
+                        <td className="an-td-muted">{i+1}</td>
+                        <td className="an-td-bold">{r.state}</td>
+                        <td className="an-td-center">{r.proposals}</td>
+                        <td className="an-td-center" style={{ color:"#16a34a",fontWeight:700 }}>{r.approved}</td>
+                        <td className="an-td-center" style={{ color:"#f59e0b" }}>{statePending}</td>
+                        <td className="an-td-right an-td-bold">{inrL(r.budget)}</td>
+                        <td className="an-td-right" style={{ color:"#16a34a" }}>{inrL(approvedBudget)}</td>
+                        <td className="an-td-center">{r.lead}</td>
+                        <td className="an-td-center">{r.retail}</td>
+                        <td className="an-td-right" style={{ color:r.cac>4000?"#dc2626":"#374151", fontWeight:r.cac>4000?700:400 }}>
+                          {inrL(r.cac)}{r.cac>4000?" ⚠":""}
+                        </td>
+                        <td>
+                          <div style={{ display:"flex",alignItems:"center",gap:6 }}>
+                            <Bar value={rate} max={100} color={rate>=70?"#16a34a":rate>=40?"#f59e0b":"#dc2626"} height={6}/>
+                            <span style={{ fontSize:11,fontWeight:700,color:rate>=70?"#16a34a":rate>=40?"#f59e0b":"#dc2626",minWidth:32 }}>{rate}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={2} style={{ fontWeight:800,color:"#0a2540",padding:"8px 12px" }}>TOTAL</td>
+                    <td className="an-td-center" style={{ fontWeight:700 }}>{filtered.length}</td>
+                    <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{approved.length}</td>
+                    <td className="an-td-center" style={{ fontWeight:700,color:"#f59e0b" }}>{pending.length}</td>
+                    <td className="an-td-right" style={{ fontWeight:700 }}>{inrL(totalBudget)}</td>
+                    <td className="an-td-right" style={{ fontWeight:700,color:"#16a34a" }}>{inrL(approvedBudget)}</td>
+                    <td className="an-td-center" style={{ fontWeight:700 }}>{totalLead}</td>
+                    <td className="an-td-center" style={{ fontWeight:700 }}>{totalRetail}</td>
+                    <td className="an-td-right" style={{ fontWeight:700 }}>{inrL(avgCac)}</td>
+                    <td style={{ fontWeight:700,color:"#16a34a" }}>{approvalRate}%</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </Section>
+
+          {/* RSM-wise */}
+          <Section title="RSM-wise Performance" subtitle="Top 12 RSMs by budget">
+            <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+              {rsmRows.map((r,i) => (
+                <div key={r.rsm} className="an-rsm-row">
+                  <div className="an-rsm-rank">{i+1}</div>
+                  <div className="an-rsm-name">{r.rsm}</div>
+                  <div style={{ flex:1 }}>
+                    <Bar value={r.budget} max={maxRsmBudget} color="#2563eb"/>
+                  </div>
+                  <div className="an-rsm-stats">
+                    <span className="an-rsm-budget">{inrL(r.budget)}</span>
+                    <span className="an-rsm-meta">{r.proposals} props</span>
+                    <span style={{ color:"#16a34a",fontSize:11,fontWeight:700 }}>{r.approved} approved</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Section>
+        </>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════════
+          ACTIVITY TAB
+      ════════════════════════════════════════════════════════════════════════ */}
+      {activeTab === "activity" && (
+        <>
+          {/* ATL vs BTL summary */}
+          <div className="an-kpi-grid" style={{ gridTemplateColumns:"repeat(4,1fr)" }}>
+            {(() => {
+              const allActs = filtered.flatMap(p => p.activities);
+              const atl = allActs.filter(a => (a as any).category === "ATL");
+              const btl = allActs.filter(a => (a as any).category !== "ATL");
+              const atlBudget = atl.reduce((s,a) => s+(a.budget||0),0);
+              const btlBudget = btl.reduce((s,a) => s+(a.budget||0),0);
+              return [
+                <KPI key="tot" label="Total Activities"  value={String(allActs.length)} color="#0a2540" sub={`${activityRows.length} types`} active={activeKpi==="act_tot"} onClick={()=>toggleKpi("act_tot",()=>{},()=>{})}/>,
+                <KPI key="atl" label="ATL Activities"    value={String(atl.length)}    color="#1e40af" sub={inrL(atlBudget)} active={activeKpi==="atl"} onClick={()=>toggleKpi("atl",()=>{},()=>{})}/>,
+                <KPI key="btl" label="BTL Activities"    value={String(btl.length)}    color="#166534" sub={inrL(btlBudget)} active={activeKpi==="btl"} onClick={()=>toggleKpi("btl",()=>{},()=>{})}/>,
+                <KPI key="cac" label="Overall CAC"       value={inrL(avgCac)}          color="#f59e0b" sub="avg per retail" active={activeKpi==="cac_act"} onClick={()=>toggleKpi("cac_act",()=>setActiveTab("budget"),()=>setActiveTab("activity"))}/>,
+              ];
+            })()}
+          </div>
+
+          <Section title="Activity Type Breakdown" subtitle="Budget, count and lead/retail by activity">
+            <div className="an-table-wrap">
+              <table className="an-table an-table-full">
+                <thead><tr>
+                  <th>#</th><th>Activity Name</th><th>Count</th>
+                  <th>ATL</th><th>BTL</th>
+                  <th>Budget Share</th><th>Total Budget</th>
+                  <th>Lead Target</th><th>Retail Target</th><th>CAC</th>
+                </tr></thead>
+                <tbody>
+                  {activityRows.map((r,i) => {
+                    const totalAllBudget = activityRows.reduce((s,a) => s+a.budget,0);
+                    const cac = r.retail > 0 ? Math.round(r.budget / r.retail) : 0;
+                    return (
+                      <tr key={r.name}>
+                        <td className="an-td-muted">{i+1}</td>
+                        <td className="an-td-bold">{r.name}</td>
+                        <td className="an-td-center">{r.count}</td>
+                        <td className="an-td-center">
+                          {r.atl > 0 && <span className="an-badge-atl">ATL×{r.atl}</span>}
+                        </td>
+                        <td className="an-td-center">
+                          {r.btl > 0 && <span className="an-badge-btl">BTL×{r.btl}</span>}
+                        </td>
+                        <td>
+                          <div style={{ display:"flex",alignItems:"center",gap:6 }}>
+                            <Bar value={r.budget} max={totalAllBudget} color="#2563eb" height={6}/>
+                            <span style={{ fontSize:11,color:"#64748b",minWidth:30 }}>{pct(r.budget,totalAllBudget)}%</span>
+                          </div>
+                        </td>
+                        <td className="an-td-right an-td-bold">{inrL(r.budget)}</td>
+                        <td className="an-td-center">{r.lead}</td>
+                        <td className="an-td-center">{r.retail}</td>
+                        <td className="an-td-right" style={{ color:cac>4000?"#dc2626":"#374151",fontWeight:cac>4000?700:400 }}>
+                          {inrL(cac)}{cac>4000?" ⚠":""}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+
+          {/* Top dealers */}
+          <Section title="Top Dealers by Budget" subtitle="Top 10 dealers">
+            <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+              {dealerRows.map((d,i) => (
+                <div key={d.dealer} className="an-rsm-row">
+                  <div className="an-rsm-rank">{i+1}</div>
+                  <div className="an-rsm-name" style={{ flex:2 }}>{d.dealer}</div>
+                  <div style={{ flex:2 }}>
+                    <Bar value={d.budget} max={maxDealerBudget} color="#7c3aed"/>
+                  </div>
+                  <div className="an-rsm-stats">
+                    <span className="an-rsm-budget">{inrL(d.budget)}</span>
+                    <span className="an-rsm-meta">{d.proposals} props</span>
+                    <span style={{ color:"#7c3aed",fontSize:11 }}>Retail:{d.retail}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Section>
+        </>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════════
+          DAILY DATA TAB
+      ════════════════════════════════════════════════════════════════════════ */}
+      {activeTab === "daily" && (
+        <>
+          {/* Daily totals KPIs */}
+          <div className="an-kpi-grid" style={{ gridTemplateColumns:"repeat(5,1fr)" }}>
+            <KPI label="Enquiries (Actual)"  value={String(dailyTotals.enquiryActual)}  color="#0891b2" sub="from post-activity entries" active={activeKpi==="d_enq"} onClick={()=>toggleKpi("d_enq",()=>{},()=>{})}/>
+            <KPI label="Test Drives (Actual)" value={String(dailyTotals.testDriveActual)} color="#7c3aed" sub="from post-activity entries" active={activeKpi==="d_td"} onClick={()=>toggleKpi("d_td",()=>{},()=>{})}/>
+            <KPI label="Bookings"            value={String(dailyTotals.bookingActual)}  color="#f59e0b" sub="total booked" active={activeKpi==="d_book"} onClick={()=>toggleKpi("d_book",()=>{},()=>{})}/>
+            <KPI label="Retail (Actual)"     value={String(dailyTotals.retailActual)}   color="#16a34a" sub={`vs target: ${totalRetail} (${pct(dailyTotals.retailActual,totalRetail)}%)`} active={activeKpi==="d_retail"} onClick={()=>toggleKpi("d_retail",()=>{},()=>{})}/>
+            <KPI label="LMS Leads Punched"   value={String(dailyTotals.leadsPunched)}   color="#6366f1" sub={`vs target: ${totalLead} (${pct(dailyTotals.leadsPunched,totalLead)}%)`} active={activeKpi==="d_lms"} onClick={()=>toggleKpi("d_lms",()=>{},()=>{})}/>
+          </div>
+
+          {dailyAgg.length === 0 ? (
+            <Section title="Daily Activity Data" subtitle="Post-activity entries from approved proposals">
+              <div style={{ textAlign:"center",padding:"60px 24px",color:"#9ca3af" }}>
+                <div style={{ fontSize:40,marginBottom:12 }}>📅</div>
+                <div style={{ fontWeight:700,fontSize:15,color:"#0a2540",marginBottom:6 }}>No post-activity data yet</div>
+                <div style={{ fontSize:13 }}>
+                  Once RSMs fill post-activity data in approved proposals, daily metrics will appear here.
+                </div>
+              </div>
+            </Section>
+          ) : (
+            <Section title={`Daily Activity Log — ${dailyAgg.length} days`}
+              subtitle="Aggregated from all approved proposals' post-activity entries">
+              <div className="an-table-wrap">
+                <table className="an-table an-table-full">
+                  <thead>
+                    <tr style={{ background:"#0a2540" }}>
+                      <th style={{ color:"#e2e8f0",textAlign:"left" }}>Date</th>
+                      <th style={{ color:"#93c5fd",textAlign:"center" }}>Enq Plan</th>
+                      <th style={{ color:"#6ee7b7",textAlign:"center" }}>Enq Actual</th>
+                      <th style={{ color:"#93c5fd",textAlign:"center" }}>TD Plan</th>
+                      <th style={{ color:"#6ee7b7",textAlign:"center" }}>TD Actual</th>
+                      <th style={{ color:"#c4b5fd",textAlign:"center" }}>Booking</th>
+                      <th style={{ color:"#fbbf24",textAlign:"center" }}>Retail</th>
+                      <th style={{ color:"#a5b4fc",textAlign:"center" }}>LMS Punched</th>
+                      <th style={{ color:"#e2e8f0",textAlign:"center" }}>Enq Conv%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dailyAgg.map((d,i) => {
+                      const enqConv = pct(d.enquiryActual, d.enquiryPlanned);
+                      const hasData = d.enquiryActual>0||d.testDriveActual>0||d.bookingActual>0||d.retailActual>0;
+                      return (
+                        <tr key={d.date} style={{ background:i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.5 }}>
+                          <td style={{ padding:"6px 12px",fontWeight:600,fontSize:12,color:"#374151",whiteSpace:"nowrap" }}>{d.date}</td>
+                          <td className="an-td-center" style={{ fontSize:12 }}>{d.enquiryPlanned||"—"}</td>
+                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.enquiryActual>0?700:400,color:d.enquiryActual>0?"#0891b2":"#94a3b8" }}>{d.enquiryActual||"—"}</td>
+                          <td className="an-td-center" style={{ fontSize:12 }}>{d.testDrivePlanned||"—"}</td>
+                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.testDriveActual>0?700:400,color:d.testDriveActual>0?"#7c3aed":"#94a3b8" }}>{d.testDriveActual||"—"}</td>
+                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.bookingActual>0?700:400,color:d.bookingActual>0?"#f59e0b":"#94a3b8" }}>{d.bookingActual||"—"}</td>
+                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.retailActual>0?700:400,color:d.retailActual>0?"#16a34a":"#94a3b8" }}>{d.retailActual||"—"}</td>
+                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.leadsPunched>0?700:400,color:d.leadsPunched>0?"#6366f1":"#94a3b8" }}>{d.leadsPunched||"—"}</td>
+                          <td className="an-td-center">
+                            {d.enquiryPlanned > 0 ? (
+                              <span style={{ fontSize:11,fontWeight:700,
+                                color:enqConv>=90?"#16a34a":enqConv>=60?"#f59e0b":"#dc2626" }}>
+                                {enqConv}%
+                              </span>
+                            ) : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ background:"#0a2540" }}>
+                      <td style={{ padding:"8px 12px",fontWeight:800,color:"#fbbf24" }}>TOTAL</td>
+                      <td className="an-td-center" style={{ color:"#93c5fd",fontWeight:700 }}>{dailyAgg.reduce((s,d)=>s+d.enquiryPlanned,0)}</td>
+                      <td className="an-td-center" style={{ color:"#6ee7b7",fontWeight:700 }}>{dailyTotals.enquiryActual}</td>
+                      <td className="an-td-center" style={{ color:"#93c5fd",fontWeight:700 }}>{dailyAgg.reduce((s,d)=>s+d.testDrivePlanned,0)}</td>
+                      <td className="an-td-center" style={{ color:"#6ee7b7",fontWeight:700 }}>{dailyTotals.testDriveActual}</td>
+                      <td className="an-td-center" style={{ color:"#c4b5fd",fontWeight:700 }}>{dailyTotals.bookingActual}</td>
+                      <td className="an-td-center" style={{ color:"#fbbf24",fontWeight:700 }}>{dailyTotals.retailActual}</td>
+                      <td className="an-td-center" style={{ color:"#a5b4fc",fontWeight:700 }}>{dailyTotals.leadsPunched}</td>
+                      <td className="an-td-center" style={{ color:"#e2e8f0",fontWeight:700 }}>
+                        {pct(dailyTotals.enquiryActual, dailyAgg.reduce((s,d)=>s+d.enquiryPlanned,0))}%
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </Section>
+          )}
+        </>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════════
+          BUDGET TAB
+      ════════════════════════════════════════════════════════════════════════ */}
+      {activeTab === "budget" && (
+        <>
+          <div className="an-kpi-grid" style={{ gridTemplateColumns:"repeat(4,1fr)" }}>
+            <KPI label="Total Budget"     value={inrL(totalBudget)}   color="#2563eb" sub="all proposals" active={activeKpi==="b_total"} onClick={()=>toggleKpi("b_total",()=>setStatusFilter("All"),()=>setStatusFilter("All"))}/>
+            <KPI label="Approved Budget"  value={inrL(approvedBudget)} color="#16a34a" sub={pct(approvedBudget,totalBudget)+"% of total"} active={activeKpi==="b_approved"} onClick={()=>toggleKpi("b_approved",()=>setStatusFilter("Approved"),()=>setStatusFilter("All"))}/>
+            <KPI label="Pending Budget"   value={inrL(pending.reduce((s,p)=>s+p.totalBudget,0))} color="#f59e0b" sub="awaiting approval" active={activeKpi==="b_pending"} onClick={()=>toggleKpi("b_pending",()=>setStatusFilter("Pending"),()=>setStatusFilter("All"))}/>
+            <KPI label="Average CAC"      value={inrL(avgCac)}        color="#7c3aed" sub="per retail unit" active={activeKpi==="b_cac"} onClick={()=>toggleKpi("b_cac",()=>{},()=>{})}/>
+          </div>
+
+          {/* Month budget table */}
+          <Section title="Month-wise Budget Analysis" subtitle="Budget and lead breakdown per month">
+            <div className="an-table-wrap">
+              <table className="an-table an-table-full">
+                <thead><tr>
+                  <th>Month</th><th>Proposals</th><th>Budget Share</th>
+                  <th>Total Budget</th><th>Lead Target</th><th>Retail Target</th><th>CPL</th><th>CAC</th>
+                </tr></thead>
+                <tbody>
+                  {monthRows.filter(r => r.proposals > 0).map(r => {
+                    const cpl = r.lead > 0 ? Math.round(r.budget / r.lead) : 0;
+                    const cac = r.retail > 0 ? Math.round(r.budget / r.retail) : 0;
+                    return (
+                      <tr key={r.month}>
+                        <td className="an-td-bold">{r.month}</td>
+                        <td className="an-td-center">{r.proposals}</td>
+                        <td>
+                          <div style={{ display:"flex",alignItems:"center",gap:6 }}>
+                            <Bar value={r.budget} max={maxMonthBudget} color="#2563eb" height={6}/>
+                            <span style={{ fontSize:11,color:"#64748b",minWidth:30 }}>{pct(r.budget,totalBudget)}%</span>
+                          </div>
+                        </td>
+                        <td className="an-td-right an-td-bold">{inrL(r.budget)}</td>
+                        <td className="an-td-center">{r.lead}</td>
+                        <td className="an-td-center">{r.retail}</td>
+                        <td className="an-td-right" style={{ color:"#7c3aed" }}>{inrL(cpl)}</td>
+                        <td className="an-td-right" style={{ color:cac>4000?"#dc2626":"#374151",fontWeight:cac>4000?700:400 }}>
+                          {inrL(cac)}{cac>4000?" ⚠":""}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td style={{ fontWeight:800,padding:"8px 12px" }}>TOTAL</td>
+                    <td className="an-td-center" style={{ fontWeight:700 }}>{filtered.length}</td>
+                    <td/>
+                    <td className="an-td-right" style={{ fontWeight:700 }}>{inrL(totalBudget)}</td>
+                    <td className="an-td-center" style={{ fontWeight:700 }}>{totalLead}</td>
+                    <td className="an-td-center" style={{ fontWeight:700 }}>{totalRetail}</td>
+                    <td className="an-td-right" style={{ fontWeight:700,color:"#7c3aed" }}>
+                      {inrL(totalLead>0?Math.round(totalBudget/totalLead):0)}
+                    </td>
+                    <td className="an-td-right" style={{ fontWeight:700 }}>{inrL(avgCac)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </Section>
+
+          {/* CAC by state */}
+          <Section title="CAC Analysis by State" subtitle="Cost per acquisition — flag >₹4,000">
+            <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
+              {stateRows.filter(r => r.cac > 0).sort((a,b) => a.cac-b.cac).map((r,i) => (
+                <div key={r.state} className="an-rsm-row">
+                  <div className="an-rsm-rank" style={{ color:r.cac>4000?"#dc2626":"#16a34a" }}>
+                    {r.cac>4000?"⚠":i+1}
+                  </div>
+                  <div className="an-rsm-name">{r.state}</div>
+                  <div style={{ flex:1 }}>
+                    <Bar value={r.cac} max={Math.max(...stateRows.map(s=>s.cac),1)}
+                      color={r.cac>4000?"#dc2626":"#16a34a"}/>
+                  </div>
+                  <div className="an-rsm-stats">
+                    <span style={{ fontWeight:700,color:r.cac>4000?"#dc2626":"#16a34a" }}>{inrL(r.cac)}</span>
+                    <span className="an-rsm-meta">Retail:{r.retail}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Section>
+        </>
+      )}
+
+      {/* Bottom padding */}
+      <div style={{ height:40 }}/>
+    </div>
+  );
+}

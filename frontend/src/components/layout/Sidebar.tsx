@@ -26,6 +26,7 @@ const Icon = ({ name, size = 18 }: { name: string; size?: number }) => {
     case "reports":     return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><polyline points="10,9 9,9 8,9"/></svg>;
     case "users":       return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>;
     case "newproposal": return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>;
+    case "analytics":  return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>;
     case "logout":      return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>;
     case "chevron-r":   return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9,18 15,12 9,6"/></svg>;
     case "chevron-l":   return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15,18 9,12 15,6"/></svg>;
@@ -39,6 +40,7 @@ const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard",        icon: "dashboard",   badge: false },
   { to: "/rsm-form",  label: "RSM Proposal Form", icon: "form",       badge: false },
   { to: "/approver",  label: "Approver Portal",   icon: "approver",   badge: true  },
+  { to: "/analytics", label: "Analytics",          icon: "analytics",  badge: false },
 ];
 
 const ADMIN_ITEMS = [
@@ -95,13 +97,18 @@ export default function Sidebar({
 
         {/* Brand */}
         <div className="sb-brand">
-          <img src="/BGauss_Logo.png" alt="BGauss" className="sb-logo" />
-          {!collapsed && <span className="sb-brand-name">BGauss BTL</span>}
+          <img
+            src="/BGauss_Logo.png"
+            alt="BGauss"
+            className="sb-logo"
+            style={{ width: collapsed ? 36 : 120, height: collapsed ? 36 : "auto",
+              objectFit: "contain", transition: "width 0.2s" }}
+          />
         </div>
 
         {/* Navigation */}
         <nav className="sb-nav" role="navigation">
-          {!collapsed && <span className="sb-section-lbl">Main</span>}
+          {!collapsed && <span className="sb-section-lbl"></span>}
 
           {NAV_ITEMS.map((item) => (
             <NavLink
@@ -126,7 +133,7 @@ export default function Sidebar({
           {isReportsUser && (
             <>
               <div className="sb-divider" />
-              {!collapsed && <span className="sb-section-lbl">Reports</span>}
+              {!collapsed && <span className="sb-section-lbl"></span>}
               <NavLink to="/reports" className={linkClass}
                 title="Download Reports"
                 onClick={(e) => e.stopPropagation()}>

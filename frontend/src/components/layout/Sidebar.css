@@ -30,7 +30,8 @@
 /* ── Sidebar shell ──────────────────────────────────────────────────────── */
 .sb {
   width: var(--sb-width-exp);
-  min-height: 100vh;
+  height: 100%;           /* fills the sticky 100vh wrapper from AppLayout.css */
+  min-height: 100vh;      /* fallback for standalone use */
   background: var(--sb-bg);
   display: flex;
   flex-direction: column;
@@ -88,18 +89,19 @@
   gap: 10px;
   padding: 14px 14px 10px;
   min-height: 56px;
+  overflow: visible;
   flex-shrink: 0;
   border-bottom: 1px solid var(--sb-border);
   margin-bottom: 8px;
 }
 .sb-logo {
-  width: 75px;
-  height: 32px;
+  width: 120px;
+  height: auto;
   object-fit: contain;
-  border-radius: 6px;
   flex-shrink: 0;
-  background: #fff;
-  padding: 2px;
+  background: transparent;
+  display: block;
+  filter: brightness(0) invert(1); /* white logo on dark bg — remove if logo is already white */
 }
 .sb-brand-name {
   font-size: 14px;
@@ -111,9 +113,6 @@
 }
 
 /* ── Expand hint (collapsed state) ─────────────────────────────────────── */
-
-.sb--col:hover 
-.sb--col:hover 
 
 /* ── Section label ──────────────────────────────────────────────────────── */
 .sb-section-lbl {

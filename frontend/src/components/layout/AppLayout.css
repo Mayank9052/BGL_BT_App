@@ -1,54 +1,123 @@
-/* ─── AppLayout.css ──────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   AppLayout.css  —  BGauss BTL
+   Used by: AppLayout.tsx  +  DealerLayout.tsx
+───────────────────────────────────────────────────────────────────────────── */
 
-/* Root layout — sidebar + body side by side */
+/* ── Root flex container ─────────────────────────────────────────────────── */
 .app-layout {
   display: flex;
   min-height: 100vh;
   background: #f1f5f9;
+  /* The sidebar column is sticky; only the body column scrolls */
+  align-items: flex-start;
 }
 
-/* ── Body (right of sidebar) ────────────────────────────────────────────── */
+/* ── Sidebar column wrapper ──────────────────────────────────────────────── */
+/* The <div> that wraps <Sidebar> in AppLayout.tsx needs sticky behaviour */
+.app-layout > div:first-child {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  flex-shrink: 0;
+  z-index: 200;
+}
+
+/* ── Sidebar shell — ALWAYS full viewport height ─────────────────────────── */
+/* Override the min-height:100vh on .sb so it is exactly 100vh and sticks */
+.app-layout .sb {
+  height: 100vh;
+  min-height: unset;         /* cancel the old min-height:100vh */
+  overflow-y: auto;          /* allow nav to scroll if too many items */
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.app-layout .sb::-webkit-scrollbar { display: none; }
+
+/* ── Body — right of sidebar ─────────────────────────────────────────────── */
 .app-layout-body {
   flex: 1;
-  min-width: 0;               /* ← critical: prevents content blowing past flex parent */
+  min-width: 0;              /* prevents content overflowing flex parent */
   display: flex;
   flex-direction: column;
-  transition: margin-left 0.22s ease;
+  min-height: 100vh;         /* body fills full height too */
   overflow: hidden;
 }
 
-/* ── Main content area ──────────────────────────────────────────────────── */
+/* ── Main content area ───────────────────────────────────────────────────── */
 .app-layout-content {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 0;
+  -webkit-overflow-scrolling: touch;
 }
 
-/* ══════════════════════════════════════════════════════
-   Desktop — sidebar width sync with Sidebar.tsx widths:
-   expanded = 240px, collapsed = 68px
-══════════════════════════════════════════════════════ */
+/* ── Navbar ──────────────────────────────────────────────────────────────── */
+.app-navbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  height: 56px;
+  flex-shrink: 0;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+.app-navbar-menu-btn {
+  background: none;
+  border: none;
+  padding: 6px;
+  border-radius: 7px;
+  cursor: pointer;
+  color: #374151;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.app-navbar-menu-btn:hover  { background: #f1f5f9; }
+.app-navbar-brand {
+  font-size: 15px;
+  font-weight: 800;
+  color: #0a2540;
+  cursor: pointer;
+  user-select: none;
+}
+.app-navbar-spacer { flex: 1; }
+
+/* ══════════════════════════════════════════════════════════════════
+   DESKTOP > 768px
+══════════════════════════════════════════════════════════════════ */
 @media (min-width: 769px) {
-  /* Sidebar sits in the flex row normally */
-  .app-layout .sb {
-    position: relative;       /* NOT fixed on desktop */
-    flex-shrink: 0;
-  }
+  .app-navbar-menu-btn { display: none; }
 }
 
-/* ══════════════════════════════════════════════════════
-   Mobile (≤ 768px) — sidebar is fixed, body takes full width
-══════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════
+   MOBILE ≤ 768px — sidebar is a fixed overlay, body full width
+══════════════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
   .app-layout {
-    display: block;           /* stack layout — body always full width */
+    display: block;           /* body takes full width */
+    min-height: 100vh;
+  }
+
+  /* Sidebar wrapper: fixed overlay on mobile */
+  .app-layout > div:first-child {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    z-index: 200;
+    /* Not sticky — sidebar is an overlay, content scrolls under it */
   }
 
   .app-layout-body {
     width: 100%;
     margin-left: 0 !important;
   }
-
-  /* Sidebar is fixed/absolute (handled in Sidebar.css already) */
+  .app-navbar-menu-btn { display: flex; }
 }

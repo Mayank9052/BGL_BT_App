@@ -7,6 +7,7 @@ import LoginPage from "./pages/LoginPage";
 import AppLayout from "./components/layout/AppLayout";
 import DealerLayout from "./components/layout/DealerLayout";
 import AdminRoute from "./components/AdminRoute";
+import AnalyticsDashboard from "./pages/AnalyticsDashboard";
 import DashboardPage from "./pages/DashboardPage";
 import RSMProposalForm from "./pages/RSMForm";
 import AdminUsersPage from "./pages/AdminUsersPage";
@@ -67,6 +68,8 @@ export default function App() {
             <Route path="/rsm-form"    element={<RSMProposalForm />} />
             {/* Approver / review portal */}
             <Route path="/approver"    element={<ApproverDashboard />} />
+            {/* Analytics — budget/region/activity/daily insights */}
+            <Route path="/analytics"  element={<AnalyticsDashboard />} />
             {/* Reports — Excel / PDF downloads */}
             <Route path="/reports"     element={<ReportsPage />} />
             {/* Chat — AI assistant + team chat */}

@@ -81,11 +81,15 @@ export default function DealerSidebar({
           <Icon name="close" size={16} />
         </button>
 
-        {/* Logo */}
+        {/* Brand */}
         <div className="sb-brand">
-          <img src="/BGauss_Logo.png" alt="BGauss" className="sb-logo"
-            style={{ background: "transparent", border: "none" }} />
-          {!collapsed && <span className="sb-brand-name"></span>}
+          <img
+            src="/BGauss_Logo.png"
+            alt="BGauss"
+            className="sb-logo"
+            style={{ width: collapsed ? 36 : 120, height: collapsed ? 36 : "auto",
+              objectFit: "contain", transition: "width 0.2s" }}
+          />
         </div>
 
         {/* Dealer badge */}
@@ -102,7 +106,7 @@ export default function DealerSidebar({
         )}
 
         <nav className="sb-nav" role="navigation">
-          {!collapsed && <span className="sb-section-lbl">Menu</span>}
+          {!collapsed && <span className="sb-section-lbl"></span>}
 
           {NAV_ITEMS.map(({ to, icon, label }) => (
             <NavLink

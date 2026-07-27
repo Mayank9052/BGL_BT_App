@@ -906,3 +906,14 @@
     print-color-adjust: exact;
   }
 }
+
+/* ── Clickable KPI card interactions ─────────────────────────────────────── */
+.dash-kpi-card[style*="pointer"] { cursor: pointer; }
+.dash-kpi-card[style*="pointer"]:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+  transform: translateY(-2px);
+}
+.dash-kpi-card[style*="pointer"]:active {
+  transform: translateY(0) scale(0.98);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}

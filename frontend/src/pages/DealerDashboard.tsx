@@ -547,8 +547,8 @@ export default function DealerDashboard() {
         <KpiCard label="✓ Approved"      value={String(stats.approved)} color="#16a34a" active={activeFilter==="Approved"} onClick={() => setActiveFilter(activeFilter==="Approved"?"All":"Approved")}/>
         <KpiCard label="✕ Rejected"      value={String(stats.rejected)} color="#dc2626" active={activeFilter==="Rejected"} onClick={() => setActiveFilter(activeFilter==="Rejected"?"All":"Rejected")}/>
         <KpiCard label="↩ Needs Revision" value={String(stats.revision)} color="#f59e0b" active={activeFilter==="NeedsRevision"} onClick={() => setActiveFilter(activeFilter==="NeedsRevision"?"All":"NeedsRevision")} hint="Checker sent back for changes"/>
-        <KpiCard label="🎯 Retail Target" value={String(stats.retail)} color="#7c3aed"/>
-        <KpiCard label="₹ Total Budget"  value={inrCompact(stats.budget)} color="#0369a1"/>
+        <KpiCard label="🎯 Retail Target" value={String(stats.retail)} color="#7c3aed" onClick={() => setActiveFilter(activeFilter==="All"?"All":"All")} hint="Total retail target across all proposals"/>
+        <KpiCard label="₹ Total Budget"  value={inrCompact(stats.budget)} color="#0369a1" onClick={() => setActiveFilter(activeFilter==="All"?"All":"All")} hint="Total budget across all proposals"/>
       </div>
 
       {/* ── Proposals Table ──────────────────────────────────────────────────── */}
