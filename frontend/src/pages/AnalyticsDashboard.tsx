@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useMsal } from "@azure/msal-react";
 import { fetchProposals, type ProposalResponse } from "../services/proposalService";
+import { useAuthStore } from "../store/authStore";
 import "./AnalyticsDashboard.css";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -108,6 +109,10 @@ interface MonthRow { month:string; proposals:number; budget:number; lead:number;
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function AnalyticsDashboard() {
   const { instance } = useMsal();
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === "Admin" || user?.role === "Manager";
+  const currentUserEmail = user?.email?.toLowerCase() ?? "";
+
   const [proposals, setProposals] = useState<ProposalResponse[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState<string|null>(null);
@@ -115,27 +120,50 @@ export default function AnalyticsDashboard() {
   const [monthFilter, setMonthFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
   const [activeTab,   setActiveTab]   = useState<"overview"|"region"|"activity"|"daily"|"budget">("overview");
-  const [activeKpi,   setActiveKpi]   = useState<string|null>(null);
+  const [activeKpi,    setActiveKpi]    = useState<string|null>(null);
+  const [stateFilter,  setStateFilter]  = useState<string|null>(null);
+  const [actFilter,    setActFilter]    = useState<string|null>(null);
+  const [rsmFilter,    setRsmFilter]    = useState<string|null>(null);
+  const [dealerFilter, setDealerFilter] = useState<string|null>(null);
+  const [highlightDay, setHighlightDay] = useState<string|null>(null);
 
   const toggleKpi = (key: string, filter: () => void, reset: () => void) => {
     if (activeKpi === key) { setActiveKpi(null); reset(); }
     else { setActiveKpi(key); filter(); }
   };
+  const toggleFilter = <T extends string>(
+    current: T | null, value: T, setter: (v: T | null) => void
+  ) => setter(current === value ? null : value);
 
   useEffect(() => {
     fetchProposals(instance)
-      .then(setProposals)
+      .then(data => {
+        // Role-based filter: Admin/Manager sees ALL proposals;
+        // RSM/other users see only proposals they submitted
+        if (isAdmin) {
+          setProposals(data);
+        } else {
+          setProposals(data.filter(p =>
+            (p.submittedBy ?? "").toLowerCase() === currentUserEmail ||
+            (p.rsmName ?? "").toLowerCase().includes(currentUserEmail.split("@")[0].toLowerCase())
+          ));
+        }
+      })
       .catch(e => setError(e instanceof Error ? e.message : "Failed to load"))
       .finally(() => setLoading(false));
   }, [instance]);
 
   // ── Filtered proposals ──────────────────────────────────────────────────────
   const filtered = useMemo(() => proposals.filter(p => {
-    if (yearFilter   !== "All" && (p as any).year !== yearFilter)    return false;
-    if (monthFilter  !== "All" && p.month !== monthFilter)           return false;
-    if (statusFilter !== "All" && p.status !== statusFilter)         return false;
+    if (yearFilter   !== "All"  && (p as any).year !== yearFilter)   return false;
+    if (monthFilter  !== "All"  && p.month  !== monthFilter)          return false;
+    if (statusFilter !== "All"  && p.status !== statusFilter)         return false;
+    if (stateFilter  !== null   && p.state  !== stateFilter)          return false;
+    if (rsmFilter    !== null   && p.rsmName !== rsmFilter)           return false;
+    if (dealerFilter !== null   && p.dealerName !== dealerFilter)     return false;
+    if (actFilter    !== null   && !p.activities.some(a => a.activityType === actFilter)) return false;
     return true;
-  }), [proposals, yearFilter, monthFilter, statusFilter]);
+  }), [proposals, yearFilter, monthFilter, statusFilter, stateFilter, rsmFilter, dealerFilter, actFilter]);
 
   const approved  = useMemo(() => filtered.filter(p => p.status === "Approved"),  [filtered]);
   const pending   = useMemo(() => filtered.filter(p => p.status === "Pending"),   [filtered]);
@@ -306,6 +334,19 @@ export default function AnalyticsDashboard() {
             {filtered.length} proposals · {stateRows.length} states ·{" "}
             {activityRows.length} activity types · {approved.length} approved
           </p>
+          <div style={{ marginTop:6, display:"flex", gap:8, flexWrap:"wrap" }}>
+            {isAdmin ? (
+              <span style={{ background:"#0a2540", color:"#fff", borderRadius:12,
+                padding:"2px 10px", fontSize:11, fontWeight:700 }}>
+                👑 Admin — All proposals visible
+              </span>
+            ) : (
+              <span style={{ background:"#eff6ff", color:"#1e40af", borderRadius:12,
+                border:"1px solid #bfdbfe", padding:"2px 10px", fontSize:11, fontWeight:700 }}>
+                👤 {user?.displayName ?? "My"} — Your proposals only
+              </span>
+            )}
+          </div>
         </div>
         <div className="an-filters">
           <select className="an-select" value={yearFilter} onChange={e => setYearFilter(e.target.value)}>
@@ -322,11 +363,18 @@ export default function AnalyticsDashboard() {
             <option value="Rejected">Rejected</option>
             <option value="NeedsRevision">Needs Revision</option>
           </select>
-          {(yearFilter !== "All" || monthFilter !== "All" || statusFilter !== "All") && (
-            <button className="an-clear" onClick={() => { setYearFilter(String(CURRENT_YEAR)); setMonthFilter("All"); setStatusFilter("All"); }}>
-              Clear ✕
+          {(yearFilter !== "All" || monthFilter !== "All" || statusFilter !== "All" || stateFilter || rsmFilter || dealerFilter || actFilter) && (
+            <button className="an-clear" onClick={() => {
+              setYearFilter(String(CURRENT_YEAR)); setMonthFilter("All"); setStatusFilter("All");
+              setStateFilter(null); setRsmFilter(null); setDealerFilter(null); setActFilter(null);
+            }}>
+              Clear all ✕
             </button>
           )}
+          {stateFilter   && <span className="an-active-pill">📍 {stateFilter}   <button onClick={() => setStateFilter(null)}>✕</button></span>}
+          {rsmFilter     && <span className="an-active-pill">👤 {rsmFilter}     <button onClick={() => setRsmFilter(null)}>✕</button></span>}
+          {dealerFilter  && <span className="an-active-pill">🏪 {dealerFilter}  <button onClick={() => setDealerFilter(null)}>✕</button></span>}
+          {actFilter     && <span className="an-active-pill">🎯 {actFilter}     <button onClick={() => setActFilter(null)}>✕</button></span>}
         </div>
       </div>
 
@@ -366,19 +414,23 @@ export default function AnalyticsDashboard() {
             {/* Status breakdown */}
             <Section title="Proposal Status Breakdown" subtitle="All filtered proposals">
               {[
-                { label:"Approved",       count:approved.length,  color:"#16a34a", bg:"#f0fdf4" },
-                { label:"Pending",        count:pending.length,   color:"#f59e0b", bg:"#fefce8" },
-                { label:"Rejected",       count:rejected.length,  color:"#dc2626", bg:"#fef2f2" },
-                { label:"Needs Revision", count:revision.length,  color:"#f97316", bg:"#fff7ed" },
-              ].map(s => (
-                <div key={s.label} className="an-status-row" style={{ background:s.bg }}>
+                { label:"Approved",       count:approved.length,  color:"#16a34a", bg:"#f0fdf4", status:"Approved"      },
+                  { label:"Pending",        count:pending.length,   color:"#f59e0b", bg:"#fefce8", status:"Pending"       },
+                  { label:"Rejected",       count:rejected.length,  color:"#dc2626", bg:"#fef2f2", status:"Rejected"      },
+                  { label:"Needs Revision", count:revision.length,  color:"#f97316", bg:"#fff7ed", status:"NeedsRevision" },
+              ].map(s => { const isS = statusFilter===s.status; return (
+                <div key={s.label}
+                  className={`an-status-row an-clickable${isS?" an-active-row":""}`}
+                  style={{ background:s.bg, cursor:"pointer", outline:isS?`2px solid ${s.color}`:"none", borderRadius:8 }}
+                  onClick={() => setStatusFilter(isS?"All":s.status)}
+                  title={`Filter: ${s.label}`}>
                   <div className="an-status-dot" style={{ background:s.color }}/>
                   <span className="an-status-label">{s.label}</span>
                   <Bar value={s.count} max={filtered.length} color={s.color}/>
                   <span className="an-status-count" style={{ color:s.color }}>{s.count}</span>
                   <span className="an-status-pct">{pct(s.count, filtered.length)}%</span>
                 </div>
-              ))}
+              );})}
               <div className="an-status-total">
                 <span>Total</span>
                 <span style={{ fontWeight:800 }}>{filtered.length}</span>
@@ -388,17 +440,22 @@ export default function AnalyticsDashboard() {
             {/* Month trend bars */}
             <Section title="Monthly Budget Trend" subtitle="Total budget per month">
               <div className="an-month-bars">
-                {monthRows.map((m, i) => (
-                  <div key={m.month} className="an-month-col">
+                {monthRows.map((m, i) => { const isMon = monthFilter===m.month; return (
+                  <div key={m.month}
+                    className={`an-month-col an-clickable${m.proposals===0?" an-month-empty":""}`}
+                    onClick={() => m.proposals>0 && setMonthFilter(isMon?"All":m.month)}
+                    style={{ cursor:m.proposals>0?"pointer":"default" }}
+                    title={m.proposals>0?`${m.month}: ${inrL(m.budget)} · ${m.proposals} proposals`:m.month}>
                     <div className="an-month-bar-wrap">
                       <div className="an-month-bar"
-                        style={{ height:`${clamp(pct(m.budget, maxMonthBudget), 100)}%`, background:"#2563eb" }}
-                        title={`${m.month}: ${inrL(m.budget)}`}/>
+                        style={{ height:`${clamp(pct(m.budget, maxMonthBudget), 100)}%`,
+                          background:isMon?"#16a34a":"#2563eb",
+                          boxShadow:isMon?"0 0 0 2px #16a34a":"none" }}/>
                     </div>
-                    <div className="an-month-lbl">{MONTH_SHORT[i]}</div>
-                    {m.proposals > 0 && <div className="an-month-count">{m.proposals}</div>}
+                    <div className="an-month-lbl" style={{ color:isMon?"#16a34a":"#94a3b8",fontWeight:isMon?800:600 }}>{MONTH_SHORT[i]}</div>
+                    {m.proposals>0&&<div className="an-month-count" style={{ color:isMon?"#16a34a":"#64748b" }}>{m.proposals}</div>}
                   </div>
-                ))}
+                );})}
               </div>
             </Section>
           </div>
@@ -412,8 +469,8 @@ export default function AnalyticsDashboard() {
                   <th>Budget</th><th>Lead</th><th>Retail</th><th>CAC</th>
                 </tr></thead>
                 <tbody>
-                  {stateRows.slice(0,8).map(r => (
-                    <tr key={r.state}>
+                  {stateRows.slice(0,8).map(r => { const isSt=stateFilter===r.state; return (
+                    <tr key={r.state} onClick={()=>toggleFilter(stateFilter,r.state,setStateFilter)} className="an-tr-click" style={{ background:isSt?"#eff6ff":undefined,outline:isSt?"2px solid #2563eb":"none" }} title={`Drill into ${r.state}`}>
                       <td className="an-td-bold">{r.state}</td>
                       <td className="an-td-center">{r.proposals}</td>
                       <td className="an-td-center">
@@ -427,15 +484,20 @@ export default function AnalyticsDashboard() {
                         {r.cac > 4000 && " ⚠"}
                       </td>
                     </tr>
-                  ))}
+                  );})
+                }
                 </tbody>
               </table>
             </Section>
 
             <Section title="Top Activities by Budget" subtitle={`${activityRows.length} activity types`}>
               <div style={{ display:"flex",flexDirection:"column",gap:8 }}>
-                {activityRows.slice(0,8).map(r => (
-                  <div key={r.name} className="an-act-row">
+                {activityRows.slice(0,8).map(r => { const isAct=actFilter===r.name; return (
+                  <div key={r.name}
+                    className={`an-act-row an-clickable${isAct?" an-active-row":""}`}
+                    onClick={()=>toggleFilter(actFilter,r.name,setActFilter)}
+                    style={{ outline:isAct?"2px solid #2563eb":"none",borderRadius:8,cursor:"pointer" }}
+                    title={`Filter by ${r.name}`}>
                     <div className="an-act-name">{r.name}</div>
                     <div style={{ display:"flex",flexDirection:"column",gap:2,flex:1 }}>
                       <Bar value={r.budget} max={maxActBudget} color="#2563eb" height={6}/>
@@ -451,7 +513,8 @@ export default function AnalyticsDashboard() {
                       {r.btl > 0 && <span className="an-badge-btl">BTL×{r.btl}</span>}
                     </div>
                   </div>
-                ))}
+                );})
+              }
               </div>
             </Section>
           </div>
@@ -473,12 +536,11 @@ export default function AnalyticsDashboard() {
                   <th>Approval Rate</th>
                 </tr></thead>
                 <tbody>
-                  {stateRows.map((r,i) => {
-                    const approvedBudget = filtered.filter(p => p.state===r.state && p.status==="Approved").reduce((s,p) => s+p.totalBudget,0);
+                  {stateRows.map((r,i) => { const isSt2=stateFilter===r.state; const approvedBudget = filtered.filter(p => p.state===r.state && p.status==="Approved").reduce((s,p) => s+p.totalBudget,0);
                     const statePending   = filtered.filter(p => p.state===r.state && p.status==="Pending").length;
                     const rate = pct(r.approved, r.proposals);
                     return (
-                      <tr key={r.state}>
+                      <tr key={r.state} onClick={()=>toggleFilter(stateFilter,r.state,setStateFilter)} className="an-tr-click" style={{ background:isSt2?"#eff6ff":undefined }} title={`Drill: ${r.state}`}>
                         <td className="an-td-muted">{i+1}</td>
                         <td className="an-td-bold">{r.state}</td>
                         <td className="an-td-center">{r.proposals}</td>
@@ -522,8 +584,12 @@ export default function AnalyticsDashboard() {
           {/* RSM-wise */}
           <Section title="RSM-wise Performance" subtitle="Top 12 RSMs by budget">
             <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
-              {rsmRows.map((r,i) => (
-                <div key={r.rsm} className="an-rsm-row">
+              {rsmRows.map((r,i) => { const isRsm=rsmFilter===r.rsm; return (
+                <div key={r.rsm}
+                  className={`an-rsm-row an-clickable${isRsm?" an-active-row":""}`}
+                  onClick={()=>toggleFilter(rsmFilter,r.rsm,setRsmFilter)}
+                  style={{ outline:isRsm?"2px solid #2563eb":"none",cursor:"pointer" }}
+                  title={`Filter by ${r.rsm}`}>
                   <div className="an-rsm-rank">{i+1}</div>
                   <div className="an-rsm-name">{r.rsm}</div>
                   <div style={{ flex:1 }}>
@@ -535,7 +601,8 @@ export default function AnalyticsDashboard() {
                     <span style={{ color:"#16a34a",fontSize:11,fontWeight:700 }}>{r.approved} approved</span>
                   </div>
                 </div>
-              ))}
+              );})
+              }
             </div>
           </Section>
         </>
@@ -573,11 +640,10 @@ export default function AnalyticsDashboard() {
                   <th>Lead Target</th><th>Retail Target</th><th>CAC</th>
                 </tr></thead>
                 <tbody>
-                  {activityRows.map((r,i) => {
-                    const totalAllBudget = activityRows.reduce((s,a) => s+a.budget,0);
+                  {activityRows.map((r,i) => { const isAct2=actFilter===r.name; const totalAllBudget = activityRows.reduce((s,a) => s+a.budget,0);
                     const cac = r.retail > 0 ? Math.round(r.budget / r.retail) : 0;
                     return (
-                      <tr key={r.name}>
+                      <tr key={r.name} onClick={()=>toggleFilter(actFilter,r.name,setActFilter)} className="an-tr-click" style={{ background:isAct2?"#eff6ff":undefined }} title={`Drill: ${r.name}`}>
                         <td className="an-td-muted">{i+1}</td>
                         <td className="an-td-bold">{r.name}</td>
                         <td className="an-td-center">{r.count}</td>
@@ -610,8 +676,12 @@ export default function AnalyticsDashboard() {
           {/* Top dealers */}
           <Section title="Top Dealers by Budget" subtitle="Top 10 dealers">
             <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
-              {dealerRows.map((d,i) => (
-                <div key={d.dealer} className="an-rsm-row">
+              {dealerRows.map((d,i) => { const isDlr=dealerFilter===d.dealer; return (
+                <div key={d.dealer}
+                  className={`an-rsm-row an-clickable${isDlr?" an-active-row":""}`}
+                  onClick={()=>toggleFilter(dealerFilter,d.dealer,setDealerFilter)}
+                  style={{ outline:isDlr?"2px solid #7c3aed":"none",cursor:"pointer" }}
+                  title={`Filter by ${d.dealer}`}>
                   <div className="an-rsm-rank">{i+1}</div>
                   <div className="an-rsm-name" style={{ flex:2 }}>{d.dealer}</div>
                   <div style={{ flex:2 }}>
@@ -623,7 +693,7 @@ export default function AnalyticsDashboard() {
                     <span style={{ color:"#7c3aed",fontSize:11 }}>Retail:{d.retail}</span>
                   </div>
                 </div>
-              ))}
+              );})}
             </div>
           </Section>
         </>
@@ -674,9 +744,10 @@ export default function AnalyticsDashboard() {
                   <tbody>
                     {dailyAgg.map((d,i) => {
                       const enqConv = pct(d.enquiryActual, d.enquiryPlanned);
+                      const isDayActive = highlightDay===d.date;
                       const hasData = d.enquiryActual>0||d.testDriveActual>0||d.bookingActual>0||d.retailActual>0;
                       return (
-                        <tr key={d.date} style={{ background:i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.5 }}>
+                        <tr key={d.date} className="an-tr-click" onClick={()=>setHighlightDay(isDayActive?null:d.date)} style={{ background:isDayActive?"#eff6ff":i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.5, outline:isDayActive?"2px solid #0891b2":"none", cursor:"pointer" }}>
                           <td style={{ padding:"6px 12px",fontWeight:600,fontSize:12,color:"#374151",whiteSpace:"nowrap" }}>{d.date}</td>
                           <td className="an-td-center" style={{ fontSize:12 }}>{d.enquiryPlanned||"—"}</td>
                           <td className="an-td-center" style={{ fontSize:12,fontWeight:d.enquiryActual>0?700:400,color:d.enquiryActual>0?"#0891b2":"#94a3b8" }}>{d.enquiryActual||"—"}</td>
@@ -740,11 +811,11 @@ export default function AnalyticsDashboard() {
                   <th>Total Budget</th><th>Lead Target</th><th>Retail Target</th><th>CPL</th><th>CAC</th>
                 </tr></thead>
                 <tbody>
-                  {monthRows.filter(r => r.proposals > 0).map(r => {
+                  {monthRows.filter(r => r.proposals > 0).map(r => { const isMon2=monthFilter===r.month;
                     const cpl = r.lead > 0 ? Math.round(r.budget / r.lead) : 0;
                     const cac = r.retail > 0 ? Math.round(r.budget / r.retail) : 0;
                     return (
-                      <tr key={r.month}>
+                      <tr key={r.month} onClick={()=>setMonthFilter(isMon2?"All":r.month)} className="an-tr-click" style={{ background:isMon2?"#eff6ff":undefined }} title={`Drill: ${r.month}`}>
                         <td className="an-td-bold">{r.month}</td>
                         <td className="an-td-center">{r.proposals}</td>
                         <td>
@@ -785,8 +856,8 @@ export default function AnalyticsDashboard() {
           {/* CAC by state */}
           <Section title="CAC Analysis by State" subtitle="Cost per acquisition — flag >₹4,000">
             <div style={{ display:"flex",flexDirection:"column",gap:6 }}>
-              {stateRows.filter(r => r.cac > 0).sort((a,b) => a.cac-b.cac).map((r,i) => (
-                <div key={r.state} className="an-rsm-row">
+              {stateRows.filter(r => r.cac > 0).sort((a,b) => a.cac-b.cac).map((r,i) => { const isSt3=stateFilter===r.state; return (
+                <div key={r.state} className={`an-rsm-row an-clickable${isSt3?" an-active-row":""}`} onClick={()=>toggleFilter(stateFilter,r.state,setStateFilter)} style={{ outline:isSt3?"2px solid #2563eb":"none",cursor:"pointer" }} title={`Drill: ${r.state}`}>
                   <div className="an-rsm-rank" style={{ color:r.cac>4000?"#dc2626":"#16a34a" }}>
                     {r.cac>4000?"⚠":i+1}
                   </div>
@@ -800,7 +871,7 @@ export default function AnalyticsDashboard() {
                     <span className="an-rsm-meta">Retail:{r.retail}</span>
                   </div>
                 </div>
-              ))}
+              );})}
             </div>
           </Section>
         </>

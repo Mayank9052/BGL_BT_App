@@ -279,3 +279,70 @@
   .an-card    { box-shadow: none; border: 1px solid #e2e8f0; }
   .an-table thead tr { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   INTERACTIVE / CLICKABLE GRAPHICAL ELEMENTS
+══════════════════════════════════════════════════════════════════════════════ */
+
+/* Generic clickable wrapper */
+.an-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.12s, box-shadow 0.12s, outline 0.12s, background 0.12s;
+}
+.an-clickable:hover  { transform: translateY(-1px); box-shadow: 0 3px 12px rgba(0,0,0,0.10); }
+.an-clickable:active { transform: scale(0.98); }
+
+/* Active / selected row highlight */
+.an-active-row {
+  background: #eff6ff !important;
+  border-radius: 8px;
+}
+
+/* Clickable table rows */
+.an-tr-click { cursor: pointer; transition: background 0.1s; }
+.an-tr-click:hover { background: #eff6ff !important; }
+.an-tr-click:active { background: #dbeafe !important; }
+
+/* Active filter pill (next to filters) */
+.an-active-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: #eff6ff; color: #1e40af;
+  border: 1.5px solid #bfdbfe; border-radius: 16px;
+  padding: 3px 10px 3px 12px; font-size: 12px; font-weight: 700;
+  white-space: nowrap;
+}
+.an-active-pill button {
+  background: none; border: none; color: #93c5fd;
+  cursor: pointer; font-size: 12px; font-weight: 800;
+  padding: 0 0 0 2px; line-height: 1;
+  transition: color 0.1s;
+}
+.an-active-pill button:hover { color: #1e40af; }
+
+/* Status row — active state */
+.an-status-row.an-active-row {
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px currentColor;
+}
+.an-status-row:hover .an-status-label { font-weight: 700; }
+.an-status-row:hover .an-status-count { transform: scale(1.1); }
+.an-status-count { transition: transform 0.12s; }
+
+/* Month bar — hover enlarge + active green */
+.an-month-col.an-clickable:hover .an-month-bar { opacity: 0.85; }
+.an-month-col:active .an-month-bar { opacity: 0.7; }
+.an-month-empty { opacity: 0.3; cursor: default !important; }
+.an-month-empty:hover { transform: none !important; box-shadow: none !important; }
+
+/* Activity row */
+.an-act-row.an-active-row { background: #eff6ff; padding: 8px 8px; }
+.an-act-row.an-clickable:hover .an-act-name { color: #2563eb; }
+
+/* RSM / dealer row */
+.an-rsm-row.an-active-row { background: #eff6ff !important; border-radius: 8px; }
+.an-rsm-row.an-clickable:hover .an-rsm-name { color: #2563eb; }
+.an-rsm-row.an-clickable:hover .an-rsm-budget { color: #2563eb; }
+
+/* Daily data row highlighted */
+.an-tr-click[style*="0891b2"] { background: #e0f2fe !important; }
