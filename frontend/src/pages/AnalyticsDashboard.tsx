@@ -119,13 +119,17 @@ export default function AnalyticsDashboard() {
   const [yearFilter, setYearFilter] = useState(String(CURRENT_YEAR));
   const [monthFilter, setMonthFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
-  const [activeTab,   setActiveTab]   = useState<"overview"|"region"|"activity"|"daily"|"budget">("overview");
+  const [activeTab,   setActiveTab]   = useState<"overview"|"region"|"activity"|"daily"|"budget"|"daily-activity"|"lead-report">("overview");
   const [activeKpi,    setActiveKpi]    = useState<string|null>(null);
   const [stateFilter,  setStateFilter]  = useState<string|null>(null);
   const [actFilter,    setActFilter]    = useState<string|null>(null);
   const [rsmFilter,    setRsmFilter]    = useState<string|null>(null);
   const [dealerFilter, setDealerFilter] = useState<string|null>(null);
   const [highlightDay, setHighlightDay] = useState<string|null>(null);
+  const [selectedDealerDaily, setSelectedDealerDaily] = useState<DailySummaryRow|null>(null);
+  const [reportSubTab, setReportSubTab] = useState<"summary"|"dealer-daily">("summary");
+  const [dailySearch, setDailySearch] = useState("");
+  const [dailyStateFilter, setDailyStateFilter] = useState("All");
 
   const toggleKpi = (key: string, filter: () => void, reset: () => void) => {
     if (activeKpi === key) { setActiveKpi(null); reset(); }
@@ -161,7 +165,11 @@ export default function AnalyticsDashboard() {
     if (stateFilter  !== null   && p.state  !== stateFilter)          return false;
     if (rsmFilter    !== null   && p.rsmName !== rsmFilter)           return false;
     if (dealerFilter !== null   && p.dealerName !== dealerFilter)     return false;
-    if (actFilter    !== null   && !p.activities.some(a => a.activityType === actFilter)) return false;
+    if (actFilter !== null) {
+      if (actFilter === "ATL_FILTER") { if (!p.activities.some(a => (a as any).category === "ATL")) return false; }
+      else if (actFilter === "BTL_FILTER") { if (!p.activities.some(a => (a as any).category !== "ATL")) return false; }
+      else { if (!p.activities.some(a => a.activityType === actFilter)) return false; }
+    }
     return true;
   }), [proposals, yearFilter, monthFilter, statusFilter, stateFilter, rsmFilter, dealerFilter, actFilter]);
 
@@ -275,6 +283,79 @@ export default function AnalyticsDashboard() {
   const monthSparkBudget = monthRows.map(r => r.budget);
   const monthSparkLead   = monthRows.map(r => r.lead);
 
+  // ── Daily Activity Summary (same as DashboardPage) ─────────────────────────
+  const liveDailySummary = useMemo((): DailySummaryRow[] => {
+    const approvedProposals = approved; // use filtered approved proposals
+    const rows: DailySummaryRow[] = [];
+    let sr = 1;
+    for (const p of approvedProposals) {
+      for (const a of p.activities) {
+        const dailyData = (a as any).dailyData;
+        let totalEnqPlanned = 0, totalEnqActual = 0, totalTrPlanned = 0, totalTrActual = 0;
+        let totalBookToday = 0, totalRetail = 0, totalPunched = 0;
+        if (dailyData) {
+          try {
+            const entries = JSON.parse(dailyData) as any[];
+            for (const e of entries) {
+              totalEnqPlanned  += e.enquiryPlanned  || 0;
+              totalEnqActual   += e.enquiryActual   || 0;
+              totalTrPlanned   += e.testDrivePlanned || 0;
+              totalTrActual    += e.testDriveActual  || 0;
+              totalBookToday   += e.bookingActual    || 0;
+              totalRetail      += e.retailActual     || 0;
+              totalPunched     += e.leadsPunched     || 0;
+            }
+          } catch {}
+        }
+        const mediaFiles = (a as any).mediaFiles ?? [];
+        const totalPhotos = mediaFiles.length;
+        const canopy = (a as any).qty || 1;
+        rows.push({
+          sr, dealer: p.dealerName||"", location: p.location||"",
+          state: p.state||"", zone: (p as any).zone||"", bgMember: p.rsmName||"",
+          canopy, enquiryPlanned: totalEnqPlanned, enquiryActual: totalEnqActual,
+          perCanopy: canopy>0?Math.round(totalEnqActual/canopy):0,
+          hot: 0, trPlanned: totalTrPlanned, trActual: totalTrActual,
+          trPerCanopy: canopy>0?Math.round(totalTrActual/canopy):0,
+          bookToday: totalBookToday, bookInHand: totalBookToday,
+          retailToday: totalRetail, retailMtdAct: totalRetail, retailMtd: totalRetail,
+          leads: totalPunched, punched: totalPunched,
+          gap: Math.max(0,(a.leadTarget||0)-totalPunched),
+          convPct: totalEnqActual>0?Math.round(totalRetail/totalEnqActual*100):0,
+          photos: totalPhotos,
+        } as DailySummaryRow & { photos: number });
+        sr++;
+      }
+    }
+    return rows;
+  }, [approved]);
+
+  const dsTotals = useMemo(() => {
+    const src = liveDailySummary;
+    const totalCanopy  = src.reduce((s, r) => s + r.canopy, 0);
+    const totalEnqAct  = src.reduce((s, r) => s + r.enquiryActual, 0);
+    const totalTrAct   = src.reduce((s, r) => s + r.trActual, 0);
+    const totalRetail  = src.reduce((s, r) => s + r.retailMtd, 0);
+    const totalLeads   = src.reduce((s, r) => s + r.leads, 0);
+    return {
+      canopy:         totalCanopy,
+      enquiryPlanned: src.reduce((s, r) => s + r.enquiryPlanned, 0),
+      enquiryActual:  totalEnqAct,
+      perCanopy:      totalCanopy > 0 ? Math.round(totalEnqAct / totalCanopy) : 0,
+      hot:            src.reduce((s, r) => s + r.hot, 0),
+      trPlanned:      src.reduce((s, r) => s + r.trPlanned, 0),
+      trActual:       totalTrAct,
+      trPerCanopy:    totalCanopy > 0 ? Math.round(totalTrAct / totalCanopy) : 0,
+      bookToday:      src.reduce((s, r) => s + r.bookToday, 0),
+      bookInHand:     src.reduce((s, r) => s + r.bookInHand, 0),
+      retailToday:    src.reduce((s, r) => s + r.retailToday, 0),
+      retailMtdAct:   src.reduce((s, r) => s + r.retailMtdAct, 0),
+      retailMtd:      totalRetail,
+      leads:          totalLeads,
+      punched:        src.reduce((s, r) => s + r.punched, 0),
+      gap:            src.reduce((s, r) => s + r.gap, 0),
+    };
+  }, [liveDailySummary]);
   // ── RSM-wise aggregation ─────────────────────────────────────────────────────
   const rsmRows = useMemo(() => {
     const map: Record<string,{ rsm:string; proposals:number; budget:number; approved:number; lead:number; }> = {};
@@ -304,7 +385,40 @@ export default function AnalyticsDashboard() {
     return Object.values(map).sort((a,b) => b.budget - a.budget).slice(0,10);
   }, [filtered]);
 
+  const filteredDailySummary = useMemo(() => liveDailySummary.filter(row => {
+    if (dailyStateFilter !== "All" && row.state !== dailyStateFilter) return false;
+    if (dailySearch) {
+      const q = dailySearch.toLowerCase();
+      return (row.dealer+row.location+row.state+row.bgMember).toLowerCase().includes(q);
+    }
+    return true;
+  }), [liveDailySummary, dailySearch, dailyStateFilter]);
+
   const maxDealerBudget = Math.max(...dealerRows.map(r => r.budget), 1);
+
+interface DailySummaryRow {
+  sr: number; dealer: string; location: string; state: string;
+  zone: string; bgMember: string; canopy: number;
+  enquiryPlanned: number; enquiryActual: number; perCanopy: number; hot: number;
+  trPlanned: number; trActual: number; trPerCanopy: number;
+  bookToday: number; bookInHand: number;
+  retailToday: number; retailMtdAct: number; retailMtd: number; retailRatePerCanopy: number;
+  activityDay: number; closingStock: number;
+  leads: number; punched: number; gap: number; convPct: number;
+}
+
+interface LeadReportRow {
+  state: string; expectedLeads: number;
+  walkinTarget: number; walkinMtdT: number; walkinMtdA: number;
+  btlTarget: number; btlMtdT: number; btlMtdA: number;
+  referralTarget: number; referralMtdT: number; referralMtdA: number;
+  atlTarget: number; atlMtdT: number; atlMtdA: number;
+  digitalTarget: number; digitalMtdT: number; digitalMtdA: number;
+  totalReceived: number; variance: number; achPct: number;
+  jul26RetailTarget: number; mtdRetailTarget: number; mtdRetailAch: number;
+  mtdRetailAchPct: number; retailEnqPct: number;
+}
+
 
   if (loading) return (
     <div className="an-loading">
@@ -381,11 +495,13 @@ export default function AnalyticsDashboard() {
       {/* ── Tab Nav ──────────────────────────────────────────────────────────── */}
       <div className="an-tabs">
         {([
-          ["overview",  "📊 Overview"],
-          ["region",    "🗺 Region"],
-          ["activity",  "🎯 Activities"],
-          ["daily",     "📅 Daily Data"],
-          ["budget",    "💰 Budget"],
+          ["overview",      "📊 Overview"],
+          ["region",        "🗺 Region"],
+          ["activity",      "🎯 Activities"],
+          ["daily",         "📅 Daily Data"],
+          ["budget",        "💰 Budget"],
+          ["daily-activity","📅 Daily Activity Report"],
+          ["lead-report",   "🎯 Lead Report"],
         ] as [typeof activeTab, string][]).map(([tab, label]) => (
           <button key={tab} className={`an-tab ${activeTab === tab ? "an-tab--active" : ""}`}
             onClick={() => setActiveTab(tab)}>{label}</button>
@@ -623,8 +739,8 @@ export default function AnalyticsDashboard() {
               const btlBudget = btl.reduce((s,a) => s+(a.budget||0),0);
               return [
                 <KPI key="tot" label="Total Activities"  value={String(allActs.length)} color="#0a2540" sub={`${activityRows.length} types`} active={activeKpi==="act_tot"} onClick={()=>toggleKpi("act_tot",()=>{},()=>{})}/>,
-                <KPI key="atl" label="ATL Activities"    value={String(atl.length)}    color="#1e40af" sub={inrL(atlBudget)} active={activeKpi==="atl"} onClick={()=>toggleKpi("atl",()=>{},()=>{})}/>,
-                <KPI key="btl" label="BTL Activities"    value={String(btl.length)}    color="#166534" sub={inrL(btlBudget)} active={activeKpi==="btl"} onClick={()=>toggleKpi("btl",()=>{},()=>{})}/>,
+                <KPI key="atl" label="ATL Activities" value={String(atl.length)} color="#1e40af" sub={inrL(atlBudget)} active={activeKpi==="atl"} onClick={()=>toggleKpi("atl",()=>setActFilter("ATL_FILTER"),()=>setActFilter(null))}/>,
+                <KPI key="btl" label="BTL Activities" value={String(btl.length)} color="#166534" sub={inrL(btlBudget)} active={activeKpi==="btl"} onClick={()=>toggleKpi("btl",()=>setActFilter("BTL_FILTER"),()=>setActFilter(null))}/>,
                 <KPI key="cac" label="Overall CAC"       value={inrL(avgCac)}          color="#f59e0b" sub="avg per retail" active={activeKpi==="cac_act"} onClick={()=>toggleKpi("cac_act",()=>setActiveTab("budget"),()=>setActiveTab("activity"))}/>,
               ];
             })()}
@@ -875,6 +991,185 @@ export default function AnalyticsDashboard() {
             </div>
           </Section>
         </>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════════
+          DAILY ACTIVITY REPORT TAB  (mirrors DashboardPage daily-summary tab)
+      ════════════════════════════════════════════════════════════════════════ */}
+      {activeTab === "daily-activity" && (
+        <>
+        {/* Search + filter bar for daily activity */}
+        <div style={{ display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center" }}>
+          <input value={dailySearch} onChange={e=>setDailySearch(e.target.value)}
+            placeholder="🔍 Search dealer, location, state…"
+            style={{ flex:"1 1 220px",height:36,padding:"0 12px",border:"1.5px solid #e2e8f0",
+              borderRadius:8,fontSize:13,outline:"none",fontFamily:"inherit" }}/>
+          <select value={dailyStateFilter} onChange={e=>setDailyStateFilter(e.target.value)}
+            style={{ height:36,padding:"0 10px",border:"1.5px solid #e2e8f0",borderRadius:8,
+              fontSize:12,fontFamily:"inherit",outline:"none" }}>
+            <option value="All">All States</option>
+            {stateRows.map(s=><option key={s.state} value={s.state}>{s.state}</option>)}
+          </select>
+          {(dailySearch||dailyStateFilter!=="All")&&(
+            <button onClick={()=>{setDailySearch("");setDailyStateFilter("All");}}
+              style={{ height:36,padding:"0 14px",background:"none",border:"1.5px solid #e2e8f0",
+                borderRadius:8,fontSize:12,cursor:"pointer",color:"#64748b" }}>Clear ✕</button>
+          )}
+          <span style={{ fontSize:12,color:"#64748b" }}>
+            {filteredDailySummary.length} of {liveDailySummary.length} entries
+          </span>
+        </div>
+        <Section title="Daily Activity Sheet Summary"
+          subtitle={`Live · ${filteredDailySummary.length} activities · ${approved.length} approved proposals`}>
+          {liveDailySummary.length === 0 ? (
+            <div style={{ textAlign:"center",padding:"60px 24px",color:"#9ca3af" }}>
+              <div style={{ fontSize:40,marginBottom:12 }}>📅</div>
+              <div style={{ fontWeight:700,fontSize:15,color:"#0a2540",marginBottom:6 }}>No post-activity data yet</div>
+              <div style={{ fontSize:13 }}>Daily data appears here once RSMs fill post-activity entries for approved proposals.</div>
+            </div>
+          ) : (
+            <>
+              {/* Summary KPIs */}
+              <div style={{ display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:16 }}>
+                {[
+                  {label:"Total Canopy",  value:String(dsTotals.canopy),      color:"#0a2540"},
+                  {label:"Enq Planned",   value:String(dsTotals.enquiryPlanned),color:"#2563eb"},
+                  {label:"Enq Actual",    value:String(dsTotals.enquiryActual), color:"#16a34a"},
+                  {label:"TD Actual",     value:String(dsTotals.trActual),      color:"#7c3aed"},
+                  {label:"Retail MTD",    value:String(dsTotals.retailMtd),        color:"#f59e0b"},
+                ].map(k=>(
+                  <div key={k.label} className="an-kpi" style={{ borderTop:`3px solid ${k.color}` }}>
+                    <div className="an-kpi-label">{k.label}</div>
+                    <div className="an-kpi-value" style={{ color:k.color }}>{k.value}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="an-table-wrap">
+                <table className="an-table an-table-full">
+                  <thead><tr>
+                    <th>#</th><th>Dealer</th><th>Location</th><th>State</th>
+                    <th>Canopy</th><th>Enq Plan</th><th>Enq Actual</th><th>/Canopy</th>
+                    <th>TD Plan</th><th>TD Actual</th><th>Booking</th>
+                    <th>Retail Today</th><th>Retail MTD</th><th>Leads</th><th>Photos</th>
+                  </tr></thead>
+                  <tbody>
+                    {filteredDailySummary.map((row,i)=>(
+                      <tr key={i} className="an-tr-click"
+                        onClick={()=>{ setSelectedDealerDaily(row); setReportSubTab("dealer-daily"); }}
+                        style={{ background:i%2===0?"#fff":"#f8fafc" }}
+                        title={`View ${row.dealer} daily sheet`}>
+                        <td className="an-td-muted">{row.sr}</td>
+                        <td className="an-td-bold">{row.dealer}</td>
+                        <td style={{ fontSize:11,color:"#6b7280" }}>{row.location}</td>
+                        <td style={{ fontSize:11 }}>{row.state}</td>
+                        <td className="an-td-center">{row.canopy}</td>
+                        <td className="an-td-center" style={{ color:"#2563eb" }}>{row.enquiryPlanned||"—"}</td>
+                        <td className="an-td-center" style={{ fontWeight:row.enquiryActual>0?700:400,color:row.enquiryActual>0?"#16a34a":"#94a3b8" }}>{row.enquiryActual||"—"}</td>
+                        <td className="an-td-center" style={{ fontSize:11,color:"#6b7280" }}>{row.perCanopy>0?row.perCanopy.toFixed(1):"—"}</td>
+                        <td className="an-td-center" style={{ color:"#7c3aed" }}>{row.trPlanned||"—"}</td>
+                        <td className="an-td-center" style={{ fontWeight:row.trActual>0?700:400,color:row.trActual>0?"#7c3aed":"#94a3b8" }}>{row.trActual||"—"}</td>
+                        <td className="an-td-center" style={{ color:"#f59e0b",fontWeight:row.bookToday>0?700:400 }}>{row.bookToday||"—"}</td>
+                        <td className="an-td-center" style={{ color:"#f59e0b",fontWeight:700 }}>{row.retailToday||"—"}</td>
+                        <td className="an-td-center" style={{ color:"#16a34a",fontWeight:700 }}>{row.retailMtd||"—"}</td>
+                        <td className="an-td-center">{row.leads||"—"}</td>
+                        <td className="an-td-center">
+                          {(row as any).photos>0?<span style={{ color:"#16a34a",fontWeight:700,fontSize:11 }}>📸 {(row as any).photos}</span>:<span style={{ color:"#e2e8f0",fontSize:11 }}>—</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={4} style={{ padding:"8px 12px",fontWeight:800,color:"#0a2540" }}>TOTALS</td>
+                      <td className="an-td-center" style={{ fontWeight:700 }}>{dsTotals.canopy}</td>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#2563eb" }}>{dsTotals.enquiryPlanned}</td>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{dsTotals.enquiryActual}</td>
+                      <td/>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#7c3aed" }}>{dsTotals.trPlanned}</td>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#7c3aed" }}>{dsTotals.trActual}</td>
+                      <td/>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#f59e0b" }}>{liveDailySummary.reduce((s,r)=>s+r.retailToday,0)}</td>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{dsTotals.retailMtd}</td>
+                      <td className="an-td-center" style={{ fontWeight:700 }}>{dsTotals.leads}</td>
+                      <td/>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </>
+          )}
+        </Section>
+        </>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════════
+          LEAD REPORT TAB
+      ════════════════════════════════════════════════════════════════════════ */}
+      {activeTab === "lead-report" && (
+        <Section title="Lead Report — State-wise" subtitle="Planned vs Actual leads by source">
+          <div className="an-table-wrap">
+            <table className="an-table an-table-full">
+              <thead>
+                <tr style={{ background:"#0a2540" }}>
+                  <th rowSpan={2} style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"left",verticalAlign:"middle" }}>State</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Expected Leads</th>
+                  <th colSpan={3} style={{ padding:"6px 8px",color:"#93c5fd",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Walk-in</th>
+                  <th colSpan={3} style={{ padding:"6px 8px",color:"#6ee7b7",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>BTL</th>
+                  <th colSpan={3} style={{ padding:"6px 8px",color:"#c4b5fd",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Referral</th>
+                  <th colSpan={3} style={{ padding:"6px 8px",color:"#fbbf24",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Digital</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Total Actual</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Conv%</th>
+                </tr>
+                <tr style={{ background:"#0f172a" }}>
+                  {["Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A"].map((h,i)=>(
+                    <th key={i} style={{ padding:"5px 6px",fontSize:9,textAlign:"center",color:"#94a3b8" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(()=>{
+                const leadRows = stateRows.map(sr => ({
+                  state: sr.state,
+                  expectedLeads: sr.lead,
+                  walkinTarget: 0, walkinMtdT: 0, walkinMtdA: 0,
+                  btlTarget: sr.lead, btlMtdT: sr.lead,
+                  btlMtdA: dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) > 0
+                    ? Math.round(dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) * (sr.lead / Math.max(totalLead,1)))
+                    : 0,
+                  referralTarget: 0, referralMtdT: 0, referralMtdA: 0,
+                  digitalTarget: 0, digitalMtdT: 0, digitalMtdA: 0,
+                }));
+                return (<>{leadRows.map((r, i: number)=>{
+                  const totalActual=r.walkinMtdA+r.btlMtdA+r.referralMtdA+r.digitalMtdA;
+                  const conv=r.expectedLeads>0?Math.round(totalActual/r.expectedLeads*100):0;
+                  return (
+                    <tr key={r.state} style={{ background:i%2===0?"#fff":"#f8fafc" }}>
+                      <td className="an-td-bold">{r.state}</td>
+                      <td className="an-td-center">{r.expectedLeads}</td>
+                      <td className="an-td-center" style={{ fontSize:11 }}>{r.walkinTarget}</td>
+                      <td className="an-td-center" style={{ fontSize:11 }}>{r.walkinMtdT}</td>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#2563eb" }}>{r.walkinMtdA}</td>
+                      <td className="an-td-center" style={{ fontSize:11 }}>{r.btlTarget}</td>
+                      <td className="an-td-center" style={{ fontSize:11 }}>{r.btlMtdT}</td>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{r.btlMtdA}</td>
+                      <td className="an-td-center" style={{ fontSize:11 }}>{r.referralTarget}</td>
+                      <td className="an-td-center" style={{ fontSize:11 }}>{r.referralMtdT}</td>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#7c3aed" }}>{r.referralMtdA}</td>
+                      <td className="an-td-center" style={{ fontSize:11 }}>{r.digitalTarget}</td>
+                      <td className="an-td-center" style={{ fontSize:11 }}>{r.digitalMtdT}</td>
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#f59e0b" }}>{r.digitalMtdA}</td>
+                      <td className="an-td-center" style={{ fontWeight:800,color:"#0a2540" }}>{totalActual}</td>
+                      <td className="an-td-center" style={{ fontWeight:700,color:conv>=80?"#16a34a":conv>=50?"#f59e0b":"#dc2626" }}>{conv}%</td>
+                    </tr>
+                        );
+                    })}
+                  </>
+                );
+                })()}
+              </tbody>
+            </table>
+          </div>
+        </Section>
       )}
 
       {/* Bottom padding */}

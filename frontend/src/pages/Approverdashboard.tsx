@@ -46,8 +46,7 @@ const LOC_TYPES   = ["Old","New"];
 const BGAUSS_OPTS = ["100","70","50"];
 const CURRENT_YEAR = new Date().getFullYear();
 const YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
-// ── NEW: local-date ISO helper (matches RSMForm's fix — avoids the UTC
-// shift bug where toISOString() could roll a date back by one day) ──
+// ── local-date ISO helper (avoids UTC shift bug from toISOString()) ──
 const isoDate = (d: Date) => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -175,8 +174,10 @@ interface ProofMedia {
   id:string; fileUrl:string; fileName:string; fileType:string;
   capturedAt:string; latitude?:number|null; longitude?:number|null;
 }
+const DEFAULT_PLAN_PER_SETUP = 35; // Enquiry Plan & TD Plan = 35 × setupCount
 interface DailyEntry {
-  date:string; enquiryPlanned:number; enquiryActual:number;
+  date:string; setupCount:number;
+  enquiryPlanned:number; enquiryActual:number;
   testDrivePlanned:number; testDriveActual:number;
   bookingActual:number; retailActual:number; leadsPunched:number;
 }
@@ -224,7 +225,7 @@ function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[]
   const cap=e<today?e:today;
   for (const d=new Date(s);d<=cap;d.setDate(d.getDate()+1)) {
     entries.push({ date:d.toISOString().split("T")[0],
-      enquiryPlanned:0,enquiryActual:0,testDrivePlanned:0,testDriveActual:0,
+      setupCount:0,enquiryPlanned:0,enquiryActual:0,testDrivePlanned:0,testDriveActual:0,
       bookingActual:0,retailActual:0,leadsPunched:0 });
   }
   return entries;
@@ -233,6 +234,14 @@ function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[]
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── Date range helper for post-activity: current + next month ──────────────
+function getActualDateRange() {
+  const now   = new Date();
+  const min   = new Date(now.getFullYear(), now.getMonth(), 1);
+  const max   = new Date(now.getFullYear(), now.getMonth() + 2, 0); // last day of next month
+  const fmt   = (d: Date) => d.toISOString().split("T")[0];
+  return { min: fmt(min), max: fmt(max) };
+}
 export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
   const navigate  = useNavigate();
@@ -241,7 +250,6 @@ export default function ApproverDashboard() {
   const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
   const myEmail         = (account?.username ?? user?.email ?? "").toLowerCase();
   const FINAL_APPROVER  = "vijay.maurya@bgauss.com";
-  // Checker = ApproverEmail or ApproverEmail2 (both see Forward + Notify Dealer bulk actions)
   const CHECKER_EMAILS  = ["mayank.maheshwari@bgauss.com", "oat@bgauss.com"];
   const isFinalApprover = myEmail === FINAL_APPROVER;
   const isChecker       = isAdmin && CHECKER_EMAILS.includes(myEmail);
@@ -283,14 +291,12 @@ export default function ApproverDashboard() {
   const [mediaViewer,      setMediaViewer]      = useState<{url:string;name:string;type:string}|null>(null);
   const [activityMasterList, setActivityMasterList] = useState<ActivityType[]>([]);
   const [activityGroups,     setActivityGroups]     = useState<ActivityGroup[]>([]);
-  // Bulk approve
   const [selectedIds,       setSelectedIds]       = useState<Set<string>>(new Set());
   const [notifySelectedIds, setNotifySelectedIds] = useState<Set<string>>(new Set());
   const [bulkNotifying,     setBulkNotifying]     = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkNote,      setBulkNote]      = useState("");
   const [showBulkPanel, setShowBulkPanel] = useState(false);
-  // Budget Addition
   const [showBudgetAddPanel, setShowBudgetAddPanel] = useState(false);
   const [budgetAddAmounts,   setBudgetAddAmounts]   = useState<Record<string,string>>({});
   const [budgetAddNote,      setBudgetAddNote]      = useState("");
@@ -303,12 +309,10 @@ export default function ApproverDashboard() {
   const loadProposals = useCallback(async () => {
     setLoading(true); setFetchError(null);
     try {
-      // Retry once on failure (handles transient DB connection timeouts)
       let data: ProposalResponse[];
       try {
         data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
       } catch (firstErr) {
-        // Wait 2s and retry once
         await new Promise(r => setTimeout(r, 2000));
         data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
       }
@@ -359,8 +363,6 @@ export default function ApproverDashboard() {
       cac:trt>0?tbg/trt:0,cpl:tlt>0?tbg/tlt:0,totalBgauss:tbg };
   },[editData]);
 
-  // ── NEW: activity dates in edit mode must fall within editData's
-  // Month + Year window — mirrors RSMForm's activityDateRange logic ──
   const editActivityDateRange = useMemo(() => {
     if (!editData) return { min: TODAY_ISO, max: "" };
     const monthIdx = MONTHS.indexOf(editData.month);
@@ -385,7 +387,6 @@ export default function ApproverDashboard() {
         uploading:false,
         proofUploading:false,
         invoiceUploading:false,
-        // Load existing invoices from mediaFiles where fileType is pdf or non-image/video
         invoiceMedia:(a.mediaFiles??[])
           .filter((m)=>m.fileType?.includes("pdf")||
             (!m.fileType?.startsWith("image/")&&!m.fileType?.startsWith("video/")))
@@ -402,7 +403,6 @@ export default function ApproverDashboard() {
           latitude:m.latitude??null, longitude:m.longitude??null,
         })),
         dailyEntries:(()=>{
-          // Load saved daily data from server if available, else build blank entries
           const serverDaily = (a as any).dailyData;
           if (serverDaily) {
             try {
@@ -417,14 +417,12 @@ export default function ApproverDashboard() {
     setActualsData(init);
   },[]);
 
-  // ── initBudgetAdd ──────────────────────────────────────────────────────────
   const initBudgetAdd = useCallback((p:ProposalResponse)=>{
     const init:Record<string,string>={};
     p.activities.forEach((a)=>{ init[a.id]=String(a.additionalBudget??0); });
     setBudgetAddAmounts(init); setBudgetAddNote("");
   },[]);
 
-  // ── Daily entries helpers ──────────────────────────────────────────────────
   const setActualField=(id:string,key:"actualStartDate"|"actualEndDate",v:string)=>
     setActualsData((prev)=>({...prev,[id]:{...prev[id],[key]:v}}));
 
@@ -441,75 +439,40 @@ export default function ApproverDashboard() {
     });
   };
 
-  // ── Proof upload with GPS ──────────────────────────────────────────────────
+  // ── Proof upload with GPS — captureGeo() called FIRST, before any await ──
   const handleProofUpload=async(activityId:string,files:FileList)=>{
-    // ── DEBUG CHECKPOINT 1: function called ──────────────────────────────────
-    console.log("[PROOF-UPLOAD] ▶ handleProofUpload called", {
-      activityId,
-      fileCount: files.length,
-      fileNames: Array.from(files).map(f=>f.name),
-      selectedId: selected?.id ?? "NULL — selected is null!",
-    });
+    // ── FIX: capture GPS as the very first line, synchronously as part of
+    // the click's call stack, before copying files or setting state. This
+    // avoids the "Only request geolocation in response to a user gesture"
+    // console violation, since by the time we'd otherwise call it (after
+    // other awaits), the browser can no longer be sure it's still within
+    // the original click's gesture window. ─────────────────────────────
+    const geoPromise = captureGeo();
 
     const proposalId = selected?.id;
     if (!proposalId) {
-      console.error("[PROOF-UPLOAD] ✖ BLOCKED — selected?.id is null. Modal must be open with a proposal.");
       showToast("Error: No proposal selected. Please close and reopen.", false);
       return;
     }
 
-    // ── FIX: Copy FileList → plain Array IMMEDIATELY before any await ──────────
-    // FileList becomes empty after e.target.value="" clears the input.
-    // GPS capture takes 6-8s, by which time the FileList reference is stale.
     const fileArray = Array.from(files);
-    console.log("[PROOF-UPLOAD] 📋 Copied to array immediately:", fileArray.map(f=>f.name));
-
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],proofUploading:true}}));
 
     try {
-      // ── GPS captured AFTER copying files (so FileList invalidation doesn't matter) ──
-      console.log("[PROOF-UPLOAD] 📍 Capturing GPS…");
-      const geo=await captureGeo();
+      const geo=await geoPromise;
       const capturedAt=new Date().toISOString();
-      console.log("[PROOF-UPLOAD] 📍 GPS result:", geo ?? "null (no GPS / denied)");
 
-      for (const file of fileArray){  // ← use fileArray, not Array.from(files)
-        // ── DEBUG CHECKPOINT 3: uploading file to storage ────────────────────
-        console.log("[PROOF-UPLOAD] ⬆ STEP 1 — uploading to /api/media/upload:", file.name, file.type, file.size, "bytes");
-        let uploaded: {url:string; fileName:string; fileType:string};
-        try {
-          uploaded = await uploadActivityMedia(file, instance);
-          console.log("[PROOF-UPLOAD] ✔ STEP 1 done — storage URL:", uploaded.url);
-        } catch(uploadErr) {
-          console.error("[PROOF-UPLOAD] ✖ STEP 1 FAILED — /api/media/upload error:", uploadErr);
-          throw uploadErr;
-        }
-
-        // ── DEBUG CHECKPOINT 4: saving to DB ────────────────────────────────
-        console.log("[PROOF-UPLOAD] 💾 STEP 2 — saving to DB via /api/proposals/.../media", {
-          proposalId, activityId,
+      for (const file of fileArray){
+        const uploaded = await uploadActivityMedia(file, instance);
+        const saved = await addActivityMedia(proposalId, activityId, {
           fileUrl: uploaded.url,
+          fileName: uploaded.fileName,
+          fileType: uploaded.fileType,
           capturedAt,
           latitude: geo?.lat ?? null,
           longitude: geo?.lng ?? null,
-        });
-        let saved: import("../services/proposalService").ActivityMediaResponse;
-        try {
-          saved = await addActivityMedia(proposalId, activityId, {
-            fileUrl: uploaded.url,
-            fileName: uploaded.fileName,
-            fileType: uploaded.fileType,
-            capturedAt,
-            latitude: geo?.lat ?? null,
-            longitude: geo?.lng ?? null,
-          }, instance);
-          console.log("[PROOF-UPLOAD] ✔ STEP 2 done — saved to DB with id:", saved.id);
-        } catch(dbErr) {
-          console.error("[PROOF-UPLOAD] ✖ STEP 2 FAILED — addActivityMedia DB error:", dbErr);
-          throw dbErr;
-        }
+        }, instance);
 
-        // ── DEBUG CHECKPOINT 5: adding to UI state ───────────────────────────
         const proof:ProofMedia={
           id: saved.id,
           fileUrl: saved.fileUrl,
@@ -519,19 +482,15 @@ export default function ApproverDashboard() {
           latitude: saved.latitude ?? geo?.lat ?? null,
           longitude: saved.longitude ?? geo?.lng ?? null,
         };
-        console.log("[PROOF-UPLOAD] ✔ STEP 3 — added to UI state:", proof);
         setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
           proofMedia:[...prev[activityId].proofMedia,proof]}}));
       }
 
-      console.log("[PROOF-UPLOAD] ✅ All files uploaded successfully");
       showToast(geo?"Photo(s) saved with GPS 📍":"Photo(s) saved (no GPS)",true);
 
     } catch(err){
-      console.error("[PROOF-UPLOAD] ✖ CAUGHT ERROR:", err);
       showToast(err instanceof Error ? err.message : "Upload failed.", false);
     } finally {
-      console.log("[PROOF-UPLOAD] 🔚 finally — resetting proofUploading to false");
       setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],proofUploading:false}}));
     }
   };
@@ -569,6 +528,50 @@ export default function ApproverDashboard() {
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
       invoiceMedia:prev[activityId].invoiceMedia.filter((m)=>m.id!==id)}}));
 
+  // ── NEW: date-wise photo upload — used by the History table's inline 📷
+  // button. Reuses uploadActivityMedia/addActivityMedia (the SAME token
+  // path as the working Photos-panel upload) instead of manually acquiring
+  // a token with scopes:["User.Read"], which requests a Microsoft Graph
+  // token (wrong audience) and gets rejected with 401 by MediaController's
+  // JWT validation, since it expects audience "api://<this-app's-client-id>".
+  const handleDateWiseUpload = async (activityId:string, entryDate:string, files:FileList) => {
+    // ── FIX: capture GPS first, before any other await ──
+    const geoPromise = captureGeo();
+    const proposalId = selected?.id;
+    if (!proposalId) { showToast("No proposal selected.", false); return; }
+    const fileArray = Array.from(files);
+    try {
+      const geo = await geoPromise;
+      for (const file of fileArray) {
+        const uploaded = await uploadActivityMedia(file, instance);
+        const saved = await addActivityMedia(proposalId, activityId, {
+          fileUrl: uploaded.url,
+          fileName: uploaded.fileName,
+          fileType: uploaded.fileType,
+          // Stamp capturedAt with the specific history-row date (noon UTC),
+          // not "now" — so it groups correctly under that date in the table.
+          capturedAt: `${entryDate}T12:00:00.000Z`,
+          latitude: geo?.lat ?? null,
+          longitude: geo?.lng ?? null,
+        }, instance);
+        const proof:ProofMedia = {
+          id: saved.id,
+          fileUrl: saved.fileUrl,
+          fileName: saved.fileName,
+          fileType: saved.fileType,
+          capturedAt: saved.capturedAt ?? `${entryDate}T12:00:00.000Z`,
+          latitude: saved.latitude ?? geo?.lat ?? null,
+          longitude: saved.longitude ?? geo?.lng ?? null,
+        };
+        setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
+          proofMedia:[...prev[activityId].proofMedia,proof]}}));
+      }
+      showToast(`Photo saved for ${entryDate}${geo ? " with GPS 📍" : ""}`, true);
+    } catch(err) {
+      showToast(err instanceof Error ? err.message : "Upload failed.", false);
+    }
+  };
+
   const handleActualMedia=async(activityId:string,file:File)=>{
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:true,mediaFile:file}}));
     try {
@@ -602,7 +605,6 @@ export default function ApproverDashboard() {
     setEditData((d)=>d?{...d,activities:d.activities.map((a,i)=>
       i===idx?{...a,mediaFiles:a.mediaFiles.filter((m)=>m.id!==mediaId)}:a)}:d);
 
-  // ── Save actuals ───────────────────────────────────────────────────────────
   const saveActuals=async()=>{
     if (!selected) return;
     setActualsLoading(true);
@@ -626,7 +628,6 @@ export default function ApproverDashboard() {
     finally { setActualsLoading(false); }
   };
 
-  // ── Modal open/close ───────────────────────────────────────────────────────
   const openModal=(p:ProposalResponse)=>{
     setSelected(p); setEditData(toEditable(p)); setIsEditing(false); setShowSendBack(false);
     setNote(p.approverNote??""); setSendBackNote("");
@@ -641,14 +642,10 @@ export default function ApproverDashboard() {
     setShowBudgetAddPanel(false);
   };
 
-  // ── Edit helpers ───────────────────────────────────────────────────────────
   const setF=(key:keyof Omit<EditableProposal,"activities">,v:string)=>
     setEditData((d)=>{
       if (!d) return d;
       const next = { ...d, [key]: v };
-      // ── NEW: changing Month invalidates existing activity dates that may
-      // now fall outside the new Month+Year window — clear them so the
-      // Checker must re-pick dates within range, same as RSMForm.
       if (key === "month") {
         next.activities = next.activities.map((a) => ({ ...a, startDate: "", endDate: "" }));
       }
@@ -674,10 +671,8 @@ export default function ApproverDashboard() {
     setEditData((d)=>d?{...d,activities:d.activities.map((a,i)=>
       i===idx?{...a,subcategory,qty:"1"}:a)}:d);
 
-  // ── Save edits ─────────────────────────────────────────────────────────────
   const saveEdits=async()=>{
     if (!selected||!editData) return;
-    // ── Reject out-of-window dates before saving ──
     const { min, max } = editActivityDateRange;
     const outOfRange = editData.activities.find(a =>
       (a.startDate && a.startDate < min) ||
@@ -722,13 +717,11 @@ export default function ApproverDashboard() {
         })(),
       }));
       setEditData(editable); setIsEditing(false); showToast("Proposal updated.",true);
-      // Reload all proposals to ensure server state is in sync (prevents stale data)
       setTimeout(() => loadProposals(), 500);
     } catch(err){ showToast(err instanceof Error?err.message:"Save failed.",false); }
     finally { setSaveLoading(false); }
   };
 
-  // ── Decide / Send back / Forward / Notify ──────────────────────────────────
   const decide=async(action:"Approved"|"Rejected")=>{
     if (!selected) return; setActionLoading(true);
     try {
@@ -773,7 +766,6 @@ export default function ApproverDashboard() {
     finally { setNotifyLoading(false); }
   };
 
-  // ── Budget Addition submit ─────────────────────────────────────────────────
   const handleBudgetAddSubmit=async()=>{
     if (!selected) return; setBudgetAddLoading(true);
     try {
@@ -819,10 +811,8 @@ export default function ApproverDashboard() {
     finally { setBudgetAddLoading(false); }
   };
 
-  // ── Bulk approve ───────────────────────────────────────────────────────────
   const toggleActuals=(activityId:string)=>
     setOpenActualsId((prev)=>prev===activityId?null:activityId);
-  // Only count un-forwarded pending proposals for select-all logic
   const forwardablePending  = pendingFiltered.filter(p=>!p.checkedByEmail);
   const allPendingSelected  = forwardablePending.length>0 && forwardablePending.every(p=>selectedIds.has(p.id));
   const somePendingSelected = forwardablePending.some(p=>selectedIds.has(p.id));
@@ -831,7 +821,6 @@ export default function ApproverDashboard() {
     else setSelectedIds(new Set(forwardablePending.map((p)=>p.id)));
   };
   const toggleOne=(id:string,isPending:boolean)=>{
-    // Don't allow selecting already-forwarded proposals
     const p = proposals.find(x=>x.id===id);
     if (p?.checkedByEmail) return;
     if (!isPending) return;
@@ -852,17 +841,10 @@ export default function ApproverDashboard() {
     setBulkApproving(false);
   }
 
-
-  // ── Bulk Notify Dealer — same logic as individual modal Notify Dealer button ──
-  // For each selected proposal:
-  //   1. Use p.dealerEmail if already known
-  //   2. Otherwise auto-fetch from dealer accounts by matching DealerName
-  //   3. Call notifyDealer() — identical to clicking Notify Dealer in the modal
   const handleBulkNotifyDealer = async () => {
     if (notifySelectedIds.size === 0) return;
     setBulkNotifying(true);
     let successCount = 0; let failCount = 0; let noEmailCount = 0;
-    // Pre-fetch dealer accounts once for proposals that need email lookup
     let dealerAccounts: Awaited<ReturnType<typeof fetchDealerUsers>> = [];
     const needsFetch = Array.from(notifySelectedIds).some(id => {
       const p = proposals.find(x => x.id === id);
@@ -874,7 +856,6 @@ export default function ApproverDashboard() {
     for (const id of Array.from(notifySelectedIds)) {
       const p = proposals.find(x => x.id === id);
       if (!p) continue;
-      // Same email priority as modal: existing stored email → dealer account match
       let email = p.dealerEmail ?? "";
       if (!email) {
         const match = dealerAccounts.find(d =>
@@ -904,13 +885,9 @@ export default function ApproverDashboard() {
   const calcBgAmt=(budget:number,add:number,share:number|null)=>
     Math.round((budget+add)*((share&&share>0?share:100)/100));
 
-  // Live additional budget for an activity:
-  // when Budget Addition panel is open → use what Mayank typed
-  // otherwise → use the saved server value
   const liveAdd = (activityId: string, savedAdd: number): number =>
     showBudgetAddPanel ? num(budgetAddAmounts[activityId] ?? String(savedAdd)) : savedAdd;
 
-  // Live totals for the footer/CAC banner that respond to Budget Addition panel
   const liveBudgetTotals = () => {
     const acts = selected?.activities ?? [];
     const tBudget = acts.reduce((s, a) => s + a.budget + liveAdd(a.id, a.additionalBudget), 0);
@@ -965,7 +942,6 @@ export default function ApproverDashboard() {
               </select>
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
             </div>
-            {/* Bulk Forward — for Checker (Manager) who is not the final approver */}
             {isAdmin&&!isFinalApprover&&selectedIds.size>0&&(
               <div style={{ background:"#1e3a5f",borderRadius:10,padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
                 <span style={{ color:"#e2e8f0",fontSize:13,fontWeight:600 }}>{selectedIds.size} proposal{selectedIds.size>1?"s":""} selected</span>
@@ -983,7 +959,6 @@ export default function ApproverDashboard() {
                 <button onClick={()=>setSelectedIds(new Set())} style={{ background:"rgba(255,255,255,0.1)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,0.2)",borderRadius:7,padding:"8px 16px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
               </div>
             )}
-            {/* Bulk Notify Dealer — for Checker when approved proposals are selected in 2nd row */}
             {isChecker&&notifySelectedIds.size>0&&(
               <div style={{ background:"#166534",borderRadius:10,padding:"12px 18px",marginBottom:12,
                 display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
@@ -1032,7 +1007,6 @@ export default function ApproverDashboard() {
                       </div>
                     </th>
                   )}
-                  {/* 2nd checkbox col: Notify Dealer — Checker only, between col1 and Action */}
                   {isChecker&&(
                     <th style={{ width:44,textAlign:"center",padding:"8px 6px" }}>
                       <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
@@ -1091,7 +1065,6 @@ export default function ApproverDashboard() {
                             )}
                           </td>
                         )}
-                        {/* 2nd TD: Notify Dealer checkbox — Checker only, Approved only */}
                         {isChecker&&(
                           <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>
                             {p.status==="Approved"?(
@@ -1141,13 +1114,10 @@ export default function ApproverDashboard() {
         )}
       </main>
 
-      {/* Lightbox */}
       {mediaViewer&&<MediaViewer url={mediaViewer.url} name={mediaViewer.name} type={mediaViewer.type} onClose={()=>setMediaViewer(null)}/>}
 
-      {/* ══════════ FULLSCREEN MODAL ══════════ */}
       {selected&&editData&&(
         <div style={{ position:"fixed",inset:0,zIndex:900,background:"#f1f5f9",display:"flex",flexDirection:"column",overflow:"hidden" }}>
-          {/* Top bar */}
           <div style={{ background:"#0a2540",color:"#fff",padding:"0 24px",height:58,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between",boxShadow:"0 2px 8px rgba(0,0,0,0.2)" }}>
             <div style={{ display:"flex",alignItems:"center",gap:14,minWidth:0 }}>
               <span style={{ fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:20,flexShrink:0,color:"#fff",
@@ -1184,11 +1154,9 @@ export default function ApproverDashboard() {
             </div>
           )}
 
-          {/* Scrollable body */}
           <div ref={scrollBodyRef} style={{ flex:1,overflowY:"auto",padding:"24px 24px 40px" }}>
             <div style={{ maxWidth:1280,margin:"0 auto" }}>
 
-              {/* Meta cards */}
               <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:10,marginBottom:20 }}>
                 {([{key:"rsmName",label:"RSM Name",edit:"text"},{key:"tsmName",label:"TSM Name",edit:"text"},
                   {key:"commandoName",label:"Commando",edit:"text"},{key:"type",label:"Dealer Type",edit:"select",opts:LOC_TYPES},
@@ -1199,9 +1167,6 @@ export default function ApproverDashboard() {
                   <div key={key} style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,padding:"10px 12px" }}>
                     <div style={{ fontSize:10,color:"#6b7280",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4 }}>{label}</div>
                     {isAdmin&&isEditing&&key==="year"?(
-                      // ── NEW: Year is locked in edit mode — it's fixed at
-                      // submission time and shouldn't be changed by the Checker,
-                      // since RSMForm already enforces year on the Maker side.
                       <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",
                         border:"1.5px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:13,
                         color:"#0a2540",minHeight:30 }}>
@@ -1217,7 +1182,6 @@ export default function ApproverDashboard() {
                 ))}
               </div>
 
-              {/* RSM Remarks */}
               {(selected.remarks||(isAdmin&&isEditing))&&(
                 <div style={{ background:"#fffbeb",border:"1px solid #fde68a",borderLeft:"3px solid #f59e0b",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:13 }}>
                   <span style={{ fontWeight:600,color:"#92400e",fontSize:11,textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>RSM Remarks</span>
@@ -1226,7 +1190,6 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* Checker Notes */}
               {isAdmin&&isEditing&&(
                 <div style={{ marginBottom:16,background:"#fffbeb",border:"1.5px solid #fde68a",borderRadius:8,padding:"12px 14px" }}>
                   <label style={{ fontSize:12,fontWeight:700,color:"#92400e",display:"block",marginBottom:6 }}>📝 Checker Notes (shown to Maker when saved)</label>
@@ -1237,7 +1200,6 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* Activities table */}
               <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,overflow:"hidden",marginBottom:20 }}>
                 <div style={{ background:"#0a2540",padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center" }}>
                   <span style={{ color:"#fff",fontWeight:700,fontSize:14 }}>Activities ({selected.activities.length})</span>
@@ -1381,16 +1343,13 @@ export default function ApproverDashboard() {
                         )
                       )}
 
-                      {/* ══ POST-ACTIVITY ACCORDION v2 ══ */}
                       {!isEditing&&selected.status==="Approved"&&selected.activities.map((a)=>{
                         const d=actualsData[a.id];
                         if (openActualsId!==a.id||!d) return null;
-                        const pctColor=(actual:number,planned:number)=>{ if(!actual) return ""; const r=planned>0?actual/planned:1; return r>=0.9?"#d1fae5":r>=0.6?"#fef3c7":"#fee2e2"; };
                         return (
                           <tr key={`actuals-${a.id}`}>
                             <td colSpan={14} style={{ padding:0,background:"#f0fdf4",borderBottom:"2px solid #bbf7d0" }}>
                               <div style={{ padding:"14px 20px" }}>
-                                {/* Header row */}
                                 <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap" }}>
                                   <span style={{ background:"#16a34a",color:"#fff",borderRadius:4,padding:"2px 8px",fontSize:11,fontWeight:700 }}>📋 Post-Activity</span>
                                   <span style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>{a.activityType}</span>
@@ -1398,21 +1357,22 @@ export default function ApproverDashboard() {
                                   <span style={{ fontSize:11,color:"#6b7280",marginLeft:"auto" }}>Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
                                 </div>
 
-                                {/* ── Actual Dates + compact action bar in one row ── */}
                                 <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
                                   <div>
                                     <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual Start</label>
-                                    <input type="date" value={d.actualStartDate} onChange={(e)=>{ setActualField(a.id,"actualStartDate",e.target.value); rebuildDailyEntries(a.id,e.target.value,d.actualEndDate); }} style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
+                                    <input type="date" value={d.actualStartDate}
+                                    min={getActualDateRange().min} max={getActualDateRange().max}
+                                    onChange={(e)=>{ setActualField(a.id,"actualStartDate",e.target.value); rebuildDailyEntries(a.id,e.target.value,d.actualEndDate); }} style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
                                   </div>
                                   <div>
                                     <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual End</label>
-                                    <input type="date" value={d.actualEndDate} min={d.actualStartDate||undefined} onChange={(e)=>{ setActualField(a.id,"actualEndDate",e.target.value); rebuildDailyEntries(a.id,d.actualStartDate,e.target.value); }} style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
+                                    <input type="date" value={d.actualEndDate} min={d.actualStartDate||getActualDateRange().min} max={getActualDateRange().max}
+                                    onChange={(e)=>{ setActualField(a.id,"actualEndDate",e.target.value); rebuildDailyEntries(a.id,d.actualStartDate,e.target.value); }} style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
                                   </div>
                                   {(a.actualStartDate||a.actualEndDate)&&(
                                     <div style={{ fontSize:11,color:"#166534",fontWeight:600 }}>✓ {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</div>
                                   )}
 
-                                  {/* ── Toggle buttons ── */}
                                   <div style={{ display:"flex",gap:7,marginLeft:"auto",flexWrap:"wrap",alignItems:"center" }}>
                                     <button onClick={()=>toggleActualsPanel(a.id,"photos")}
                                       style={{ display:"flex",alignItems:"center",gap:5,
@@ -1459,7 +1419,6 @@ export default function ApproverDashboard() {
                                   </div>
                                 </div>
 
-                                {/* ══ PHOTOS PANEL ══ */}
                                 {openActualsPanel[a.id]==="photos"&&(
                                   <div style={{ background:"#fff",border:"1px solid #bbf7d0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
                                     <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
@@ -1473,7 +1432,6 @@ export default function ApproverDashboard() {
                                         fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
                                         {d.proofUploading?"⏳ Uploading…":"＋ Add Photos"}
                                         <input type="file" multiple accept="image/*,video/*,.pdf" style={{ display:"none" }} disabled={d.proofUploading} onChange={(e)=>{
-                                          console.log("[PROOF-INPUT] onChange fired, files:", e.target.files?.length ?? 0, "activityId:", a.id);
                                           if(e.target.files&&e.target.files.length) handleProofUpload(a.id,e.target.files);
                                           e.target.value="";
                                         }}/>
@@ -1509,7 +1467,6 @@ export default function ApproverDashboard() {
                                   </div>
                                 )}
 
-                                {/* ══ INVOICES PANEL ══ */}
                                 {openActualsPanel[a.id]==="invoices"&&(
                                   <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
                                     <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
@@ -1551,7 +1508,6 @@ export default function ApproverDashboard() {
                                   </div>
                                 )}
 
-                                {/* ══ HISTORY PANEL — only when both dates selected ══ */}
                                 {openActualsPanel[a.id]==="history"&&d.actualStartDate&&d.actualEndDate&&(
                                   <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,overflow:"hidden",marginBottom:10 }}>
                                     <div style={{ background:"#0a2540",padding:"9px 14px",display:"flex",alignItems:"center",gap:10 }}>
@@ -1567,6 +1523,7 @@ export default function ApproverDashboard() {
                                           <thead>
                                             <tr style={{ background:"#1e293b" }}>
                                               <th style={{ padding:"8px 10px",textAlign:"left",color:"#e2e8f0",fontSize:10,fontWeight:700,width:95 }}>Date</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Setup<br/>Count</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Enquiry<br/>Plan</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Enquiry<br/>Actual</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Test Drive<br/>Plan</th>
@@ -1588,13 +1545,26 @@ export default function ApproverDashboard() {
                                                 <tr key={entry.date} style={{ background:ei%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",opacity:hasAnyData?1:0.5 }}>
                                                   <td style={{ padding:"5px 10px",fontWeight:600,color:"#374151",whiteSpace:"nowrap",fontSize:11 }}>{entry.date}</td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.enquiryPlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} max={20}
+                                                      style={{ width:40,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"2px",fontSize:11,outline:"none",background:"#fefce8",fontWeight:700 }}
+                                                      value={(entry as any).setupCount||""}
+                                                      placeholder="0"
+                                                      title="Setup Count — Enquiry Plan & TD Plan = 35 × this value"
+                                                      onChange={(ev)=>{
+                                                        const sc=parseInt(ev.target.value)||0;
+                                                        setDailyField(a.id,entry.date,"setupCount" as any,sc);
+                                                        setDailyField(a.id,entry.date,"enquiryPlanned",sc*DEFAULT_PLAN_PER_SETUP);
+                                                        setDailyField(a.id,entry.date,"testDrivePlanned",sc*DEFAULT_PLAN_PER_SETUP);
+                                                      }}/>
+                                                  </td>
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:(entry as any).setupCount>0?"#1e40af":"inherit",fontWeight:(entry as any).setupCount>0?700:400 }} value={entry.enquiryPlanned||""} placeholder="0" readOnly={(entry as any).setupCount>0} title={(entry as any).setupCount>0?"Auto-calculated (35 × Setup Count)":"Enter manually"} onChange={(e)=>!(entry as any).setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
                                                   </td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.enquiryActual,entry.enquiryPlanned)||"#fff",fontWeight:entry.enquiryActual>0?700:400 }} value={entry.enquiryActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
                                                   </td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.testDrivePlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.testDrivePlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)} readOnly/>
                                                   </td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.testDriveActual,entry.testDrivePlanned)||"#fff",fontWeight:entry.testDriveActual>0?700:400 }} value={entry.testDriveActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
@@ -1608,7 +1578,6 @@ export default function ApproverDashboard() {
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.leadsPunched>0?"#eef2ff":"#fff",fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#4338ca":"inherit" }} value={entry.leadsPunched||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"leadsPunched",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* Media thumbnails for this date */}
                                                   <td style={{ padding:"4px 8px",textAlign:"center" }}>
                                                     <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
                                                       {photosOnDay.slice(0,2).map(m=>{
@@ -1622,6 +1591,19 @@ export default function ApproverDashboard() {
                                                       {photosOnDay.length>2&&<span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-2}</span>}
                                                       {invoicesOnDay.length>0&&<span style={{ fontSize:10,background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:3,padding:"1px 4px",color:"#374151",whiteSpace:"nowrap" }}>🧾{invoicesOnDay.length}</span>}
                                                       {photosOnDay.length===0&&invoicesOnDay.length===0&&<span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
+                                                      {/* Date-wise upload — FIXED: now uses uploadActivityMedia/addActivityMedia
+                                                          (same correct API-scope token path as the Photos panel) instead of
+                                                          manually acquiring a Graph-scoped token, which caused the 401. */}
+                                                      <label title={`Upload photo for ${entryDate}`}
+                                                        style={{ cursor:"pointer",fontSize:11,color:"#60a5fa",marginLeft:2 }}>
+                                                        📷
+                                                        <input type="file" accept="image/*,video/*" multiple style={{ display:"none" }}
+                                                          onChange={(ev)=>{
+                                                            if (!ev.target.files?.length) return;
+                                                            handleDateWiseUpload(a.id, entryDate, ev.target.files);
+                                                            ev.target.value = "";
+                                                          }}/>
+                                                      </label>
                                                     </div>
                                                   </td>
                                                 </tr>
@@ -1631,6 +1613,7 @@ export default function ApproverDashboard() {
                                           <tfoot>
                                             <tr style={{ background:"#0a2540",borderTop:"2px solid #1e3a5f" }}>
                                               <td style={{ padding:"7px 10px",fontWeight:800,color:"#fbbf24",fontSize:11 }}>TOTAL</td>
+                                              <td></td>
                                               {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key,ki)=>(
                                                 <td key={key} style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:[0,2].includes(ki)?"#93c5fd":[1,3].includes(ki)?"#6ee7b7":ki===4?"#c4b5fd":ki===5?"#fbbf24":"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any)[key] as number),0)}</td>
                                               ))}
@@ -1659,7 +1642,6 @@ export default function ApproverDashboard() {
                   </table>
                 </div>
 
-                {/* Summary footer */}
                 <div style={{ background:"#0a2540",padding:"10px 16px",display:"flex",gap:20,flexWrap:"wrap" }}>
                   {(()=>{
                     const lt = isEditing ? editTotals : (showBudgetAddPanel ? liveBudgetTotals() : null);
@@ -1687,7 +1669,6 @@ export default function ApproverDashboard() {
                 </div>
               </div>
 
-              {/* CAC banner + Decision panel */}
               {(()=>{
                 const _lt    = isEditing ? editTotals : (showBudgetAddPanel ? liveBudgetTotals() : null);
                 const bgAmt  = _lt ? _lt.totalBgauss : selected.activities.reduce((s,a)=>s+calcBgAmt(a.budget,a.additionalBudget,a.bgaussShare),0);
@@ -1746,7 +1727,6 @@ export default function ApproverDashboard() {
                 );
               })()}
 
-              {/* ══ BUDGET ADDITION PANEL — activates when dealer sent a request ══ */}
               {isAdmin&&selected.status==="Approved"&&dealerSentBack(selected)&&(
                 <div style={{ background:"#fff",border:"2px solid #f59e0b",borderRadius:10,padding:"20px",marginBottom:20,boxShadow:"0 2px 12px rgba(245,158,11,0.12)" }}>
                   <div style={{ display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:10 }}>
@@ -1831,19 +1811,16 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* Notify Dealer */}
               {isAdmin&&selected.status==="Approved"&&(
                 <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"20px",marginBottom:20 }}>
                   <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:8 }}>Notify Dealer</p>
                   {selected.dealerNotified&&<div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:12 }}>✓ Dealer notified{selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}</div>}
                   {!showNotifyDealer?(<button onClick={async()=>{
                     setShowNotifyDealer(true);
-                    // Priority: previously used email → look up by DealerName from dealer logins
                     if(selected.dealerEmail){
                       setDealerEmailMode("dealer"); setDealerEmailInput(selected.dealerEmail);
                     } else {
                       setDealerEmailMode("custom"); setDealerEmailInput("");
-                      // Auto-fetch from dealer accounts by matching DealerName
                       setDealerEmailFetching(true);
                       try {
                         const dealers = await fetchDealerUsers(instance);
@@ -1883,7 +1860,6 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* RSM / Admin finalised banners */}
               {!isAdmin&&selected.status!=="Pending"&&(
                 <div style={{ background:selected.status==="Approved"?"#f0fdf4":selected.status==="Rejected"?"#fef2f2":"#fef9c3",border:`1px solid ${selected.status==="Approved"?"#bbf7d0":selected.status==="Rejected"?"#fecaca":"#fde68a"}`,borderLeft:`4px solid ${selected.status==="Approved"?"#16a34a":selected.status==="Rejected"?"#dc2626":"#f59e0b"}`,borderRadius:10,padding:"16px 20px" }}>
                   <div style={{ display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4 }}><strong style={{ fontSize:14,color:selected.status==="Approved"?"#166634":selected.status==="Rejected"?"#991b1b":"#92400e" }}>{selected.status==="NeedsRevision"?"Revision requested":selected.status}</strong>{selected.decidedAt&&<span style={{ fontSize:12,color:"#6b7280" }}>{fmtDate(selected.decidedAt)}{selected.approvedBy&&` · ${selected.approvedBy}`}</span>}</div>
@@ -1901,7 +1877,6 @@ export default function ApproverDashboard() {
             </div>
           </div>
 
-          {/* Sticky save footer */}
           {isAdmin&&isEditing&&(
             <div style={{ background:"#fff",borderTop:"2px solid #e2e8f0",padding:"12px 24px",flexShrink:0,display:"flex",justifyContent:"flex-end",alignItems:"center",gap:12 }}>
               <span style={{ fontSize:12,color:"#f59e0b",fontWeight:600 }}>⚠ Unsaved changes</span>
