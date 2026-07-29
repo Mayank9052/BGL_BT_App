@@ -241,7 +241,10 @@ export default function ApproverDashboard() {
   const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
   const myEmail         = (account?.username ?? user?.email ?? "").toLowerCase();
   const FINAL_APPROVER  = "vijay.maurya@bgauss.com";
+  // Checker = ApproverEmail or ApproverEmail2 (both see Forward + Notify Dealer bulk actions)
+  const CHECKER_EMAILS  = ["mayank.maheshwari@bgauss.com", "oat@bgauss.com"];
   const isFinalApprover = myEmail === FINAL_APPROVER;
+  const isChecker       = isAdmin && CHECKER_EMAILS.includes(myEmail);
   const isForwardOnly   = isAdmin && !isFinalApprover;
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -281,7 +284,9 @@ export default function ApproverDashboard() {
   const [activityMasterList, setActivityMasterList] = useState<ActivityType[]>([]);
   const [activityGroups,     setActivityGroups]     = useState<ActivityGroup[]>([]);
   // Bulk approve
-  const [selectedIds,   setSelectedIds]   = useState<Set<string>>(new Set());
+  const [selectedIds,       setSelectedIds]       = useState<Set<string>>(new Set());
+  const [notifySelectedIds, setNotifySelectedIds] = useState<Set<string>>(new Set());
+  const [bulkNotifying,     setBulkNotifying]     = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkNote,      setBulkNote]      = useState("");
   const [showBulkPanel, setShowBulkPanel] = useState(false);
@@ -817,13 +822,18 @@ export default function ApproverDashboard() {
   // ── Bulk approve ───────────────────────────────────────────────────────────
   const toggleActuals=(activityId:string)=>
     setOpenActualsId((prev)=>prev===activityId?null:activityId);
-  const allPendingSelected =pendingFiltered.length>0&&pendingFiltered.every((p)=>selectedIds.has(p.id));
-  const somePendingSelected=pendingFiltered.some((p)=>selectedIds.has(p.id));
+  // Only count un-forwarded pending proposals for select-all logic
+  const forwardablePending  = pendingFiltered.filter(p=>!p.checkedByEmail);
+  const allPendingSelected  = forwardablePending.length>0 && forwardablePending.every(p=>selectedIds.has(p.id));
+  const somePendingSelected = forwardablePending.some(p=>selectedIds.has(p.id));
   const toggleSelectAll=()=>{
     if (allPendingSelected) setSelectedIds(new Set());
-    else setSelectedIds(new Set(pendingFiltered.map((p)=>p.id)));
+    else setSelectedIds(new Set(forwardablePending.map((p)=>p.id)));
   };
   const toggleOne=(id:string,isPending:boolean)=>{
+    // Don't allow selecting already-forwarded proposals
+    const p = proposals.find(x=>x.id===id);
+    if (p?.checkedByEmail) return;
     if (!isPending) return;
     setSelectedIds((prev)=>{ const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n; });
   };
@@ -840,6 +850,53 @@ export default function ApproverDashboard() {
     setSelectedIds(new Set()); setShowBulkPanel(false); setBulkNote("");
     showToast(fail===0?`✓ ${ok} proposal${ok>1?"s":""} approved.`:`${ok} approved, ${fail} failed.`,fail===0);
     setBulkApproving(false);
+  }
+
+
+  // ── Bulk Notify Dealer — same logic as individual modal Notify Dealer button ──
+  // For each selected proposal:
+  //   1. Use p.dealerEmail if already known
+  //   2. Otherwise auto-fetch from dealer accounts by matching DealerName
+  //   3. Call notifyDealer() — identical to clicking Notify Dealer in the modal
+  const handleBulkNotifyDealer = async () => {
+    if (notifySelectedIds.size === 0) return;
+    setBulkNotifying(true);
+    let successCount = 0; let failCount = 0; let noEmailCount = 0;
+    // Pre-fetch dealer accounts once for proposals that need email lookup
+    let dealerAccounts: Awaited<ReturnType<typeof fetchDealerUsers>> = [];
+    const needsFetch = Array.from(notifySelectedIds).some(id => {
+      const p = proposals.find(x => x.id === id);
+      return p && !p.dealerEmail;
+    });
+    if (needsFetch) {
+      try { dealerAccounts = await fetchDealerUsers(instance); } catch {}
+    }
+    for (const id of Array.from(notifySelectedIds)) {
+      const p = proposals.find(x => x.id === id);
+      if (!p) continue;
+      // Same email priority as modal: existing stored email → dealer account match
+      let email = p.dealerEmail ?? "";
+      if (!email) {
+        const match = dealerAccounts.find(d =>
+          d.dealerName?.trim().toLowerCase() === p.dealerName?.trim().toLowerCase() ||
+          (d as any).dealerCode === (p as any).dealerCode
+        );
+        email = match?.email ?? "";
+      }
+      if (!email) { noEmailCount++; continue; }
+      try {
+        const updated = await notifyDealer(id, email, instance);
+        setProposals(prev => prev.map(x => x.id === updated.id ? updated : x));
+        successCount++;
+      } catch { failCount++; }
+    }
+    setNotifySelectedIds(new Set());
+    setBulkNotifying(false);
+    const parts: string[] = [];
+    if (successCount > 0) parts.push(`✓ ${successCount} dealer${successCount > 1 ? "s" : ""} notified`);
+    if (failCount    > 0) parts.push(`${failCount} failed`);
+    if (noEmailCount > 0) parts.push(`${noEmailCount} skipped (no email found)`);
+    showToast(parts.join(" · "), failCount === 0 && noEmailCount === 0);
   };
 
   const dealerSentBack    =(p:ProposalResponse)=>(p as any).dealerSentBack;
@@ -926,6 +983,25 @@ export default function ApproverDashboard() {
                 <button onClick={()=>setSelectedIds(new Set())} style={{ background:"rgba(255,255,255,0.1)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,0.2)",borderRadius:7,padding:"8px 16px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
               </div>
             )}
+            {/* Bulk Notify Dealer — for Checker when approved proposals are selected in 2nd row */}
+            {isChecker&&notifySelectedIds.size>0&&(
+              <div style={{ background:"#166534",borderRadius:10,padding:"12px 18px",marginBottom:12,
+                display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
+                <span style={{ color:"#dcfce7",fontSize:13,fontWeight:600 }}>
+                  📧 {notifySelectedIds.size} approved proposal{notifySelectedIds.size>1?"s":""} selected for dealer notification
+                </span>
+                <button onClick={handleBulkNotifyDealer} disabled={bulkNotifying}
+                  style={{ background:"#fff",color:"#166534",border:"none",borderRadius:7,
+                    padding:"8px 20px",fontWeight:700,fontSize:13,
+                    cursor:bulkNotifying?"not-allowed":"pointer",opacity:bulkNotifying?0.7:1 }}>
+                  {bulkNotifying?`Notifying ${notifySelectedIds.size}…`:"📧 Notify Dealers"}
+                </button>
+                <button onClick={()=>setNotifySelectedIds(new Set())}
+                  style={{ background:"rgba(255,255,255,0.15)",color:"#dcfce7",
+                    border:"1px solid rgba(255,255,255,0.25)",borderRadius:7,
+                    padding:"8px 14px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
+              </div>
+            )}
             {isAdmin&&isFinalApprover&&selectedIds.size>0&&(
               <div style={{ background:"#0a2540",borderRadius:10,padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
                 <span style={{ color:"#e2e8f0",fontSize:13,fontWeight:600 }}>{selectedIds.size} proposal{selectedIds.size>1?"s":""} selected</span>
@@ -956,6 +1032,31 @@ export default function ApproverDashboard() {
                       </div>
                     </th>
                   )}
+                  {/* 2nd checkbox col: Notify Dealer — Checker only, between col1 and Action */}
+                  {isChecker&&(
+                    <th style={{ width:44,textAlign:"center",padding:"8px 6px" }}>
+                      <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
+                        <input type="checkbox"
+                          checked={
+                            filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).length>0 &&
+                            filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).every(p=>notifySelectedIds.has(p.id))
+                          }
+                          onChange={()=>{
+                            const notifiable = filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified);
+                            const allSel = notifiable.length>0 && notifiable.every(p=>notifySelectedIds.has(p.id));
+                            if(allSel) setNotifySelectedIds(new Set());
+                            else setNotifySelectedIds(new Set(notifiable.map(p=>p.id)));
+                          }}
+                          style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
+                          title="Select all Approved (un-notified) for bulk dealer notification"/>
+                        {filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).length>0&&(
+                          <span style={{ fontSize:9,color:"#64748b",whiteSpace:"nowrap" }}>
+                            {filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).length} appr.
+                          </span>
+                        )}
+                      </div>
+                    </th>
+                  )}
                   <th>Action</th><th>Token</th><th>Submitted</th>
                   {isAdmin&&<th>RSM / TSM</th>}
                   <th>Dealer &amp; location</th><th>Month</th><th>Year</th><th>Activities</th>
@@ -975,7 +1076,41 @@ export default function ApproverDashboard() {
                         onClick={()=>openModal(p)}>
                         {isAdmin&&(
                           <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>
-                            {isPending?<input type="checkbox" checked={isChecked} onChange={()=>toggleOne(p.id,isPending)} style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}/>:<span style={{ color:"#e2e8f0",fontSize:11 }}>—</span>}
+                            {isPending ? (
+                              p.checkedByEmail ? (
+                                <span title={`Already forwarded by ${p.checkedByEmail}`}
+                                  style={{ fontSize:13,color:"#16a34a",fontWeight:700,cursor:"not-allowed",opacity:0.5 }}>✓</span>
+                              ) : (
+                                <input type="checkbox" checked={isChecked}
+                                  onChange={()=>toggleOne(p.id,isPending)}
+                                  style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
+                                  title="Select to forward to Final Approver"/>
+                              )
+                            ) : (
+                              <span style={{ color:"#e2e8f0",fontSize:11 }}>—</span>
+                            )}
+                          </td>
+                        )}
+                        {/* 2nd TD: Notify Dealer checkbox — Checker only, Approved only */}
+                        {isChecker&&(
+                          <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>
+                            {p.status==="Approved"?(
+                              p.dealerNotified?(
+                                <span title="Already notified — disabled" style={{ fontSize:11,color:"#16a34a",fontWeight:700,cursor:"not-allowed",opacity:0.5 }}>✓</span>
+                              ):(
+                                <input type="checkbox"
+                                  checked={notifySelectedIds.has(p.id)}
+                                  onChange={()=>setNotifySelectedIds(prev=>{
+                                    const next=new Set(prev);
+                                    next.has(p.id)?next.delete(p.id):next.add(p.id);
+                                    return next;
+                                  })}
+                                  style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
+                                  title="Select to bulk notify dealer"/>
+                              )
+                            ):(
+                              <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>
+                            )}
                           </td>
                         )}
                         <td onClick={(e)=>e.stopPropagation()}>
@@ -1572,7 +1707,19 @@ export default function ApproverDashboard() {
                             <p style={{ fontSize:13,color:"#6b7280",margin:"0 0 10px" }}>Forward to <strong>Final Approver</strong>{cacExceedsLimit&&<span style={{ marginLeft:6,fontSize:12,color:"#ef4444",fontWeight:600 }}>← Required (CAC exceeds limit)</span>}:</p>
                             {selected.checkedByEmail&&<div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:10 }}>✓ Already forwarded by {selected.checkedByEmail}{selected.checkedAt&&` on ${fmtDate(selected.checkedAt)}`}</div>}
                             <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
-                              <button onClick={handleForward} disabled={forwardLoading} style={{ background:cacExceedsLimit?"#dc2626":"#1e3a5f",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:forwardLoading?"not-allowed":"pointer",opacity:forwardLoading?0.7:1 }}>{forwardLoading?"Forwarding…":cacExceedsLimit?"📤 Forward for Deviation Approval (Required)":"📤 Forward to Final Approver"}</button>
+                              <button onClick={handleForward}
+                                  disabled={forwardLoading||!!selected.checkedByEmail}
+                                  title={selected.checkedByEmail?`Already forwarded by ${selected.checkedByEmail} — cannot forward again`:undefined}
+                                  style={{ background:selected.checkedByEmail?"#6b7280":cacExceedsLimit?"#dc2626":"#1e3a5f",
+                                    color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,
+                                    cursor:(forwardLoading||!!selected.checkedByEmail)?"not-allowed":"pointer",
+                                    opacity:(forwardLoading||!!selected.checkedByEmail)?0.6:1 }}>
+                                  {selected.checkedByEmail
+                                    ? "✓ Forwarded"
+                                    : forwardLoading ? "Forwarding…"
+                                    : cacExceedsLimit ? "📤 Forward for Deviation Approval (Required)"
+                                    : "📤 Forward to Final Approver"}
+                                </button>
                               <button style={{ background:"#dc2626",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }} onClick={async()=>{ const reason=window.prompt("Reason for rejection (shown to Maker):"); if(!reason||!reason.trim()) return; try { setActionLoading(true); await decideProposal(selected.id,{status:"Rejected",approverNote:reason.trim(),approvedBy:account?.username??null},instance); setProposals(prev=>prev.map(p=>p.id===selected.id?{...p,status:"Rejected",approverNote:reason.trim()}:p)); setSelected(prev=>prev?{...prev,status:"Rejected",approverNote:reason.trim()}:null); showToast("Proposal rejected.",true); } catch { showToast("Rejection failed.",false); } finally { setActionLoading(false); } }}>✕ Reject Proposal</button>
                             </div>
                           </div>
@@ -1710,7 +1857,7 @@ export default function ApproverDashboard() {
                         }
                       } catch {} finally { setDealerEmailFetching(false); }
                     }
-                  }} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }}>{selected.dealerNotified?"📧 Send Again":"📧 Notify Dealer"}</button>):(
+                  }} style={{ background:selected.dealerNotified?"#6b7280":"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:selected.dealerNotified?"not-allowed":"pointer",opacity:selected.dealerNotified?0.6:1 }} disabled={selected.dealerNotified} title={selected.dealerNotified?"Dealer already notified — use table checkbox to resend":"Send activity details to dealer"}>{selected.dealerNotified?"✓ Notified":"📧 Notify Dealer"}</button>):(
                     <div style={{ background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:16 }}>
                       <div style={{ display:"flex",flexDirection:"column",gap:8,marginBottom:14 }}>
                         {selected.dealerEmail&&(<label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="dealer"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="dealer"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="dealer" checked={dealerEmailMode==="dealer"} onChange={()=>{setDealerEmailMode("dealer");setDealerEmailInput(selected.dealerEmail??"");}}/><div><span style={{ fontWeight:600,color:"#0a2540" }}>Dealer (previously used)</span> <span style={{ color:"#6b7280",fontSize:12 }}>{selected.dealerEmail}</span></div></label>)}
