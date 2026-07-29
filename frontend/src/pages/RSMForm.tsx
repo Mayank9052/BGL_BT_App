@@ -536,21 +536,7 @@ export default function RSMProposalForm() {
   };
 
   const cellVal = (r: Record<string, unknown>, ...keys: string[]): string => {
-    for (const k of keys) {
-      // Try exact key first, then key with newlines removed (Excel headers can contain \n)
-      for (const tryKey of [k, k.replace(/\n/g, " ").trim(), k.replace(/\n/g, "").trim()]) {
-        const v = r[tryKey];
-        if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
-        // Also try matching any key that contains this string (handles trailing whitespace/newlines in header)
-        const matchKey = Object.keys(r).find(rk =>
-          rk.replace(/\n/g, " ").trim().toLowerCase() === tryKey.toLowerCase()
-        );
-        if (matchKey) {
-          const mv = r[matchKey];
-          if (mv !== undefined && mv !== null && String(mv).trim() !== "") return String(mv).trim();
-        }
-      }
-    }
+    for (const k of keys) { const v = r[k]; if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim(); }
     return "";
   };
   const parseExcelDate = (v: unknown): string => {
@@ -601,18 +587,9 @@ export default function RSMProposalForm() {
         const realDataRows = rows.filter((r) => !isSkippableRow(cellVal(r, "Activity Name", "activityName")));
         if (realDataRows.length === 0) { setXlsxMsg({ ok: false, text: "No data rows found." }); return; }
         const unknownTypes: string[] = []; const validRows: typeof rows = [];
-        const cascadeWarnings: string[] = [];
         rows.forEach((r) => {
           const rawName = cellVal(r, "Activity Name", "activityName");
           if (isSkippableRow(rawName)) return;
-          // Cascade validation: check subcategory belongs to this activity
-          const subName = cellVal(r, "Subcategory", "subcategory");
-          if (rawName && subName) {
-            const grp = activityGroups.find(g => g.activityName.toLowerCase() === rawName.toLowerCase());
-            if (grp && !grp.subcategories.some(s => s.subcategory.toLowerCase() === subName.toLowerCase())) {
-              cascadeWarnings.push(`"${subName}" is not a valid subcategory for "${rawName}"`);
-            }
-          }
           const isKnown = validNames.size === 0 || validNames.has(rawName.toLowerCase());
           if (!isKnown) { if (!unknownTypes.includes(rawName)) unknownTypes.push(rawName); } else validRows.push(r);
         });
@@ -627,24 +604,10 @@ export default function RSMProposalForm() {
           const leadRaw     = cellVal(r, "Lead Target", "leadTarget", "Target", "target");
           const salesPct    = cellVal(r, "Sales %", "Sales % (locks Retail)", "Sales%", "salesPercent");
           const retailRaw   = cellVal(r, "Retail Target", "retailTarget");
-          // Budget column has ₹ sign — handle both "Budget (₹)" and "Budget"
           const budgetRaw   = cellVal(r, "Budget (₹)", "Budget", "budget");
-          // Special Approval Budget — col K (header contains newline, cellVal normalizes it)
-          const addBudget   = cellVal(r,
-            "Special Approval Budget (₹)", "Special Approval Budget",
-            "Additional Budget", "additionalBudget"
-          ) || "0";
-          // BGauss Share % — header contains newline, cellVal normalizes
-          const shareRaw    = cellVal(r,
-            "BGauss Share %", "BGauss Share", "bgaussShare"
-          ) || "100";
-          // Start/End date — read directly, cellVal normalizes newline in key
-          const startDateRaw = cellVal(r,
-            "Start Date (DD-MM-YYYY)", "Start Date", "startDate"
-          ) as unknown;
-          const endDateRaw   = cellVal(r,
-            "End Date (DD-MM-YYYY)", "End Date", "endDate"
-          ) as unknown;
+          const addBudget   = cellVal(r, "Special Approval Budget (₹)", "Special Approval Budget",
+                                       "Additional Budget", "additionalBudget") || "0";
+          const shareRaw    = cellVal(r, "BGauss Share %", "BGauss Share", "bgaussShare") || "100";
 
           // ── Activity group lookup for auto-fill ──────────────────────────────
           const group    = activityGroups.find((g) =>
@@ -686,8 +649,8 @@ export default function RSMProposalForm() {
             salesPercent:     salesPct,
             retailTarget:     finalRetail,
             retailLocked,
-            startDate:        parseExcelDate(startDateRaw),
-            endDate:          parseExcelDate(endDateRaw),
+            startDate:        parseExcelDate(r["Start Date (dd-MM-yyyy)"] ?? r["Start Date"] ?? r["startDate"] ?? ""),
+            endDate:          parseExcelDate(r["End Date (dd-MM-yyyy)"]   ?? r["End Date"]   ?? r["endDate"]   ?? ""),
             budget:           budgetRaw || String(budgetNum),
             additionalBudget: addBudget || "0",
             bgaussShare:      shareVal,
@@ -706,263 +669,176 @@ export default function RSMProposalForm() {
           withAdd    > 0 ? `${withAdd} with Special Approval budget` : "",
         ].filter(Boolean).join(" · ");
         const skippedNote = skippedCount > 0 ? ` · ${skippedCount} header/example row(s) skipped` : "";
-        const cascadeNote = cascadeWarnings.length > 0
-          ? ` ⚠ ${cascadeWarnings.length} subcategory mismatch${cascadeWarnings.length>1?"es":""}: ${cascadeWarnings.slice(0,2).join("; ")}${cascadeWarnings.length>2?" …":""}`
-          : "";
-        setXlsxMsg({ ok: cascadeWarnings.length===0, text: `${mapped.length} activit${mapped.length!==1?"ies":"y"} imported${skippedNote}${calcNote ? " · " + calcNote : ""}${cascadeNote}.` });
+        setXlsxMsg({ ok: true, text: `${mapped.length} activit${mapped.length!==1?"ies":"y"} imported${skippedNote}${calcNote ? " · " + calcNote : ""}.` });
       } catch { setXlsxMsg({ ok: false, text: "Could not parse the file. Please use the provided template." }); }
     };
     reader.onerror = () => setXlsxMsg({ ok: false, text: "Failed to read the file." });
     reader.readAsArrayBuffer(file); e.target.value = "";
   };
 
-    // ── downloadTemplate ────────────────────────────────────────────────────────
-  // Generates Excel template CLIENT-SIDE from live activityGroups.
-  // Features:
-  //   Col A: Activity Name dropdown (ActivityNames named range)
-  //   Col B: Cascade Subcategory via INDIRECT(subs_<act>) named range
-  //   Col D: ATL/BTL auto-fills via VLOOKUP formula from _AtlMap
-  //   Col M: BGauss Amount = (J+K)×L/100 formula
-  //   Col N: Total Budget = J+K formula
+  // NOTE: downloadTemplate() is now a fallback only.
+  // The ⬇ Template button links directly to /template/BTL_Activity_Template.xlsx
+  // which is the pre-built static file in wwwroot/template/ (generated from Activity Master DB).
+  // Re-run the generator script when Activity Master changes.
   const downloadTemplate = () => {
-    if (!activityTypesLoaded || !activityGroups.length) {
-      alert("Activity types are still loading. Please wait and try again.");
-      return;
-    }
-
     const wb = XLSX.utils.book_new();
-    const safeName = (s: string) => "subs_" + s.replace(/[^a-zA-Z0-9_]/g, "_");
-    const actNames = activityGroups.map(g => g.activityName);
-    const DATA_ROW = 4;
-    const MAX_ROWS = 50;
 
-    // ── _Data sheet (hidden) ─────────────────────────────────────────────────
-    // Col A: activity names | Col B: ATL/BTL | Col C+: per-activity subcategories
-    const dataHeader: string[] = ["_ActivityNames", "_Category"];
-    activityGroups.forEach(g => dataHeader.push(`_subs_${g.activityName}`));
+    // ── Build flat lookup: activityName → subcategories[]
+    const actGroups = activityGroups;
+    const actNames  = actGroups.map((g) => g.activityName);
 
-    const maxSubs = Math.max(...activityGroups.map(g => g.subcategories?.length ?? 0), 1);
-    const dataBody: (string | number)[][] = [];
-    for (let ri = 0; ri < Math.max(actNames.length, maxSubs); ri++) {
-      const row: (string | number)[] = [];
-      row[0] = ri < actNames.length ? actNames[ri] : "";
-      row[1] = ri < activityGroups.length ? (activityGroups[ri].activityType ?? "") : "";
-      activityGroups.forEach((g, gi) => {
-        row[gi + 2] = g.subcategories?.[ri]?.subcategory ?? "";
-      });
-      dataBody.push(row);
-    }
-    const wsData = XLSX.utils.aoa_to_sheet([dataHeader, ...dataBody]);
-    XLSX.utils.book_append_sheet(wb, wsData, "_Data");
+    // ── Sheet 1: Activities (data entry) ─────────────────────────────────────
+    const MAX_ROWS = 30;
 
-    // ── Named ranges ─────────────────────────────────────────────────────────
-    if (!wb.Workbook) wb.Workbook = { Sheets: [], Names: [] };
-    if (!wb.Workbook.Names) wb.Workbook.Names = [];
+    // Row 1: column group labels
+    const groupRow = [
+      "★ REQUIRED","★ REQUIRED","★ REQUIRED","Auto",
+      "★ REQUIRED","Optional","Auto / Manual",
+      "★ REQUIRED","★ REQUIRED","★ REQUIRED",
+      "Optional","★ REQUIRED","Auto","Auto","Optional",
+    ];
+    // Row 2: column names
+    const headerRow = [
+      "Activity Name","Subcategory","QTY","Category (ATL/BTL)",
+      "Lead Target","Sales % (locks Retail)","Retail Target",
+      "Start Date (dd-MM-yyyy)","End Date (dd-MM-yyyy)","Budget (₹)",
+      "Special Approval Budget (₹)","BGauss Share %",
+      "BGauss Amount (₹)","Total Budget (₹)","Remarks",
+    ];
+    // Row 3: hints
+    const hintRow = [
+      "Pick from dropdown ▼",
+      "Pick from dropdown ▼ (depends on Activity Name)",
+      "1 to 5 ▼",
+      "Auto-filled from Activity Name",
+      "Enter number e.g. 20",
+      "e.g. 3  →  Retail = Lead × Sales%",
+      "Auto if Sales% filled, else enter manually",
+      "e.g. 01-07-2026",
+      "e.g. 31-07-2026",
+      "e.g. 50000",
+      "0 if none (bypasses CAC limit)",
+      "100 / 70 / 50 ▼",
+      "= (Budget + Special) × BGauss%",
+      "= Budget + Special Approval",
+      "Notes for approver",
+    ];
 
-    // ActivityNames + _AtlMap
-    wb.Workbook.Names.push({ Name: "ActivityNames", Ref: `_Data!$A$2:$A$${1 + actNames.length}` });
-    wb.Workbook.Names.push({ Name: "_AtlMap",       Ref: `_Data!$A$2:$B$${1 + actNames.length}` });
-
-    // subs_<activity> per activity
-    activityGroups.forEach((g, gi) => {
-      const nSubs = g.subcategories?.length ?? 0;
-      if (nSubs === 0) return;
-      const colLetter = XLSX.utils.encode_col(gi + 2); // C=2,D=3...
-      wb.Workbook!.Names!.push({
-        Name: safeName(g.activityName),
-        Ref: `_Data!$${colLetter}$2:$${colLetter}$${1 + nSubs}`,
-      });
+    // Rows 4+: example rows (one per activity group, first 3)
+    const exampleRows: (string|number)[][] = [];
+    actGroups.slice(0, 3).forEach((g, i) => {
+      const sub = g.subcategories?.[0];
+      const lead = 20;
+      const salesPct = 3;
+      const retail = Math.round(lead * salesPct / 100);
+      const budget = 50000;
+      const addBudget = 0;
+      const share = 100;
+      exampleRows.push([
+        g.activityName,
+        sub?.subcategory ?? "",
+        "1",
+        g.activityType,
+        lead,
+        salesPct,
+        retail,
+        "01-07-2026",
+        "31-07-2026",
+        budget,
+        addBudget,
+        share,
+        Math.round((budget + addBudget) * share / 100),
+        budget + addBudget,
+        i === 0 ? "EXAMPLE ROW — delete before importing" : "",
+      ]);
     });
 
-    // ── Activities sheet ─────────────────────────────────────────────────────
-    const grpLabels = [
-      "★ REQUIRED","★ REQUIRED","★ REQUIRED","🔒 Auto",
-      "★ REQUIRED","Optional","★ REQUIRED","★ REQUIRED",
-      "★ REQUIRED","★ REQUIRED","Optional","★ REQUIRED",
-      "🔒 Auto","🔒 Auto","Optional",
-    ];
-    const colHeaders = [
-      "Activity Name *","Subcategory","QTY","Category (ATL/BTL)",
-      "Lead Target","Sales %","Retail Target",
-      "Start Date (DD-MM-YYYY)","End Date (DD-MM-YYYY)","Budget (Rs)",
-      "Special Approval Budget (Rs)","BGauss Share %",
-      "BGauss Amount (Rs)","Total Budget (Rs)","Remarks",
-    ];
-    const hints = [
-      "Select ▼","Select ▼ (auto by col A)","1–max",
-      "Auto ▼ (VLOOKUP — do not edit)","Number","e.g. 3",
-      "Auto if Sales% set","DD-MM-YYYY","DD-MM-YYYY",
-      "Number only","0 if none","100 / 70 / 50 ▼",
-      "=(J+K)×L÷100","=J+K","Optional",
-    ];
-
-    // Example rows (first 3 activities)
-    const exRows: (string | number)[][] = activityGroups.slice(0, 3).map((g, i) => [
-      g.activityName,
-      g.subcategories?.[0]?.subcategory ?? "",
-      1,
-      g.activityType ?? "",   // example rows: pre-fill category
-      20, "", "",
-      "01-07-2026", "31-07-2026",
-      50000, 0, 100,
-      50000, 50000,
-      i === 0 ? "EXAMPLE — delete before import" : "",
-    ]);
-
-    // Blank data rows with placeholder for formulas
-    const blankRows: (string | number)[][] = [];
-    for (let i = exRows.length; i < MAX_ROWS; i++) blankRows.push(Array(15).fill(""));
-
-    const allRows = [grpLabels, colHeaders, hints, ...exRows, ...blankRows];
-    const wsAct = XLSX.utils.aoa_to_sheet(allRows);
-
-    // Column widths
-    wsAct["!cols"] = [
-      {wch:26},{wch:28},{wch:6},{wch:14},{wch:12},{wch:9},{wch:14},
-      {wch:18},{wch:18},{wch:14},{wch:22},{wch:10},{wch:18},{wch:16},{wch:30},
-    ];
-
-    // Inject VLOOKUP + calculation formulas for each data row
-    for (let row = DATA_ROW; row < DATA_ROW + MAX_ROWS; row++) {
-      const r = row - 1; // 0-based row index in sheet (row 1 = index 0)
-      const rowStr = String(row);
-      // Col D (index 3): VLOOKUP to auto-fill ATL/BTL from _AtlMap
-      const colD = XLSX.utils.encode_cell({ r, c: 3 });
-      wsAct[colD] = {
-        t: "s",
-        f: `IF(A${rowStr}="","",IFERROR(VLOOKUP(A${rowStr},_AtlMap,2,FALSE),""))`,
-        v: "",
-      };
-      // Only add calc formulas for non-example rows (examples already have values)
-      if (row >= DATA_ROW + exRows.length) {
-        // Col M (index 12): BGauss Amount
-        const colM = XLSX.utils.encode_cell({ r, c: 12 });
-        wsAct[colM] = {
-          t: "n",
-          f: `IF(J${rowStr}="","",ROUND((J${rowStr}+K${rowStr})*L${rowStr}/100,0))`,
-          v: "",
-        };
-        // Col N (index 13): Total Budget
-        const colN = XLSX.utils.encode_cell({ r, c: 13 });
-        wsAct[colN] = {
-          t: "n",
-          f: `IF(J${rowStr}="","",J${rowStr}+K${rowStr})`,
-          v: "",
-        };
-      }
+    const allRows: (string|number|null)[][] = [groupRow, headerRow, hintRow, ...exampleRows];
+    for (let i = exampleRows.length; i < MAX_ROWS; i++) {
+      allRows.push(Array(15).fill(""));
     }
 
-    // Update sheet range to include all rows
-    wsAct["!ref"] = `A1:O${DATA_ROW + MAX_ROWS - 1}`;
-
-    // ── Data validations ─────────────────────────────────────────────────────
-    if (!wsAct["!dataValidation"]) wsAct["!dataValidation"] = [];
-
-    // Col A: Activity Name from named range
-    wsAct["!dataValidation"].push({
-      sqref: `A${DATA_ROW}:A${DATA_ROW + MAX_ROWS - 1}`,
-      type: "list",
-      formula1: "ActivityNames",
-      showDropDown: false,
-      allowBlank: true,
-      showErrorMessage: true,
-      errorTitle: "Invalid Activity Name",
-      error: "Select from the dropdown list",
-      showInputMessage: true,
-      promptTitle: "Activity Name *",
-      prompt: "Select activity — Subcategory (col B) and Category (col D) auto-update",
-    });
-
-    // Col B: Cascade via INDIRECT per row
-    for (let row = DATA_ROW; row < DATA_ROW + MAX_ROWS; row++) {
-      wsAct["!dataValidation"].push({
-        sqref: `B${row}`,
-        type: "list",
-        formula1: `INDIRECT("subs_"&SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(A${row}," ","_"),"-","_"),"(","_"),")","_"),"/","_"))`,
-        showDropDown: false,
-        allowBlank: true,
-        showErrorMessage: false,
-        showInputMessage: true,
-        promptTitle: "Subcategory",
-        prompt: "Pick subcategory matching Activity Name in col A",
-      });
-    }
-
-    // Col L: BGauss Share %
-    wsAct["!dataValidation"].push({
-      sqref: `L${DATA_ROW}:L${DATA_ROW + MAX_ROWS - 1}`,
-      type: "list", formula1: '"100,70,50"',
-      showDropDown: false, allowBlank: true,
-      showErrorMessage: true, errorTitle: "Invalid", error: "Must be 100, 70 or 50",
-    });
-
-    // Col C: QTY
-    wsAct["!dataValidation"].push({
-      sqref: `C${DATA_ROW}:C${DATA_ROW + MAX_ROWS - 1}`,
-      type: "whole", operator: "between", formula1: "1", formula2: "20",
-      allowBlank: true,
-    });
-
-    // Cols J-K: Budget >= 0
-    wsAct["!dataValidation"].push({
-      sqref: `J${DATA_ROW}:K${DATA_ROW + MAX_ROWS - 1}`,
-      type: "decimal", operator: "greaterThanOrEqual", formula1: "0",
-      allowBlank: true,
-    });
-
-    XLSX.utils.book_append_sheet(wb, wsAct, "Activities");
-
-    // ── Subcategory Reference ─────────────────────────────────────────────────
-    const refRows: (string | number)[][] = [
-      ["Activity Master — Subcategory & Max QTY Reference"],
-      ["Activity Name","ATL / BTL","Subcategory","Max QTY"],
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
+    ws["!cols"] = [
+      {wch:28},{wch:30},{wch:6},{wch:14},{wch:12},{wch:22},{wch:14},
+      {wch:22},{wch:22},{wch:14},{wch:26},{wch:14},{wch:18},{wch:18},{wch:28},
     ];
-    activityGroups.forEach(g => {
-      (g.subcategories ?? []).forEach((s, si) => {
-        refRows.push([
-          si === 0 ? g.activityName : "",
-          si === 0 ? (g.activityType ?? "") : "",
-          s.subcategory,
-          s.maxQty ?? 5,
-        ]);
+    XLSX.utils.book_append_sheet(wb, ws, "Activities");
+
+    // ── Sheet 2: _ActivityNames (Activity → Category + MaxQty) ───────────────
+    const namesRows: string[][] = [["Activity Name","Category","Max QTY"]];
+    actGroups.forEach((g) => {
+      namesRows.push([g.activityName, g.activityType, String(g.subcategories?.[0]?.maxQty ?? 5)]);
+    });
+    const wsNames = XLSX.utils.aoa_to_sheet(namesRows);
+    wsNames["!cols"] = [{wch:30},{wch:10},{wch:8}];
+    XLSX.utils.book_append_sheet(wb, wsNames, "_ActivityNames");
+
+    // ── Sheet 3: _Subcategories (Activity → Subcategory + MaxQty) ────────────
+    const subRows: string[][] = [["Activity Name","Subcategory","Max QTY"]];
+    actGroups.forEach((g) => {
+      (g.subcategories ?? []).forEach((s) => {
+        subRows.push([g.activityName, s.subcategory, String(s.maxQty ?? 5)]);
       });
     });
+    const wsSub = XLSX.utils.aoa_to_sheet(subRows);
+    wsSub["!cols"] = [{wch:30},{wch:32},{wch:8}];
+    XLSX.utils.book_append_sheet(wb, wsSub, "_Subcategories");
+
+    // ── Sheet 4: Valid Values (quick reference card) ──────────────────────────
+    const refRows: (string|number)[][] = [
+      ["=== VALID ACTIVITY NAMES ==="],
+      ...actNames.map((n) => [n]),
+      [""],
+      ["=== BGAUSS SHARE OPTIONS ==="],
+      ["100"],["70"],["50"],
+      [""],
+      ["=== DATE FORMAT ==="],
+      ["dd-MM-yyyy  (e.g. 15-07-2026)"],
+    ];
     const wsRef = XLSX.utils.aoa_to_sheet(refRows);
-    wsRef["!cols"] = [{wch:28},{wch:12},{wch:32},{wch:10}];
-    XLSX.utils.book_append_sheet(wb, wsRef, "Subcategory Reference");
+    wsRef["!cols"] = [{wch:40}];
+    XLSX.utils.book_append_sheet(wb, wsRef, "Valid Values");
 
-    // ── Instructions ─────────────────────────────────────────────────────────
-    const instrRows: (string)[][] = [
-      ["BGauss BTL — Activity Plan Template"],
+    // ── Sheet 5: Instructions ─────────────────────────────────────────────────
+    const instrRows: (string|number)[][] = [
+      ["BGauss BTL — Activity Template Instructions"],
       [""],
-      ["Column","Field","How to fill"],
-      ["A *","Activity Name","⬇ Dropdown — select FIRST. Col B (Subcategory) and Col D (Category) update automatically."],
-      ["B","Subcategory","⬇ Cascade dropdown — shows only valid subcategories for col A activity."],
-      ["C","QTY","1 to max allowed per subcategory (see Subcategory Reference sheet)."],
-      ["D","Category (ATL/BTL)","🔒 Auto — VLOOKUP fills ATL or BTL from Activity Master. Do NOT type here."],
-      ["E","Lead Target","Expected leads count."],
-      ["F","Sales %","Optional. e.g. 3 → Retail = Lead × 3%."],
-      ["G","Retail Target","Leave blank if Sales % filled. Else enter manually."],
-      ["H","Start Date","DD-MM-YYYY e.g. 01-07-2026"],
-      ["I","End Date","DD-MM-YYYY. Must be ≥ Start Date."],
-      ["J","Budget (₹)","Numbers only."],
-      ["K","Special Approval Budget","0 if not needed."],
-      ["L","BGauss Share %","⬇ Dropdown: 100 / 70 / 50"],
-      ["M","BGauss Amount","🔒 Auto formula: (J+K) × L ÷ 100"],
-      ["N","Total Budget","🔒 Auto formula: J + K"],
-      ["O","Remarks","Optional notes."],
+      ["HOW TO FILL THE ACTIVITIES SHEET"],
       [""],
-      ["⚠ DELETE rows 4–6 (EXAMPLE rows) before importing into the portal."],
-      [`Generated: ${new Date().toLocaleDateString("en-IN")} · ${activityGroups.length} activities from Activity Master`],
+      ["Column A — Activity Name","Pick from the dropdown list (see Valid Values sheet for all options)"],
+      ["Column B — Subcategory","Pick from dropdown based on Activity Name selected in column A"],
+      ["Column C — QTY","Enter quantity: 1 to max QTY shown in _Subcategories sheet"],
+      ["Column D — Category","Do NOT edit — auto-filled from Activity Name on import"],
+      ["Column E — Lead Target","Expected number of leads from this activity (number only)"],
+      ["Column F — Sales %","Optional. e.g. 3 means Retail = Lead × 3% (auto-calculated on import)"],
+      ["Column G — Retail Target","Leave blank if Sales % is filled. Otherwise enter manually."],
+      ["Column H — Start Date","Activity start date. Format: dd-MM-yyyy (e.g. 01-07-2026)"],
+      ["Column I — End Date","Activity end date. Format: dd-MM-yyyy. Must be ≥ Start Date."],
+      ["Column J — Budget (₹)","Approved budget amount in ₹ (numbers only, no commas or ₹ symbol)"],
+      ["Column K — Special Approval Budget","Enter 0 if none. Additional budget beyond CAC limit (needs deviation approval)"],
+      ["Column L — BGauss Share %","100 = BGauss pays 100%, 70 = BGauss pays 70%, 50 = BGauss pays 50%"],
+      ["Column M — BGauss Amount","Auto-calculated: (Budget + Special) × BGauss Share %. Do not edit."],
+      ["Column N — Total Budget","Auto-calculated: Budget + Special Approval. Do not edit."],
+      ["Column O — Remarks","Optional notes for the approver"],
+      [""],
+      ["IMPORTANT"],
+      ["• Delete the EXAMPLE ROWS (rows 4-6) before importing"],
+      ["• Do NOT rename or delete sheets starting with _ (underscore)"],
+      ["• Do NOT change column order"],
+      ["• BGauss Amount and Total Budget are recalculated automatically on import"],
+      ["• CAC is automatically computed: BGauss Amount ÷ Retail Target"],
+      ["• If CAC exceeds limit, use Special Approval Budget column to add extra"],
+      [""],
+      ["SUBCATEGORY REFERENCE"],
+      ["See the _Subcategories sheet for the full list of valid subcategories per activity"],
     ];
     const wsInstr = XLSX.utils.aoa_to_sheet(instrRows);
-    wsInstr["!cols"] = [{wch:8},{wch:30},{wch:68}];
+    wsInstr["!cols"] = [{wch:40},{wch:70}];
     XLSX.utils.book_append_sheet(wb, wsInstr, "Instructions");
 
     XLSX.writeFile(wb, "BTL_Activity_Template.xlsx");
   };
-
-
 
   const handleSubmit = async () => {
     if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
@@ -1400,18 +1276,15 @@ export default function RSMProposalForm() {
             action={
               <div className="rsm-card-actions">
                 <input ref={xlsxRef} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleExcelImport}/>
-                <button
-                  type="button"
+                <a
+                  href={`${(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "")}/template/BTL_Activity_Template.xlsx`}
+                  download="BTL_Activity_Template.xlsx"
                   className="rsm-tpl-btn"
-                  onClick={downloadTemplate}
-                  disabled={!activityTypesLoaded}
-                  title={activityTypesLoaded
-                    ? "Download Excel template with Activity Name dropdown + cascade Subcategory dropdown"
-                    : "Loading activity types…"}
-                  style={{ opacity: activityTypesLoaded ? 1 : 0.5, cursor: activityTypesLoaded ? "pointer" : "not-allowed" }}
+                  style={{ textDecoration:"none",display:"inline-flex",alignItems:"center",gap:5 }}
+                  title="Download pre-built template with Activity Name and Subcategory dropdowns (from Activity Master DB)"
                 >
                   ⬇ Template
-                </button>
+                </a>
                 <button className="rsm-xlsx-btn" type="button" onClick={() => xlsxRef.current?.click()} disabled={!activityTypesLoaded}>
                   {activityTypesLoaded?"📥 Import":"⏳ Loading…"}
                 </button>
@@ -1698,7 +1571,7 @@ export default function RSMProposalForm() {
                     <th className="rsm-th rsm-th--right">BGauss%</th>
                     <th className="rsm-th rsm-th--right">BGauss Amt</th>
                     <th className="rsm-th rsm-th--right">Total</th>
-                    <th className="rsm-th">Files</th>
+                    {/* <th className="rsm-th">Files</th> */}
                   </tr>
                 </thead>
                 <tbody>
@@ -1728,7 +1601,7 @@ export default function RSMProposalForm() {
                         ₹{inr(bgaussAmount(a.budget,a.additionalBudget,a.bgaussShare))}
                       </td>
                       <td className="rsm-td rsm-td--total">₹{inr(num(a.budget)+num(a.additionalBudget))}</td>
-                      <td className="rsm-td">{a.mediaFiles.length>0?`${a.mediaFiles.length} file(s)`:"—"}</td>
+                      {/* <td className="rsm-td">{a.mediaFiles.length>0?`${a.mediaFiles.length} file(s)`:"—"}</td> */}
                     </tr>
                   ))}
                 </tbody>

@@ -35,6 +35,16 @@ function captureGeo(): Promise<{ lat: number; lng: number } | null> {
   });
 }
 const mapsUrl = (lat: number, lng: number) => `https://maps.google.com/?q=${lat},${lng}`;
+// ── NEW: matches ApproverDashboard — Setup Count auto-fills Enquiry/TD plan ──
+const DEFAULT_PLAN_PER_SETUP = 35;
+// ── NEW: bounds for Actual Start/End — current + next month, matches Approver ──
+function getActualDateRange() {
+  const now = new Date();
+  const min = new Date(now.getFullYear(), now.getMonth(), 1);
+  const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+  const fmt = (d: Date) => d.toISOString().split("T")[0];
+  return { min: fmt(min), max: fmt(max) };
+}
 
 // ─── Media helpers ────────────────────────────────────────────────────────────
 function mediaIcon(t: string | null) {
@@ -81,7 +91,8 @@ interface ProofMedia {
   capturedAt:string; latitude?:number|null; longitude?:number|null;
 }
 interface DailyEntry {
-  date:string; enquiryPlanned:number; enquiryActual:number;
+  date:string; setupCount:number;   // ← NEW: setupCount
+  enquiryPlanned:number; enquiryActual:number;
   testDrivePlanned:number; testDriveActual:number;
   bookingActual:number; retailActual:number; leadsPunched:number;
 }
@@ -102,6 +113,7 @@ function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[]
   const cap=e<today?e:today;
   for (const d=new Date(s);d<=cap;d.setDate(d.getDate()+1)) {
     entries.push({ date:d.toISOString().split("T")[0],
+      setupCount:0,   // ← NEW
       enquiryPlanned:0,enquiryActual:0,testDrivePlanned:0,testDriveActual:0,
       bookingActual:0,retailActual:0,leadsPunched:0 });
   }
@@ -318,12 +330,17 @@ export default function DealerDashboard() {
 
   // ── Proof upload (with GPS) ────────────────────────────────────────────────
   const handleProofUpload = async (activityId:string, files:FileList) => {
+    // ── FIX: call captureGeo() FIRST, before any other await — avoids the
+    // "Only request geolocation in response to a user gesture" console
+    // violation by keeping the call as close to the click's stack as possible.
+    const geoPromise = captureGeo();
+
     const proposalId = selected?.id;
     if (!proposalId) { showToast("No proposal selected.", false); return; }
     const fileArray = Array.from(files);
     setActualsData(prev => ({ ...prev, [activityId]: { ...prev[activityId], proofUploading:true } }));
     try {
-      const geo = await captureGeo();
+      const geo = await geoPromise;
       const capturedAt = new Date().toISOString();
       for (const file of fileArray) {
         const uploaded = await uploadFileDealer(file);
@@ -384,6 +401,40 @@ export default function DealerDashboard() {
   const removeInvoice = (activityId:string, id:string) =>
     setActualsData(prev => ({ ...prev, [activityId]: { ...prev[activityId],
       invoiceMedia:prev[activityId].invoiceMedia.filter(m => m.id!==id) } }));
+
+  // ── NEW: date-wise photo upload — upload a photo tagged to a SPECIFIC
+  // history-table date, same feature as ApproverDashboard's inline 📷 button,
+  // but authenticated via dealerJwt() instead of MSAL. ──────────────────────
+  const handleDateWiseUpload = async (activityId:string, entryDate:string, files:FileList) => {
+    const geoPromise = captureGeo();
+    const proposalId = selected?.id;
+    if (!proposalId) { showToast("No proposal selected.", false); return; }
+    const fileArray = Array.from(files);
+    try {
+      const geo = await geoPromise;
+      for (const file of fileArray) {
+        const uploaded = await uploadFileDealer(file);
+        // Stamp capturedAt with the specific history-row date (noon UTC),
+        // not "now" — so it groups correctly under that date in the table.
+        const saved = await saveMediaToDb(proposalId, activityId, {
+          fileUrl:uploaded.url, fileName:uploaded.fileName, fileType:uploaded.fileType,
+          capturedAt:`${entryDate}T12:00:00.000Z`,
+          latitude:geo?.lat??null, longitude:geo?.lng??null,
+        });
+        const proof:ProofMedia = {
+          id:saved.id??crypto.randomUUID(), fileUrl:saved.fileUrl??uploaded.url,
+          fileName:saved.fileName??uploaded.fileName, fileType:saved.fileType??uploaded.fileType,
+          capturedAt:saved.capturedAt??`${entryDate}T12:00:00.000Z`,
+          latitude:saved.latitude??geo?.lat??null, longitude:saved.longitude??geo?.lng??null,
+        };
+        setActualsData(prev => ({ ...prev, [activityId]: { ...prev[activityId],
+          proofMedia:[...prev[activityId].proofMedia, proof] } }));
+      }
+      showToast(geo?`Photo saved for ${entryDate} with GPS 📍`:`Photo saved for ${entryDate}`, true);
+    } catch(err) {
+      showToast(err instanceof Error ? err.message : "Upload failed.", false);
+    }
+  };
 
   // ── Save actuals (dealer JWT) ──────────────────────────────────────────────
   const saveActuals = async () => {
@@ -715,22 +766,31 @@ export default function DealerDashboard() {
                 Activities ({selected.activities.length})
               </div>
 
-              {/* Activities header row */}
+              {/* Activities full table — same columns as Approver view */}
               {selected.activities.length > 0 && (
                 <div style={{ overflowX:"auto",border:"1px solid #e2e8f0",borderRadius:10,marginBottom:16 }}>
-                  <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:640 }}>
+                  <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:1100 }}>
                     <thead>
                       <tr style={{ background:"#0a2540" }}>
-                        <th style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"left",fontSize:10 }}>#</th>
-                        <th style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"left",fontSize:10 }}>Activity</th>
-                        <th style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"left",fontSize:10 }}>Category</th>
-                        <th style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"left",fontSize:10 }}>Dates</th>
-                        <th style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"right",fontSize:10 }}>Budget</th>
-                        <th style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Retail</th>
-                        <th style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Lead</th>
-                        <th style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Media</th>
+                        <th style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"left",fontSize:10 }}>#</th>
+                        <th style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"left",fontSize:10,minWidth:120 }}>Activity Name</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Type</th>
+                        <th style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"left",fontSize:10 }}>Subcategory</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>QTY</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Lead</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Sales%</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Retail</th>
+                        <th style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Dates</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"right",fontSize:10 }}>Budget (₹)</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"right",fontSize:10 }}>Add. Budget</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>BGauss%</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"right",fontSize:10 }}>BGauss Amt</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"right",fontSize:10 }}>Total (₹)</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>CAC</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>CPL</th>
+                        <th style={{ padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Media</th>
                         {selected.status==="Approved"&&(
-                          <th style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"center",fontSize:10 }}>Post-Activity</th>
+                          <th style={{ padding:"8px 8px",color:"#6ee7b7",textAlign:"center",fontSize:10 }}>Post-Activity</th>
                         )}
                       </tr>
                     </thead>
@@ -738,25 +798,28 @@ export default function DealerDashboard() {
                       {selected.activities.map((a,ai) => (
                         <tr key={a.id} style={{ background:ai%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9" }}>
                           <td style={{ padding:"8px 10px",color:"#6b7280",fontSize:11,fontWeight:700 }}>{String.fromCharCode(65+ai)}</td>
-                          <td style={{ padding:"8px 10px",fontWeight:700,color:"#0a2540" }}>{a.activityType}</td>
-                          <td style={{ padding:"8px 10px" }}>
-                            {a.category&&(
-                              <span style={{ fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:3,
-                                background:a.category==="ATL"?"#eff6ff":"#dcfce7",
-                                color:a.category==="ATL"?"#1e40af":"#166534" }}>
-                                {a.category}
-                              </span>
-                            )}
+                          <td style={{ padding:"7px 8px",fontWeight:700,color:"#0a2540",fontSize:11 }}>{a.activityType}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"center" }}>
+                            {a.category&&<span style={{ fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:3,background:a.category==="ATL"?"#eff6ff":"#dcfce7",color:a.category==="ATL"?"#1e40af":"#166534" }}>{a.category}</span>}
                           </td>
-                          <td style={{ padding:"8px 10px",fontSize:11,color:"#374151",whiteSpace:"nowrap" }}>
-                            {fmtDate(a.startDate)} → {fmtDate(a.endDate)}
+                          <td style={{ padding:"7px 8px",fontSize:11,color:"#374151" }}>{(a as any).subcategory||"—"}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11 }}>{(a as any).qty||1}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11 }}>{a.leadTarget}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#6b7280" }}>{(a as any).salesPercent||"—"}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11 }}>{a.retailTarget}</td>
+                          <td style={{ padding:"7px 8px",fontSize:10,color:"#374151",whiteSpace:"nowrap" }}>{fmtDate(a.startDate)}<br/>→ {fmtDate(a.endDate)}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"right",fontWeight:600,color:"#0a2540",fontSize:11 }}>₹{Math.round(a.budget||0).toLocaleString("en-IN")}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"right",fontSize:11,color:(a.additionalBudget||0)>0?"#f59e0b":"#94a3b8" }}>
+                            {(a.additionalBudget||0)>0?`+₹${Math.round(a.additionalBudget||0).toLocaleString("en-IN")}`:"—"}
                           </td>
-                          <td style={{ padding:"8px 10px",textAlign:"right",fontWeight:600,color:"#0a2540" }}>
-                            ₹{Math.round(a.budget).toLocaleString("en-IN")}
-                          </td>
-                          <td style={{ padding:"8px 10px",textAlign:"center" }}>{a.retailTarget}</td>
-                          <td style={{ padding:"8px 10px",textAlign:"center" }}>{a.leadTarget}</td>
-                          <td style={{ padding:"8px 10px",textAlign:"center" }}>
+                          <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11 }}>{(a as any).bgaussShare||100}%</td>
+                          {(()=>{ const total=(a.budget||0)+(a.additionalBudget||0); const share=(a as any).bgaussShare||100; const bgAmt=Math.round(total*share/100); const cac=a.retailTarget>0?Math.round(bgAmt/a.retailTarget):0; const cpl=a.leadTarget>0?Math.round(bgAmt/a.leadTarget):0; return (<>
+                          <td style={{ padding:"7px 6px",textAlign:"right",fontWeight:600,color:"#1e40af",fontSize:11 }}>₹{bgAmt.toLocaleString("en-IN")}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"right",fontWeight:700,color:"#0a2540",fontSize:11 }}>₹{total.toLocaleString("en-IN")}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,fontWeight:700,color:cac>4000?"#dc2626":"#166534" }}>{cac>0?`₹${cac.toLocaleString("en-IN")}`:"—"}{cac>4000?" ⚠":""}</td>
+                          <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#7c3aed" }}>{cpl>0?`₹${cpl.toLocaleString("en-IN")}`:"—"}</td>
+                          </>); })()}
+                          <td style={{ padding:"7px 6px",textAlign:"center" }}>
                             {(a.mediaFiles??[]).length > 0
                               ? <span style={{ fontSize:11,color:"#16a34a",fontWeight:700 }}>📸 {(a.mediaFiles??[]).length}</span>
                               : <span style={{ color:"#e2e8f0",fontSize:11 }}>—</span>}
@@ -778,278 +841,309 @@ export default function DealerDashboard() {
                   </table>
                 </div>
               )}
-{/* ══ POST-ACTIVITY ACCORDION v2 ══ */}
-                      {selected.status==="Approved"&&selected.activities.map((a)=>{
-                        const d=actualsData[a.id];
-                        if (openActualsId!==a.id||!d) return null;
-                        const pctColor=(actual:number,planned:number)=>{ if(!actual) return ""; const r=planned>0?actual/planned:1; return r>=0.9?"#d1fae5":r>=0.6?"#fef3c7":"#fee2e2"; };
-                        return (
-                          <div key={`actuals-${a.id}`} style={{ marginTop:10,borderRadius:10,overflow:"hidden",border:"2px solid #bbf7d0" }}>
-                              <div style={{ padding:"14px 20px" }}>
-                                {/* Header row */}
-                                <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap" }}>
-                                  <span style={{ background:"#16a34a",color:"#fff",borderRadius:4,padding:"2px 8px",fontSize:11,fontWeight:700 }}>📋 Post-Activity</span>
-                                  <span style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>{a.activityType}</span>
-                                  {a.category&&<span style={{ fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:3,background:a.category==="ATL"?"#eff6ff":"#dcfce7",color:a.category==="ATL"?"#1e40af":"#166534" }}>{a.category}</span>}
-                                  <span style={{ fontSize:11,color:"#6b7280",marginLeft:"auto" }}>Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
-                                </div>
 
-                                {/* ── Actual Dates + compact action bar in one row ── */}
-                                <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
-                                  <div>
-                                    <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual Start</label>
-                                    <input type="date" value={d.actualStartDate} onChange={(e)=>{ setActualField(a.id,"actualStartDate",e.target.value); rebuildDailyEntries(a.id,e.target.value,d.actualEndDate); }} style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
-                                  </div>
-                                  <div>
-                                    <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual End</label>
-                                    <input type="date" value={d.actualEndDate} min={d.actualStartDate||undefined} onChange={(e)=>{ setActualField(a.id,"actualEndDate",e.target.value); rebuildDailyEntries(a.id,d.actualStartDate,e.target.value); }} style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
-                                  </div>
-                                  {(a.actualStartDate||a.actualEndDate)&&(
-                                    <div style={{ fontSize:11,color:"#166534",fontWeight:600 }}>✓ {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</div>
-                                  )}
+              {/* ══ POST-ACTIVITY ACCORDION v2 ══ */}
+              {selected.status==="Approved"&&selected.activities.map((a)=>{
+                const d=actualsData[a.id];
+                if (openActualsId!==a.id||!d) return null;
+                return (
+                  <div key={`actuals-${a.id}`} style={{ marginTop:10,borderRadius:10,overflow:"hidden",border:"2px solid #bbf7d0" }}>
+                    <div style={{ padding:"14px 20px" }}>
+                      {/* Header row */}
+                      <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap" }}>
+                        <span style={{ background:"#16a34a",color:"#fff",borderRadius:4,padding:"2px 8px",fontSize:11,fontWeight:700 }}>📋 Post-Activity</span>
+                        <span style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>{a.activityType}</span>
+                        {a.category&&<span style={{ fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:3,background:a.category==="ATL"?"#eff6ff":"#dcfce7",color:a.category==="ATL"?"#1e40af":"#166534" }}>{a.category}</span>}
+                        <span style={{ fontSize:11,color:"#6b7280",marginLeft:"auto" }}>Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
+                      </div>
 
-                                  {/* ── Toggle buttons ── */}
-                                  <div style={{ display:"flex",gap:7,marginLeft:"auto",flexWrap:"wrap",alignItems:"center" }}>
-                                    <button onClick={()=>toggleActualsPanel(a.id,"photos")}
-                                      style={{ display:"flex",alignItems:"center",gap:5,
-                                        background:openActualsPanel[a.id]==="photos"?"#16a34a":"#fff",
-                                        color:openActualsPanel[a.id]==="photos"?"#fff":"#166534",
-                                        border:"1.5px solid #16a34a",borderRadius:7,
-                                        padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap" }}>
-                                      📸 Photos{d.proofMedia.length>0&&<span style={{ background:"rgba(0,0,0,0.15)",borderRadius:10,padding:"0px 6px",fontSize:10,fontWeight:800,marginLeft:2 }}>{d.proofMedia.length}</span>}
-                                      <span style={{ fontSize:9,opacity:0.7 }}>{openActualsPanel[a.id]==="photos"?"▲":"▼"}</span>
-                                    </button>
-                                    <button onClick={()=>toggleActualsPanel(a.id,"invoices")}
-                                      style={{ display:"flex",alignItems:"center",gap:5,
-                                        background:openActualsPanel[a.id]==="invoices"?"#1e3a5f":"#fff",
-                                        color:openActualsPanel[a.id]==="invoices"?"#fff":"#374151",
-                                        border:"1.5px solid #e2e8f0",borderRadius:7,
-                                        padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap" }}>
-                                      🧾 Invoices{d.invoiceMedia.length>0&&<span style={{ background:"rgba(0,0,0,0.15)",borderRadius:10,padding:"0px 6px",fontSize:10,fontWeight:800,marginLeft:2 }}>{d.invoiceMedia.length}</span>}
-                                      <span style={{ fontSize:9,opacity:0.7 }}>{openActualsPanel[a.id]==="invoices"?"▲":"▼"}</span>
-                                    </button>
-                                    <button onClick={()=>{ if(d.actualStartDate&&d.actualEndDate) toggleActualsPanel(a.id,"history"); }}
-                                      disabled={!d.actualStartDate||!d.actualEndDate}
-                                      title={!d.actualStartDate||!d.actualEndDate?"Select actual start & end dates first":"View date-wise history"}
-                                      style={{ display:"flex",alignItems:"center",gap:5,
-                                        background:openActualsPanel[a.id]==="history"?"#0a2540":"#fff",
-                                        color:openActualsPanel[a.id]==="history"?"#fff":(!d.actualStartDate||!d.actualEndDate)?"#cbd5e1":"#374151",
-                                        border:`1.5px solid ${(!d.actualStartDate||!d.actualEndDate)?"#e2e8f0":"#0a2540"}`,
-                                        borderRadius:7,padding:"5px 12px",fontSize:12,fontWeight:700,
-                                        cursor:(!d.actualStartDate||!d.actualEndDate)?"not-allowed":"pointer",
-                                        opacity:(!d.actualStartDate||!d.actualEndDate)?0.45:1,whiteSpace:"nowrap" }}>
-                                      📊 History{d.dailyEntries.length>0&&<span style={{ background:"rgba(0,0,0,0.15)",borderRadius:10,padding:"0px 6px",fontSize:10,fontWeight:800,marginLeft:2 }}>{d.dailyEntries.length}d</span>}
-                                      <span style={{ fontSize:9,opacity:0.7 }}>{openActualsPanel[a.id]==="history"?"▲":"▼"}</span>
-                                    </button>
-                                    <div style={{ width:"1px",height:24,background:"#d1d5db",margin:"0 2px" }}/>
-                                    <button onClick={saveActuals} disabled={actualsLoading}
-                                      style={{ background:"#16a34a",color:"#fff",border:"none",
-                                        padding:"5px 16px",borderRadius:7,fontWeight:700,
-                                        fontSize:12,cursor:actualsLoading?"not-allowed":"pointer",
-                                        opacity:actualsLoading?0.7:1,whiteSpace:"nowrap" }}>
-                                      {actualsLoading?"Saving…":"💾 Save"}
-                                    </button>
-                                    <button onClick={()=>{ setOpenActualsId(null); setOpenActualsPanel(prev=>({...prev,[a.id]:undefined as any})); }}
-                                      style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",
-                                        padding:"5px 10px",borderRadius:7,fontSize:12,cursor:"pointer" }}>✕</button>
-                                  </div>
-                                </div>
+                      {/* ── Actual Dates + compact action bar in one row ── */}
+                      <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
+                        <div>
+                          <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual Start</label>
+                          <input type="date" value={d.actualStartDate}
+                            min={getActualDateRange().min} max={getActualDateRange().max}
+                            onChange={(e)=>{ setActualField(a.id,"actualStartDate",e.target.value); rebuildDailyEntries(a.id,e.target.value,d.actualEndDate); }}
+                            style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
+                        </div>
+                        <div>
+                          <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual End</label>
+                          <input type="date" value={d.actualEndDate} min={d.actualStartDate||getActualDateRange().min} max={getActualDateRange().max}
+                            onChange={(e)=>{ setActualField(a.id,"actualEndDate",e.target.value); rebuildDailyEntries(a.id,d.actualStartDate,e.target.value); }}
+                            style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
+                        </div>
+                        {(a.actualStartDate||a.actualEndDate)&&(
+                          <div style={{ fontSize:11,color:"#166534",fontWeight:600 }}>✓ {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</div>
+                        )}
 
-                                {/* ══ PHOTOS PANEL ══ */}
-                                {openActualsPanel[a.id]==="photos"&&(
-                                  <div style={{ background:"#fff",border:"1px solid #bbf7d0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
-                                    <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
-                                      <span style={{ fontSize:13,fontWeight:700,color:"#0a2540" }}>📸 Activity Proof / Photos</span>
-                                      <span style={{ fontSize:11,color:"#6b7280" }}>GPS + timestamp auto-captured</span>
-                                      <label style={{ marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:6,
-                                        background:d.proofUploading?"#f1f5f9":"#16a34a",
-                                        color:d.proofUploading?"#6b7280":"#fff",
-                                        border:d.proofUploading?"1px dashed #d1d5db":"none",
-                                        borderRadius:7,padding:"5px 13px",cursor:d.proofUploading?"not-allowed":"pointer",
-                                        fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
-                                        {d.proofUploading?"⏳ Uploading…":"＋ Add Photos"}
-                                        <input type="file" multiple accept="image/*,video/*,.pdf" style={{ display:"none" }} disabled={d.proofUploading} onChange={(e)=>{
-                                          console.log("[PROOF-INPUT] onChange fired, files:", e.target.files?.length ?? 0, "activityId:", a.id);
-                                          if(e.target.files&&e.target.files.length) handleProofUpload(a.id,e.target.files);
-                                          e.target.value="";
-                                        }}/>
-                                      </label>
+                        {/* ── Toggle buttons ── */}
+                        <div style={{ display:"flex",gap:7,marginLeft:"auto",flexWrap:"wrap",alignItems:"center" }}>
+                          <button onClick={()=>toggleActualsPanel(a.id,"photos")}
+                            style={{ display:"flex",alignItems:"center",gap:5,
+                              background:openActualsPanel[a.id]==="photos"?"#16a34a":"#fff",
+                              color:openActualsPanel[a.id]==="photos"?"#fff":"#166534",
+                              border:"1.5px solid #16a34a",borderRadius:7,
+                              padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap" }}>
+                            📸 Photos{d.proofMedia.length>0&&<span style={{ background:"rgba(0,0,0,0.15)",borderRadius:10,padding:"0px 6px",fontSize:10,fontWeight:800,marginLeft:2 }}>{d.proofMedia.length}</span>}
+                            <span style={{ fontSize:9,opacity:0.7 }}>{openActualsPanel[a.id]==="photos"?"▲":"▼"}</span>
+                          </button>
+                          <button onClick={()=>toggleActualsPanel(a.id,"invoices")}
+                            style={{ display:"flex",alignItems:"center",gap:5,
+                              background:openActualsPanel[a.id]==="invoices"?"#1e3a5f":"#fff",
+                              color:openActualsPanel[a.id]==="invoices"?"#fff":"#374151",
+                              border:"1.5px solid #e2e8f0",borderRadius:7,
+                              padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap" }}>
+                            🧾 Invoices{d.invoiceMedia.length>0&&<span style={{ background:"rgba(0,0,0,0.15)",borderRadius:10,padding:"0px 6px",fontSize:10,fontWeight:800,marginLeft:2 }}>{d.invoiceMedia.length}</span>}
+                            <span style={{ fontSize:9,opacity:0.7 }}>{openActualsPanel[a.id]==="invoices"?"▲":"▼"}</span>
+                          </button>
+                          <button onClick={()=>{ if(d.actualStartDate&&d.actualEndDate) toggleActualsPanel(a.id,"history"); }}
+                            disabled={!d.actualStartDate||!d.actualEndDate}
+                            title={!d.actualStartDate||!d.actualEndDate?"Select actual start & end dates first":"View date-wise history"}
+                            style={{ display:"flex",alignItems:"center",gap:5,
+                              background:openActualsPanel[a.id]==="history"?"#0a2540":"#fff",
+                              color:openActualsPanel[a.id]==="history"?"#fff":(!d.actualStartDate||!d.actualEndDate)?"#cbd5e1":"#374151",
+                              border:`1.5px solid ${(!d.actualStartDate||!d.actualEndDate)?"#e2e8f0":"#0a2540"}`,
+                              borderRadius:7,padding:"5px 12px",fontSize:12,fontWeight:700,
+                              cursor:(!d.actualStartDate||!d.actualEndDate)?"not-allowed":"pointer",
+                              opacity:(!d.actualStartDate||!d.actualEndDate)?0.45:1,whiteSpace:"nowrap" }}>
+                            📊 History{d.dailyEntries.length>0&&<span style={{ background:"rgba(0,0,0,0.15)",borderRadius:10,padding:"0px 6px",fontSize:10,fontWeight:800,marginLeft:2 }}>{d.dailyEntries.length}d</span>}
+                            <span style={{ fontSize:9,opacity:0.7 }}>{openActualsPanel[a.id]==="history"?"▲":"▼"}</span>
+                          </button>
+                          <div style={{ width:"1px",height:24,background:"#d1d5db",margin:"0 2px" }}/>
+                          <button onClick={saveActuals} disabled={actualsLoading}
+                            style={{ background:"#16a34a",color:"#fff",border:"none",
+                              padding:"5px 16px",borderRadius:7,fontWeight:700,
+                              fontSize:12,cursor:actualsLoading?"not-allowed":"pointer",
+                              opacity:actualsLoading?0.7:1,whiteSpace:"nowrap" }}>
+                            {actualsLoading?"Saving…":"💾 Save"}
+                          </button>
+                          <button onClick={()=>{ setOpenActualsId(null); setOpenActualsPanel(prev=>({...prev,[a.id]:undefined as any})); }}
+                            style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",
+                              padding:"5px 10px",borderRadius:7,fontSize:12,cursor:"pointer" }}>✕</button>
+                        </div>
+                      </div>
+
+                      {/* ══ PHOTOS PANEL ══ */}
+                      {openActualsPanel[a.id]==="photos"&&(
+                        <div style={{ background:"#fff",border:"1px solid #bbf7d0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
+                          <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
+                            <span style={{ fontSize:13,fontWeight:700,color:"#0a2540" }}>📸 Activity Proof / Photos</span>
+                            <span style={{ fontSize:11,color:"#6b7280" }}>GPS + timestamp auto-captured</span>
+                            <label style={{ marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:6,
+                              background:d.proofUploading?"#f1f5f9":"#16a34a",
+                              color:d.proofUploading?"#6b7280":"#fff",
+                              border:d.proofUploading?"1px dashed #d1d5db":"none",
+                              borderRadius:7,padding:"5px 13px",cursor:d.proofUploading?"not-allowed":"pointer",
+                              fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
+                              {d.proofUploading?"⏳ Uploading…":"＋ Add Photos"}
+                              <input type="file" multiple accept="image/*,video/*,.pdf" style={{ display:"none" }} disabled={d.proofUploading} onChange={(e)=>{
+                                if(e.target.files&&e.target.files.length) handleProofUpload(a.id,e.target.files);
+                                e.target.value="";
+                              }}/>
+                            </label>
+                          </div>
+                          {d.proofMedia.length===0?(
+                            <div style={{ border:"2px dashed #bbf7d0",borderRadius:8,padding:"18px",textAlign:"center",color:"#6b7280",fontSize:12 }}>
+                              <div style={{ fontSize:26,marginBottom:4 }}>📷</div>No photos uploaded yet.
+                            </div>
+                          ):(
+                            <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
+                              {d.proofMedia.map((m,pi)=>{
+                                const url=m.fileUrl.startsWith("http")?m.fileUrl:`${API_BASE}${m.fileUrl}`;
+                                const uploadTime=new Date(m.capturedAt).toLocaleString("en-IN",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true});
+                                return (
+                                  <div key={m.id} style={{ display:"flex",alignItems:"center",gap:8,background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:7,padding:"6px 10px" }}>
+                                    <div style={{ width:38,height:38,flexShrink:0,borderRadius:5,overflow:"hidden",background:"#dcfce7",border:"1px solid #bbf7d0",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center" }} onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})}>
+                                      {isImage(m.fileType)?<img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>:isVideo(m.fileType)?<video src={url} muted style={{ width:"100%",height:"100%",objectFit:"cover" }}/>:<span style={{ fontSize:20 }}>{mediaIcon(m.fileType)}</span>}
                                     </div>
-                                    {d.proofMedia.length===0?(
-                                      <div style={{ border:"2px dashed #bbf7d0",borderRadius:8,padding:"18px",textAlign:"center",color:"#6b7280",fontSize:12 }}>
-                                        <div style={{ fontSize:26,marginBottom:4 }}>📷</div>No photos uploaded yet.
-                                      </div>
-                                    ):(
-                                      <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
-                                        {d.proofMedia.map((m,pi)=>{
-                                          const url=m.fileUrl.startsWith("http")?m.fileUrl:`${API_BASE}${m.fileUrl}`;
-                                          const uploadTime=new Date(m.capturedAt).toLocaleString("en-IN",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true});
-                                          return (
-                                            <div key={m.id} style={{ display:"flex",alignItems:"center",gap:8,background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:7,padding:"6px 10px" }}>
-                                              <div style={{ width:38,height:38,flexShrink:0,borderRadius:5,overflow:"hidden",background:"#dcfce7",border:"1px solid #bbf7d0",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center" }} onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})}>
-                                                {isImage(m.fileType)?<img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>:isVideo(m.fileType)?<video src={url} muted style={{ width:"100%",height:"100%",objectFit:"cover" }}/>:<span style={{ fontSize:20 }}>{mediaIcon(m.fileType)}</span>}
-                                              </div>
-                                              <div style={{ flex:1,minWidth:0 }}>
-                                                <div style={{ fontSize:11,fontWeight:600,color:"#0a2540",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>#{pi+1} · {m.fileName}</div>
-                                                <div style={{ fontSize:10,color:"#6b7280",marginTop:1 }}>🕐 {uploadTime}{m.latitude!=null&&m.longitude!=null&&<a href={mapsUrl(m.latitude!,m.longitude!)} target="_blank" rel="noreferrer" onClick={(e)=>e.stopPropagation()} style={{ marginLeft:8,color:"#16a34a",textDecoration:"none",fontWeight:600,fontSize:10 }}>📍 GPS</a>}{(m.latitude==null||m.longitude==null)&&<span style={{ marginLeft:8,color:"#9ca3af",fontSize:10 }}>No GPS</span>}</div>
-                                              </div>
-                                              <div style={{ display:"flex",gap:5,flexShrink:0 }}>
-                                                <button type="button" onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})} style={{ background:"#eff6ff",border:"1px solid #bfdbfe",color:"#1e40af",borderRadius:5,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer" }}>View</button>
-                                                <button type="button" onClick={()=>removeProof(a.id,m.id)} style={{ background:"#fee2e2",border:"none",color:"#991b1b",borderRadius:5,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer" }}>✕</button>
-                                              </div>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* ══ INVOICES PANEL ══ */}
-                                {openActualsPanel[a.id]==="invoices"&&(
-                                  <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
-                                    <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
-                                      <span style={{ fontSize:13,fontWeight:700,color:"#0a2540" }}>🧾 Invoice / Bill Upload</span>
-                                      <span style={{ fontSize:11,color:"#6b7280" }}>PDF / image · multiple files supported</span>
-                                      <label style={{ marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:6,
-                                        background:d.invoiceUploading?"#f1f5f9":"#1e3a5f",
-                                        color:d.invoiceUploading?"#6b7280":"#fff",
-                                        border:d.invoiceUploading?"1px dashed #d1d5db":"none",
-                                        borderRadius:7,padding:"5px 13px",cursor:d.invoiceUploading?"not-allowed":"pointer",
-                                        fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
-                                        {d.invoiceUploading?"⏳ Uploading…":"＋ Add Invoice"}
-                                        <input type="file" multiple accept="application/pdf,image/*" style={{ display:"none" }} disabled={d.invoiceUploading} onChange={(e)=>{ if(e.target.files&&e.target.files.length) handleInvoiceUpload(a.id,e.target.files); e.target.value=""; }}/>
-                                      </label>
+                                    <div style={{ flex:1,minWidth:0 }}>
+                                      <div style={{ fontSize:11,fontWeight:600,color:"#0a2540",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>#{pi+1} · {m.fileName}</div>
+                                      <div style={{ fontSize:10,color:"#6b7280",marginTop:1 }}>🕐 {uploadTime}{m.latitude!=null&&m.longitude!=null&&<a href={mapsUrl(m.latitude!,m.longitude!)} target="_blank" rel="noreferrer" onClick={(e)=>e.stopPropagation()} style={{ marginLeft:8,color:"#16a34a",textDecoration:"none",fontWeight:600,fontSize:10 }}>📍 GPS</a>}{(m.latitude==null||m.longitude==null)&&<span style={{ marginLeft:8,color:"#9ca3af",fontSize:10 }}>No GPS</span>}</div>
                                     </div>
-                                    {d.invoiceMedia.length===0?(
-                                      <div style={{ border:"2px dashed #e2e8f0",borderRadius:8,padding:"18px",textAlign:"center",color:"#9ca3af",fontSize:12 }}>
-                                        <div style={{ fontSize:22,marginBottom:4 }}>🧾</div>No invoices uploaded yet.
-                                      </div>
-                                    ):(
-                                      <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
-                                        {d.invoiceMedia.map((inv,ii)=>{
-                                          const url=inv.fileUrl.startsWith("http")?inv.fileUrl:`${API_BASE}${inv.fileUrl}`;
-                                          const icon=inv.fileType?.includes("pdf")?"📄":inv.fileType?.startsWith("image/")?"🖼":"📎";
-                                          return (
-                                            <div key={inv.id} style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:7,padding:"6px 10px" }}>
-                                              <span style={{ fontSize:18,flexShrink:0 }}>{icon}</span>
-                                              <div style={{ flex:1,minWidth:0 }}>
-                                                <div style={{ fontSize:11,fontWeight:600,color:"#0a2540",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>#{ii+1} · {inv.fileName}</div>
-                                                <div style={{ fontSize:10,color:"#6b7280",marginTop:1 }}>{new Date(inv.capturedAt).toLocaleString("en-IN",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})}</div>
-                                              </div>
-                                              <a href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize:11,color:"#2563eb",fontWeight:600,textDecoration:"none",flexShrink:0 }}>View ↗</a>
-                                              <button type="button" onClick={()=>removeInvoice(a.id,inv.id)} style={{ background:"#fee2e2",border:"none",color:"#991b1b",borderRadius:5,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer",flexShrink:0 }}>✕</button>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* ══ HISTORY PANEL — only when both dates selected ══ */}
-                                {openActualsPanel[a.id]==="history"&&d.actualStartDate&&d.actualEndDate&&(
-                                  <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,overflow:"hidden",marginBottom:10 }}>
-                                    <div style={{ background:"#0a2540",padding:"9px 14px",display:"flex",alignItems:"center",gap:10 }}>
-                                      <span style={{ color:"#fff",fontWeight:700,fontSize:13 }}>📊 Daily Activity History</span>
-                                      <span style={{ color:"#94a3b8",fontSize:11 }}>{fmtDate(d.actualStartDate)} → {fmtDate(d.actualEndDate)}</span>
-                                      {d.dailyEntries.length>0&&<span style={{ marginLeft:"auto",fontSize:11,color:"#86efac",fontWeight:600 }}>{d.dailyEntries.length} day{d.dailyEntries.length!==1?"s":""}</span>}
+                                    <div style={{ display:"flex",gap:5,flexShrink:0 }}>
+                                      <button type="button" onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})} style={{ background:"#eff6ff",border:"1px solid #bfdbfe",color:"#1e40af",borderRadius:5,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer" }}>View</button>
+                                      <button type="button" onClick={()=>removeProof(a.id,m.id)} style={{ background:"#fee2e2",border:"none",color:"#991b1b",borderRadius:5,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer" }}>✕</button>
                                     </div>
-                                    {d.dailyEntries.length===0?(
-                                      <div style={{ padding:"24px",textAlign:"center",color:"#9ca3af",fontSize:13 }}>No entries yet for this date range.</div>
-                                    ):(
-                                      <div style={{ overflowX:"auto" }}>
-                                        <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:660 }}>
-                                          <thead>
-                                            <tr style={{ background:"#1e293b" }}>
-                                              <th style={{ padding:"8px 10px",textAlign:"left",color:"#e2e8f0",fontSize:10,fontWeight:700,width:95 }}>Date</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Enquiry<br/>Plan</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Enquiry<br/>Actual</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Test Drive<br/>Plan</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Test Drive<br/>Actual</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700 }}>Retail</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a5b4fc",fontSize:10,fontWeight:700 }}>LMS Leads<br/>Punched</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Media</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {d.dailyEntries.map((entry,ei)=>{
-                                              const pctC=(actual:number,planned:number)=>{ if(!actual) return ""; const r=planned>0?actual/planned:1; return r>=0.9?"#d1fae5":r>=0.6?"#fef3c7":"#fee2e2"; };
-                                              const entryDate=entry.date;
-                                              const photosOnDay=d.proofMedia.filter(m=>m.capturedAt.startsWith(entryDate));
-                                              const invoicesOnDay=d.invoiceMedia.filter(m=>m.capturedAt.startsWith(entryDate));
-                                              const hasAnyData=entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* ══ INVOICES PANEL ══ */}
+                      {openActualsPanel[a.id]==="invoices"&&(
+                        <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
+                          <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
+                            <span style={{ fontSize:13,fontWeight:700,color:"#0a2540" }}>🧾 Invoice / Bill Upload</span>
+                            <span style={{ fontSize:11,color:"#6b7280" }}>PDF / image · multiple files supported</span>
+                            <label style={{ marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:6,
+                              background:d.invoiceUploading?"#f1f5f9":"#1e3a5f",
+                              color:d.invoiceUploading?"#6b7280":"#fff",
+                              border:d.invoiceUploading?"1px dashed #d1d5db":"none",
+                              borderRadius:7,padding:"5px 13px",cursor:d.invoiceUploading?"not-allowed":"pointer",
+                              fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
+                              {d.invoiceUploading?"⏳ Uploading…":"＋ Add Invoice"}
+                              <input type="file" multiple accept="application/pdf,image/*" style={{ display:"none" }} disabled={d.invoiceUploading} onChange={(e)=>{ if(e.target.files&&e.target.files.length) handleInvoiceUpload(a.id,e.target.files); e.target.value=""; }}/>
+                            </label>
+                          </div>
+                          {d.invoiceMedia.length===0?(
+                            <div style={{ border:"2px dashed #e2e8f0",borderRadius:8,padding:"18px",textAlign:"center",color:"#9ca3af",fontSize:12 }}>
+                              <div style={{ fontSize:22,marginBottom:4 }}>🧾</div>No invoices uploaded yet.
+                            </div>
+                          ):(
+                            <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
+                              {d.invoiceMedia.map((inv,ii)=>{
+                                const url=inv.fileUrl.startsWith("http")?inv.fileUrl:`${API_BASE}${inv.fileUrl}`;
+                                const icon=inv.fileType?.includes("pdf")?"📄":inv.fileType?.startsWith("image/")?"🖼":"📎";
+                                return (
+                                  <div key={inv.id} style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:7,padding:"6px 10px" }}>
+                                    <span style={{ fontSize:18,flexShrink:0 }}>{icon}</span>
+                                    <div style={{ flex:1,minWidth:0 }}>
+                                      <div style={{ fontSize:11,fontWeight:600,color:"#0a2540",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>#{ii+1} · {inv.fileName}</div>
+                                      <div style={{ fontSize:10,color:"#6b7280",marginTop:1 }}>{new Date(inv.capturedAt).toLocaleString("en-IN",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true})}</div>
+                                    </div>
+                                    <a href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize:11,color:"#2563eb",fontWeight:600,textDecoration:"none",flexShrink:0 }}>View ↗</a>
+                                    <button type="button" onClick={()=>removeInvoice(a.id,inv.id)} style={{ background:"#fee2e2",border:"none",color:"#991b1b",borderRadius:5,padding:"3px 7px",fontSize:10,fontWeight:600,cursor:"pointer",flexShrink:0 }}>✕</button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* ══ HISTORY PANEL — only when both dates selected ══ */}
+                      {openActualsPanel[a.id]==="history"&&d.actualStartDate&&d.actualEndDate&&(
+                        <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,overflow:"hidden",marginBottom:10 }}>
+                          <div style={{ background:"#0a2540",padding:"9px 14px",display:"flex",alignItems:"center",gap:10 }}>
+                            <span style={{ color:"#fff",fontWeight:700,fontSize:13 }}>📊 Daily Activity History</span>
+                            <span style={{ color:"#94a3b8",fontSize:11 }}>{fmtDate(d.actualStartDate)} → {fmtDate(d.actualEndDate)}</span>
+                            {d.dailyEntries.length>0&&<span style={{ marginLeft:"auto",fontSize:11,color:"#86efac",fontWeight:600 }}>{d.dailyEntries.length} day{d.dailyEntries.length!==1?"s":""}</span>}
+                          </div>
+                          {d.dailyEntries.length===0?(
+                            <div style={{ padding:"24px",textAlign:"center",color:"#9ca3af",fontSize:13 }}>No entries yet for this date range.</div>
+                          ):(
+                            <div style={{ overflowX:"auto" }}>
+                              <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:660 }}>
+                                <thead>
+                                  <tr style={{ background:"#1e293b" }}>
+                                    <th style={{ padding:"8px 10px",textAlign:"left",color:"#e2e8f0",fontSize:10,fontWeight:700,width:95 }}>Date</th>
+                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Setup<br/>Count</th>
+                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Enquiry<br/>Plan</th>
+                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Enquiry<br/>Actual</th>
+                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Test Drive<br/>Plan</th>
+                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Test Drive<br/>Actual</th>
+                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking</th>
+                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700 }}>Retail</th>
+                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#a5b4fc",fontSize:10,fontWeight:700 }}>LMS Leads<br/>Punched</th>
+                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Media</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {d.dailyEntries.map((entry,ei)=>{
+                                    const pctC=(actual:number,planned:number)=>{ if(!actual) return ""; const r=planned>0?actual/planned:1; return r>=0.9?"#d1fae5":r>=0.6?"#fef3c7":"#fee2e2"; };
+                                    const entryDate=entry.date;
+                                    const photosOnDay=d.proofMedia.filter(m=>m.capturedAt.startsWith(entryDate));
+                                    const invoicesOnDay=d.invoiceMedia.filter(m=>m.capturedAt.startsWith(entryDate));
+                                    const hasAnyData=entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
+                                    return (
+                                      <tr key={entry.date} style={{ background:ei%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",opacity:hasAnyData?1:0.5 }}>
+                                        <td style={{ padding:"5px 10px",fontWeight:600,color:"#374151",whiteSpace:"nowrap",fontSize:11 }}>{entry.date}</td>
+                                        {/* Setup Count — auto-calcs Enquiry Plan & TD Plan (35 × count) */}
+                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                          <input type="number" min={0} max={20}
+                                            style={{ width:40,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"2px",fontSize:11,outline:"none",background:"#fefce8",fontWeight:700 }}
+                                            value={(entry as any).setupCount||""}
+                                            placeholder="0"
+                                            title="Setup Count — Enquiry Plan & TD Plan = 35 × this value"
+                                            onChange={(ev)=>{
+                                              const sc=parseInt(ev.target.value)||0;
+                                              setDailyField(a.id,entry.date,"setupCount" as any,sc);
+                                              setDailyField(a.id,entry.date,"enquiryPlanned",sc*DEFAULT_PLAN_PER_SETUP);
+                                              setDailyField(a.id,entry.date,"testDrivePlanned",sc*DEFAULT_PLAN_PER_SETUP);
+                                            }}/>
+                                        </td>
+                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:(entry as any).setupCount>0?"#1e40af":"inherit",fontWeight:(entry as any).setupCount>0?700:400 }} value={entry.enquiryPlanned||""} placeholder="0" readOnly={(entry as any).setupCount>0} title={(entry as any).setupCount>0?"Auto-calculated (35 × Setup Count)":"Enter manually"} onChange={(e)=>!(entry as any).setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
+                                        </td>
+                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.enquiryActual,entry.enquiryPlanned)||"#fff",fontWeight:entry.enquiryActual>0?700:400 }} value={entry.enquiryActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
+                                        </td>
+                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.testDrivePlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)} readOnly/>
+                                        </td>
+                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.testDriveActual,entry.testDrivePlanned)||"#fff",fontWeight:entry.testDriveActual>0?700:400 }} value={entry.testDriveActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
+                                        </td>
+                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.bookingActual>0?"#fdf4ff":"#fff",fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#7c3aed":"inherit" }} value={entry.bookingActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"bookingActual",parseInt(e.target.value)||0)}/>
+                                        </td>
+                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.retailActual>0?"#fef9c3":"#fff",fontWeight:entry.retailActual>0?700:400,color:entry.retailActual>0?"#92400e":"inherit" }} value={entry.retailActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"retailActual",parseInt(e.target.value)||0)}/>
+                                        </td>
+                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.leadsPunched>0?"#eef2ff":"#fff",fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#4338ca":"inherit" }} value={entry.leadsPunched||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"leadsPunched",parseInt(e.target.value)||0)}/>
+                                        </td>
+                                        {/* Media thumbnails + date-wise upload for this date */}
+                                        <td style={{ padding:"4px 8px",textAlign:"center" }}>
+                                          <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
+                                            {photosOnDay.slice(0,2).map(m=>{
+                                              const url=m.fileUrl.startsWith("http")?m.fileUrl:`${API_BASE}${m.fileUrl}`;
                                               return (
-                                                <tr key={entry.date} style={{ background:ei%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",opacity:hasAnyData?1:0.5 }}>
-                                                  <td style={{ padding:"5px 10px",fontWeight:600,color:"#374151",whiteSpace:"nowrap",fontSize:11 }}>{entry.date}</td>
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.enquiryPlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.enquiryActual,entry.enquiryPlanned)||"#fff",fontWeight:entry.enquiryActual>0?700:400 }} value={entry.enquiryActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.testDrivePlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.testDriveActual,entry.testDrivePlanned)||"#fff",fontWeight:entry.testDriveActual>0?700:400 }} value={entry.testDriveActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.bookingActual>0?"#fdf4ff":"#fff",fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#7c3aed":"inherit" }} value={entry.bookingActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"bookingActual",parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.retailActual>0?"#fef9c3":"#fff",fontWeight:entry.retailActual>0?700:400,color:entry.retailActual>0?"#92400e":"inherit" }} value={entry.retailActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"retailActual",parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.leadsPunched>0?"#eef2ff":"#fff",fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#4338ca":"inherit" }} value={entry.leadsPunched||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"leadsPunched",parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  {/* Media thumbnails for this date */}
-                                                  <td style={{ padding:"4px 8px",textAlign:"center" }}>
-                                                    <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
-                                                      {photosOnDay.slice(0,2).map(m=>{
-                                                        const url=m.fileUrl.startsWith("http")?m.fileUrl:`${API_BASE}${m.fileUrl}`;
-                                                        return (
-                                                          <div key={m.id} style={{ width:26,height:26,borderRadius:3,overflow:"hidden",cursor:"pointer",border:"1px solid #bbf7d0",flexShrink:0 }} onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})}>
-                                                            {isImage(m.fileType)?<img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>:<span style={{ fontSize:14,lineHeight:"26px",display:"block",textAlign:"center" }}>{mediaIcon(m.fileType)}</span>}
-                                                          </div>
-                                                        );
-                                                      })}
-                                                      {photosOnDay.length>2&&<span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-2}</span>}
-                                                      {invoicesOnDay.length>0&&<span style={{ fontSize:10,background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:3,padding:"1px 4px",color:"#374151",whiteSpace:"nowrap" }}>🧾{invoicesOnDay.length}</span>}
-                                                      {photosOnDay.length===0&&invoicesOnDay.length===0&&<span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
-                                                    </div>
-                                                  </td>
-                                                </tr>
+                                                <div key={m.id} style={{ width:26,height:26,borderRadius:3,overflow:"hidden",cursor:"pointer",border:"1px solid #bbf7d0",flexShrink:0 }} onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})}>
+                                                  {isImage(m.fileType)?<img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>:<span style={{ fontSize:14,lineHeight:"26px",display:"block",textAlign:"center" }}>{mediaIcon(m.fileType)}</span>}
+                                                </div>
                                               );
                                             })}
-                                          </tbody>
-                                          <tfoot>
-                                            <tr style={{ background:"#0a2540",borderTop:"2px solid #1e3a5f" }}>
-                                              <td style={{ padding:"7px 10px",fontWeight:800,color:"#fbbf24",fontSize:11 }}>TOTAL</td>
-                                              {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key,ki)=>(
-                                                <td key={key} style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:[0,2].includes(ki)?"#93c5fd":[1,3].includes(ki)?"#6ee7b7":ki===4?"#c4b5fd":ki===5?"#fbbf24":"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any)[key] as number),0)}</td>
-                                              ))}
-                                              <td style={{ padding:"7px 8px",textAlign:"center" }}>
-                                                <span style={{ fontSize:10,color:"#94a3b8" }}>
-                                                  {d.proofMedia.length>0&&`📸${d.proofMedia.length} `}{d.invoiceMedia.length>0&&`🧾${d.invoiceMedia.length}`}
-                                                </span>
-                                              </td>
-                                            </tr>
-                                          </tfoot>
-                                        </table>
-                                      </div>
-                                    )}
-                                    <div style={{ padding:"7px 14px",fontSize:11,color:"#6b7280",background:"#f8fafc",borderTop:"1px solid #e2e8f0" }}>
-                                      ℹ Green ≥90% · Yellow ≥60% · Red &lt;60% · Dim rows = no data yet
-                                    </div>
-                                  </div>
-                                )}
-
-                              </div>
+                                            {photosOnDay.length>2&&<span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-2}</span>}
+                                            {invoicesOnDay.length>0&&<span style={{ fontSize:10,background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:3,padding:"1px 4px",color:"#374151",whiteSpace:"nowrap" }}>🧾{invoicesOnDay.length}</span>}
+                                            {photosOnDay.length===0&&invoicesOnDay.length===0&&<span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
+                                            {/* ── NEW: date-wise upload — upload a photo tagged to THIS specific date ── */}
+                                            <label title={`Upload photo for ${entryDate}`}
+                                              style={{ cursor:"pointer",fontSize:11,color:"#60a5fa",marginLeft:2 }}>
+                                              📷
+                                              <input type="file" accept="image/*,video/*" multiple style={{ display:"none" }}
+                                                onChange={(ev)=>{
+                                                  if (!ev.target.files?.length) return;
+                                                  handleDateWiseUpload(a.id, entryDate, ev.target.files);
+                                                  ev.target.value = "";
+                                                }}/>
+                                            </label>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                                <tfoot>
+                                  <tr style={{ background:"#0a2540",borderTop:"2px solid #1e3a5f" }}>
+                                    <td style={{ padding:"7px 10px",fontWeight:800,color:"#fbbf24",fontSize:11 }}>TOTAL</td>
+                                    <td></td>
+                                    {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key,ki)=>(
+                                      <td key={key} style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:[0,2].includes(ki)?"#93c5fd":[1,3].includes(ki)?"#6ee7b7":ki===4?"#c4b5fd":ki===5?"#fbbf24":"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any)[key] as number),0)}</td>
+                                    ))}
+                                    <td style={{ padding:"7px 8px",textAlign:"center" }}>
+                                      <span style={{ fontSize:10,color:"#94a3b8" }}>
+                                        {d.proofMedia.length>0&&`📸${d.proofMedia.length} `}{d.invoiceMedia.length>0&&`🧾${d.invoiceMedia.length}`}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                </tfoot>
+                              </table>
+                            </div>
+                          )}
+                          <div style={{ padding:"7px 14px",fontSize:11,color:"#6b7280",background:"#f8fafc",borderTop:"1px solid #e2e8f0" }}>
+                            ℹ Green ≥90% · Yellow ≥60% · Red &lt;60% · Dim rows = no data yet
                           </div>
-                        );
-                      })}
+                        </div>
+                      )}
+
+                    </div>
+                  </div>
+                );
+              })}
 
               {/* ── Budget addition / send-back ────────────────────────────── */}
               {selected.status==="Approved"&&(
