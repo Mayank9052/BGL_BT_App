@@ -133,7 +133,6 @@ export interface UpdateProposalPayload {
   tsmName:            string;
   commandoName:       string | null;
   month:              string;
-  year:               string;
   eligibility:        string;
   remarks:            string;
   activities:         ActivityPayload[];
@@ -410,28 +409,6 @@ export async function fetchMyDealerProposals(): Promise<ProposalResponse[]> {
   return res.json();
 }
 
-// export async function addActivityMedia(
-//   proposalId: string,
-//   activityId: string,
-//   media: { fileUrl: string; fileName: string; fileType: string },
-//   instance: IPublicClientApplication,
-// ): Promise<ActivityMediaResponse> {
-//   const token = await getAccessToken(instance);
-//   const res = await fetch(
-//     `${API_BASE_URL}/api/proposals/${proposalId}/activities/${activityId}/media`,
-//     {
-//       method: "POST",
-//       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-//       body: JSON.stringify(media),
-//     },
-//   );
-//   if (!res.ok) {
-//     const text = await res.text().catch(() => "");
-//     throw new Error(text || `Failed to attach media (${res.status})`);
-//   }
-//   return res.json();
-// }
-
 export async function addActivityMedia(
   proposalId: string,
   activityId: string,
@@ -477,6 +454,33 @@ export async function forwardProposalToApprover(
     },
   });
   if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
+  return res.json();
+}
+
+/**
+ * Bulk forward: marks all selected proposals as forwarded in ONE call.
+ * Does NOT send individual emails — a single daily digest is sent at midnight.
+ */
+export async function forwardProposalsBulk(
+  ids: string[],
+  instance: IPublicClientApplication,
+): Promise<{ forwarded: number; failed: number }> {
+  // Pass both API token and Graph token — Graph token is stored by backend
+  // for sending the daily digest email via Microsoft Graph API
+  const [apiToken, graphToken] = await Promise.all([
+    getAccessToken(instance),
+    getGraphToken(instance),
+  ]);
+  const res = await fetch(`${API_BASE_URL}/api/proposals/bulk-forward`, {
+    method: "POST",
+    headers: {
+      Authorization:   `Bearer ${apiToken}`,
+      "X-Graph-Token": graphToken,
+      "Content-Type":  "application/json",
+    },
+    body: JSON.stringify({ proposalIds: ids }),
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Bulk forward failed (${res.status})`);
   return res.json();
 }
 

@@ -96,11 +96,32 @@ const Section = ({ title, subtitle, children, action }: {
 );
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
-type DailyEntry = {
-  date: string; enquiryPlanned: number; enquiryActual: number;
+// type DailyEntry = {
+//   date: string; enquiryPlanned: number; enquiryActual: number;
+//   testDrivePlanned: number; testDriveActual: number;
+//   bookingActual: number; retailActual: number; leadsPunched: number;
+// };
+// ─── Daily entry / media types (same shape ApproverDashboard writes) ────────
+interface DailyEntry {
+  date: string; setupCount?: number;
+  enquiryPlanned: number; enquiryActual: number;
   testDrivePlanned: number; testDriveActual: number;
   bookingActual: number; retailActual: number; leadsPunched: number;
+}
+interface ProofMedia {
+  id: string; fileUrl: string; fileName: string; fileType: string | null;
+  capturedAt: string; latitude?: number | null; longitude?: number | null;
+}
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+const resolveMediaUrl = (url: string | null | undefined): string => {
+  if (!url) return "";
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `${API_BASE}${url.startsWith("/") ? url : `/${url}`}`;
 };
+const mediaIconFor = (t: string | null) =>
+  !t ? "📎" : t.startsWith("image/") ? "🖼" : t.includes("pdf") ? "📄" : t.startsWith("video/") ? "🎬" : "📎";
+const isImageType = (t: string | null) => !!t?.startsWith("image/");
+const isVideoType = (t: string | null) => !!t?.startsWith("video/");
 
 interface StateRow { state:string; proposals:number; budget:number; approved:number; lead:number; retail:number; cac:number; }
 interface ActivityRow { name:string; count:number; budget:number; lead:number; retail:number; atl:number; btl:number; }
@@ -130,6 +151,7 @@ export default function AnalyticsDashboard() {
   const [reportSubTab, setReportSubTab] = useState<"summary"|"dealer-daily">("summary");
   const [dailySearch, setDailySearch] = useState("");
   const [dailyStateFilter, setDailyStateFilter] = useState("All");
+  const [anMediaViewer, setAnMediaViewer] = useState<{url:string;name:string;type:string|null}|null>(null);
 
   const toggleKpi = (key: string, filter: () => void, reset: () => void) => {
     if (activeKpi === key) { setActiveKpi(null); reset(); }
@@ -285,30 +307,30 @@ export default function AnalyticsDashboard() {
 
   // ── Daily Activity Summary (same as DashboardPage) ─────────────────────────
   const liveDailySummary = useMemo((): DailySummaryRow[] => {
-    const approvedProposals = approved; // use filtered approved proposals
+    const approvedProposals = approved;
     const rows: DailySummaryRow[] = [];
     let sr = 1;
     for (const p of approvedProposals) {
       for (const a of p.activities) {
         const dailyData = (a as any).dailyData;
-        let totalEnqPlanned = 0, totalEnqActual = 0, totalTrPlanned = 0, totalTrActual = 0;
-        let totalBookToday = 0, totalRetail = 0, totalPunched = 0;
-        if (dailyData) {
-          try {
-            const entries = JSON.parse(dailyData) as any[];
-            for (const e of entries) {
-              totalEnqPlanned  += e.enquiryPlanned  || 0;
-              totalEnqActual   += e.enquiryActual   || 0;
-              totalTrPlanned   += e.testDrivePlanned || 0;
-              totalTrActual    += e.testDriveActual  || 0;
-              totalBookToday   += e.bookingActual    || 0;
-              totalRetail      += e.retailActual     || 0;
-              totalPunched     += e.leadsPunched     || 0;
-            }
-          } catch {}
-        }
-        const mediaFiles = (a as any).mediaFiles ?? [];
-        const totalPhotos = mediaFiles.length;
+        let entries: DailyEntry[] = [];
+        if (dailyData) { try { entries = JSON.parse(dailyData); } catch {} }
+
+        const totalEnqPlanned = entries.reduce((s,e)=>s+(e.enquiryPlanned||0),0);
+        const totalEnqActual  = entries.reduce((s,e)=>s+(e.enquiryActual||0),0);
+        const totalTrPlanned  = entries.reduce((s,e)=>s+(e.testDrivePlanned||0),0);
+        const totalTrActual   = entries.reduce((s,e)=>s+(e.testDriveActual||0),0);
+        const totalBookToday  = entries.reduce((s,e)=>s+(e.bookingActual||0),0);
+        const totalRetail     = entries.reduce((s,e)=>s+(e.retailActual||0),0);
+        const totalPunched    = entries.reduce((s,e)=>s+(e.leadsPunched||0),0);
+
+        const rawMedia = (a as any).mediaFiles ?? [];
+        const media: ProofMedia[] = rawMedia.map((m: any) => ({
+          id: m.id, fileUrl: m.fileUrl, fileName: m.fileName, fileType: m.fileType ?? null,
+          capturedAt: m.capturedAt ?? new Date().toISOString(),
+          latitude: m.latitude ?? null, longitude: m.longitude ?? null,
+        }));
+
         const canopy = (a as any).qty || 1;
         rows.push({
           sr, dealer: p.dealerName||"", location: p.location||"",
@@ -322,7 +344,9 @@ export default function AnalyticsDashboard() {
           leads: totalPunched, punched: totalPunched,
           gap: Math.max(0,(a.leadTarget||0)-totalPunched),
           convPct: totalEnqActual>0?Math.round(totalRetail/totalEnqActual*100):0,
-          photos: totalPhotos,
+          photos: media.length,
+          proposalId: p.id, activityId: a.id, activityType: a.activityType,
+          dailyEntries: entries, media,
         } as DailySummaryRow & { photos: number });
         sr++;
       }
@@ -405,6 +429,8 @@ interface DailySummaryRow {
   retailToday: number; retailMtdAct: number; retailMtd: number; retailRatePerCanopy: number;
   activityDay: number; closingStock: number;
   leads: number; punched: number; gap: number; convPct: number;
+  proposalId: string; activityId: string; activityType: string;
+  dailyEntries: DailyEntry[]; media: ProofMedia[];
 }
 
 interface LeadReportRow {
@@ -847,6 +873,7 @@ interface LeadReportRow {
                   <thead>
                     <tr style={{ background:"#0a2540" }}>
                       <th style={{ color:"#e2e8f0",textAlign:"left" }}>Date</th>
+                      <th style={{ color:"#93fdd3",textAlign:"center"}}> Setup Count</th>
                       <th style={{ color:"#93c5fd",textAlign:"center" }}>Enq Plan</th>
                       <th style={{ color:"#6ee7b7",textAlign:"center" }}>Enq Actual</th>
                       <th style={{ color:"#93c5fd",textAlign:"center" }}>TD Plan</th>
@@ -865,6 +892,7 @@ interface LeadReportRow {
                       return (
                         <tr key={d.date} className="an-tr-click" onClick={()=>setHighlightDay(isDayActive?null:d.date)} style={{ background:isDayActive?"#eff6ff":i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.5, outline:isDayActive?"2px solid #0891b2":"none", cursor:"pointer" }}>
                           <td style={{ padding:"6px 12px",fontWeight:600,fontSize:12,color:"#374151",whiteSpace:"nowrap" }}>{d.date}</td>
+                          <td className="an-td-center" style={{ fontSize:12 }}>{d.setupCount||"—"}</td>
                           <td className="an-td-center" style={{ fontSize:12 }}>{d.enquiryPlanned||"—"}</td>
                           <td className="an-td-center" style={{ fontSize:12,fontWeight:d.enquiryActual>0?700:400,color:d.enquiryActual>0?"#0891b2":"#94a3b8" }}>{d.enquiryActual||"—"}</td>
                           <td className="an-td-center" style={{ fontSize:12 }}>{d.testDrivePlanned||"—"}</td>
@@ -998,6 +1026,8 @@ interface LeadReportRow {
       ════════════════════════════════════════════════════════════════════════ */}
       {activeTab === "daily-activity" && (
         <>
+        {reportSubTab === "summary" ? (
+          <>
         {/* Search + filter bar for daily activity */}
         <div style={{ display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center" }}>
           <input value={dailySearch} onChange={e=>setDailySearch(e.target.value)}
@@ -1047,7 +1077,7 @@ interface LeadReportRow {
               <div className="an-table-wrap">
                 <table className="an-table an-table-full">
                   <thead><tr>
-                    <th>#</th><th>Dealer</th><th>Location</th><th>State</th>
+                    <th>#</th><th>Dealer</th><th>ActivityType</th><th>Location</th><th>State</th>
                     <th>Canopy</th><th>Enq Plan</th><th>Enq Actual</th><th>/Canopy</th>
                     <th>TD Plan</th><th>TD Actual</th><th>Booking</th>
                     <th>Retail Today</th><th>Retail MTD</th><th>Leads</th><th>Photos</th>
@@ -1060,6 +1090,7 @@ interface LeadReportRow {
                         title={`View ${row.dealer} daily sheet`}>
                         <td className="an-td-muted">{row.sr}</td>
                         <td className="an-td-bold">{row.dealer}</td>
+                        <td className="an-td-bold">{row.activityType}</td>
                         <td style={{ fontSize:11,color:"#6b7280" }}>{row.location}</td>
                         <td style={{ fontSize:11 }}>{row.state}</td>
                         <td className="an-td-center">{row.canopy}</td>
@@ -1100,7 +1131,131 @@ interface LeadReportRow {
           )}
         </Section>
         </>
-      )}
+        ) : (
+      // ── NEW: dealer detail view, shown when reportSubTab === "dealer-daily" ──
+      selectedDealerDaily && (
+        <Section
+          title={`${selectedDealerDaily.dealer} — ${selectedDealerDaily.location}`}
+          subtitle={`${selectedDealerDaily.state} · ${selectedDealerDaily.activityType} · Live daily history`}
+          action={
+            <button
+              onClick={() => { setReportSubTab("summary"); setSelectedDealerDaily(null); }}
+              style={{ background:"#f1f5f9", border:"1px solid #e2e8f0", borderRadius:7,
+                padding:"6px 14px", fontSize:12, fontWeight:600, cursor:"pointer", color:"#374151" }}>
+              ← Back to summary
+            </button>
+          }
+        >
+          {anMediaViewer && (
+            <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:10000,
+              display:"flex",alignItems:"center",justifyContent:"center" }} onClick={()=>setAnMediaViewer(null)}>
+              <div style={{ maxWidth:"92vw",maxHeight:"92vh" }} onClick={(e)=>e.stopPropagation()}>
+                {isImageType(anMediaViewer.type)
+                  ? <img src={anMediaViewer.url} alt={anMediaViewer.name} style={{ maxWidth:"88vw",maxHeight:"82vh",borderRadius:8 }}/>
+                  : isVideoType(anMediaViewer.type)
+                    ? <video src={anMediaViewer.url} controls autoPlay style={{ maxWidth:"88vw",maxHeight:"82vh",borderRadius:8 }}/>
+                    : <a href={anMediaViewer.url} target="_blank" rel="noopener noreferrer" style={{ color:"#fff" }}>Open {anMediaViewer.name} ↗</a>}
+              </div>
+            </div>
+          )}
+
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
+            {[
+              { label:"Canopy", value: selectedDealerDaily.canopy },
+              { label:"Enq Actual (MTD)", value: selectedDealerDaily.enquiryActual },
+              { label:"TD Actual (MTD)", value: selectedDealerDaily.trActual },
+              { label:"Retail MTD", value: selectedDealerDaily.retailMtd },
+              { label:"Leads Punched", value: selectedDealerDaily.punched },
+              { label:"Conv %", value: `${selectedDealerDaily.convPct}%` },
+            ].map((f) => (
+              <div key={f.label} style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 12px" }}>
+                <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>{f.label}</div>
+                <div style={{ fontSize:18, fontWeight:700, color:"#0a2540", marginTop:4 }}>{f.value}</div>
+              </div>
+            ))}
+          </div>
+
+          {selectedDealerDaily.dailyEntries.length === 0 ? (
+            <div style={{ textAlign:"center",padding:"40px 20px",color:"#9ca3af" }}>
+              <div style={{ fontSize:32,marginBottom:10 }}>📋</div>
+              <div style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>No daily entries yet for this activity</div>
+            </div>
+          ) : (
+            <div className="an-table-wrap">
+              <table className="an-table an-table-full">
+                <thead>
+                  <tr style={{ background:"#0a2540" }}>
+                    <th style={{ color:"#e2e8f0",textAlign:"left" }}>Date</th>
+                    <th style={{ color:"#93c5fd",textAlign:"center" }}>Enq Plan</th>
+                    <th style={{ color:"#6ee7b7",textAlign:"center" }}>Enq Actual</th>
+                    <th style={{ color:"#93c5fd",textAlign:"center" }}>TD Plan</th>
+                    <th style={{ color:"#6ee7b7",textAlign:"center" }}>TD Actual</th>
+                    <th style={{ color:"#c4b5fd",textAlign:"center" }}>Booking</th>
+                    <th style={{ color:"#fbbf24",textAlign:"center" }}>Retail</th>
+                    <th style={{ color:"#a5b4fc",textAlign:"center" }}>LMS Punched</th>
+                    <th style={{ color:"#e2e8f0",textAlign:"center" }}>Media</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedDealerDaily.dailyEntries.map((entry, i) => {
+                    const photosOnDay = selectedDealerDaily.media.filter(m =>
+                      m.capturedAt.startsWith(entry.date) && (isImageType(m.fileType) || isVideoType(m.fileType)));
+                    const invoicesOnDay = selectedDealerDaily.media.filter(m =>
+                      m.capturedAt.startsWith(entry.date) && !isImageType(m.fileType) && !isVideoType(m.fileType));
+                    const hasData = entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
+                    return (
+                      <tr key={entry.date} style={{ background:i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.5 }}>
+                        <td style={{ padding:"6px 12px",fontWeight:600,fontSize:12,color:"#374151" }}>{entry.date}</td>
+                        <td className="an-td-center" style={{ fontSize:12 }}>{entry.enquiryPlanned||"—"}</td>
+                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.enquiryActual>0?700:400,color:entry.enquiryActual>0?"#0891b2":"#94a3b8" }}>{entry.enquiryActual||"—"}</td>
+                        <td className="an-td-center" style={{ fontSize:12 }}>{entry.testDrivePlanned||"—"}</td>
+                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.testDriveActual>0?700:400,color:entry.testDriveActual>0?"#7c3aed":"#94a3b8" }}>{entry.testDriveActual||"—"}</td>
+                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#f59e0b":"#94a3b8" }}>{entry.bookingActual||"—"}</td>
+                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.retailActual>0?700:400,color:entry.retailActual>0?"#16a34a":"#94a3b8" }}>{entry.retailActual||"—"}</td>
+                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#6366f1":"#94a3b8" }}>{entry.leadsPunched||"—"}</td>
+                        <td className="an-td-center">
+                          <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
+                            {photosOnDay.slice(0,3).map(m => {
+                              const url = resolveMediaUrl(m.fileUrl);
+                              return (
+                                <div key={m.id} style={{ width:24,height:24,borderRadius:3,overflow:"hidden",cursor:"pointer",border:"1px solid #bbf7d0" }}
+                                  onClick={() => setAnMediaViewer({ url, name: m.fileName, type: m.fileType })}>
+                                  {isImageType(m.fileType)
+                                    ? <img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
+                                    : <span style={{ fontSize:13,lineHeight:"24px",display:"block",textAlign:"center" }}>{mediaIconFor(m.fileType)}</span>}
+                                </div>
+                              );
+                            })}
+                            {photosOnDay.length > 3 && <span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-3}</span>}
+                            {invoicesOnDay.length > 0 && <span style={{ fontSize:10,color:"#64748b" }}>🧾{invoicesOnDay.length}</span>}
+                            {photosOnDay.length===0 && invoicesOnDay.length===0 && <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr style={{ background:"#0a2540" }}>
+                    <td style={{ padding:"8px 12px",fontWeight:800,color:"#fbbf24" }}>TOTAL</td>
+                    {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key) => (
+                      <td key={key} className="an-td-center" style={{ color:"#e2e8f0",fontWeight:700 }}>
+                        {selectedDealerDaily.dailyEntries.reduce((s,e)=>s+(Number((e as any)[key])||0),0)}
+                      </td>
+                    ))}
+                    <td className="an-td-center" style={{ color:"#e2e8f0",fontSize:10 }}>
+                      📸{selectedDealerDaily.media.filter(m=>isImageType(m.fileType)||isVideoType(m.fileType)).length}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </Section>
+      )
+    )}
+    </>
+)}
 
       {/* ════════════════════════════════════════════════════════════════════════
           LEAD REPORT TAB

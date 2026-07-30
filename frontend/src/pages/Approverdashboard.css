@@ -677,3 +677,103 @@
   .ap-page-header    { flex-direction: column; gap: 10px; }
   .ap-save-footer    { flex-wrap: wrap; }
 }
+
+/* ════════════════════════════════════════════════════════
+   PATCH: ApproverDashboard.css additions (Phase 1 fixes)
+   ADD these rules to your existing ApproverDashboard.css
+════════════════════════════════════════════════════════ */
+
+/* Point #8: NeedsRevision row highlight in proposal list */
+.ap-row--revision {
+  border-left: 4px solid #f59e0b !important;
+  background: #fffbeb !important;
+}
+.ap-row--revision:hover {
+  background: #fef9c3 !important;
+}
+
+/* Point #8: NeedsRevision badge */
+.ap-badge-revision {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Point #6: Checker Reject button */
+.ap-reject-btn {
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: background 0.15s;
+}
+.ap-reject-btn:hover { background: #b91c1c; }
+
+/* Point #5: Checker remarks textarea highlight */
+.ap-checker-remarks-block {
+  margin-bottom: 16px;
+  background: #fffbeb;
+  border: 1.5px solid #fde68a;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.ap-checker-remarks-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #92400e;
+  display: block;
+  margin-bottom: 6px;
+}
+.ap-checker-remarks-textarea {
+  width: 100%;
+  font-size: 13px;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+  background: #fff;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+.ap-checker-remarks-textarea:focus {
+  outline: none;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+}
+
+/* ── StatCard click interactions ─────────────────────────────────────────── */
+.ap-stat-card { cursor: pointer; user-select: none; }
+.ap-stat-card:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  transform: translateY(-2px);
+}
+.ap-stat-card:active {
+  transform: translateY(0) scale(0.98);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+.ap-stat-card:focus-visible {
+  outline: 2px solid #16a34a;
+  outline-offset: 2px;
+}
+
+/* ── Forwarded row highlight (Final Approver view) ─────────────────────────── */
+.ap-row--forwarded {
+  background: #f0fdf4 !important;
+  border-left: 4px solid #16a34a !important;
+}
+.ap-row--forwarded:hover {
+  background: #dcfce7 !important;
+}
+.ap-row--forwarded.ap-row--selected {
+  background: #bbf7d0 !important;
+  border-left: 4px solid #15803d !important;
+}
