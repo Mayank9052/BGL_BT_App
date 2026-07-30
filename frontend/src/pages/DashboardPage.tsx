@@ -245,6 +245,11 @@ export default function DashboardPage() {
   // ── Report tab state (Admin only) ──────────────────────────────────────────
   const [reportTab,           setReportTab]           = useState<ReportTab>("overview");
   const [selectedDealerDaily, setSelectedDealerDaily] = useState<DailySummaryRow | null>(null);
+  const [selectedDealerEntries, setSelectedDealerEntries] = useState<{
+    date:string; enquiryPlanned:number; enquiryActual:number;
+    testDrivePlanned:number; testDriveActual:number;
+    bookingActual:number; retailActual:number; leadsPunched:number;
+  }[]>([]);
 
   useEffect(() => {
     if (loading) return;
@@ -489,60 +494,73 @@ export default function DashboardPage() {
 
   // ── Live daily summary from real proposals ───────────────────────────────
   const liveDailySummary = useMemo((): DailySummaryRow[] => {
-    // Show ALL approved proposals — even those without actuals yet (shows planned data)
     const approvedProposals = proposals.filter(p => p.status === "Approved");
     const rows: DailySummaryRow[] = [];
     let sr = 1;
     for (const p of approvedProposals) {
       for (const a of p.activities) {
-        // Try both camelCase and PascalCase (JSON serializer may send either)
-        const dailyData = (a as any).dailyData ?? (a as any).DailyData ?? null;
-        let entries: any[] = [];
-        try { if (dailyData) entries = JSON.parse(dailyData); } catch {}
-        const totalEnqActual   = entries.reduce((s: number, e: any) => s + (e.enquiryActual   || 0), 0);
-        const totalEnqPlanned  = entries.reduce((s: number, e: any) => s + (e.enquiryPlanned  || 0), 0);
-        const totalTrActual    = entries.reduce((s: number, e: any) => s + (e.testDriveActual || 0), 0);
-        const totalTrPlanned   = entries.reduce((s: number, e: any) => s + (e.testDrivePlanned|| 0), 0);
-        const totalBooking     = entries.reduce((s: number, e: any) => s + (e.bookingActual   || 0), 0);
-        const totalRetail      = entries.reduce((s: number, e: any) => s + (e.retailActual    || 0), 0);
-        const totalPunched     = entries.reduce((s: number, e: any) => s + (e.leadsPunched    || 0), 0);
-        const canopy = Number((a as any).qty) || 1;
-        const actStart = a.actualStartDate || a.startDate;
-        const actDay = actStart
-          ? Math.ceil((new Date().getTime() - new Date(actStart).getTime()) / (1000 * 60 * 60 * 24)) + 1
-          : 1;
+        const dailyData = (a as any).dailyData;
+        let totalEnqPlanned = 0, totalEnqActual = 0, totalTrPlanned = 0, totalTrActual = 0;
+        let totalBookToday = 0, totalRetail = 0, totalPunched = 0;
+        let totalPhotos = 0;
+        if (dailyData) {
+          try {
+            const entries = JSON.parse(dailyData) as {
+              date:string; setupCount?:number;
+              enquiryPlanned:number; enquiryActual:number;
+              testDrivePlanned:number; testDriveActual:number;
+              bookingActual:number; retailActual:number; leadsPunched:number;
+            }[];
+            for (const e of entries) {
+              totalEnqPlanned  += e.enquiryPlanned  || 0;
+              totalEnqActual   += e.enquiryActual   || 0;
+              totalTrPlanned   += e.testDrivePlanned || 0;
+              totalTrActual    += e.testDriveActual  || 0;
+              totalBookToday   += e.bookingActual    || 0;
+              totalRetail      += e.retailActual     || 0;
+              totalPunched     += e.leadsPunched     || 0;
+            }
+          } catch {}
+        }
+        // Count media (photos + invoices) uploaded for this activity
+        const mediaFiles = (a as any).mediaFiles ?? [];
+        totalPhotos = mediaFiles.length;
+        const canopy = (a as any).qty || 1;
         rows.push({
-          sr: sr++,
-          dealer: p.dealerName,
-          location: p.location,
-          state: p.state,
-          zone: (p as any).zone || "—",
-          bgMember: p.commandoName || (p as any).tsmName || p.rsmName || "—",
-          canopy,
-          enquiryPlanned:      totalEnqPlanned  || (a.leadTarget * actDay),
-          enquiryActual:       totalEnqActual,
-          perCanopy:           canopy > 0 ? Math.round(totalEnqActual / canopy) : 0,
-          hot:                 0, // not in current schema
-          trPlanned:           totalTrPlanned   || 0,
-          trActual:            totalTrActual,
-          trPerCanopy:         canopy > 0 ? Math.round(totalTrActual / canopy) : 0,
-          bookToday:           entries.length > 0 ? (entries[entries.length-1]?.bookingActual || 0) : 0,
-          bookInHand:          0,
-          retailToday:         entries.length > 0 ? (entries[entries.length-1]?.retailActual || 0) : 0,
-          retailMtdAct:        totalRetail,
-          retailMtd:           totalRetail,
-          retailRatePerCanopy: canopy > 0 ? parseFloat((totalRetail / canopy).toFixed(1)) : 0,
-          activityDay:         Math.min(actDay, entries.length || actDay),
-          closingStock:        0,
-          leads:               totalEnqActual,
-          punched:             totalPunched,
-          gap:                 totalEnqActual - totalPunched,
-          convPct:             totalEnqActual > 0 ? Math.round(totalRetail / totalEnqActual * 100) : 0,
-        });
+          sr:              sr++,
+          dealer:          p.dealerName   || "",
+          location:        p.location     || "",
+          state:           p.state        || "",
+          zone:            (p as any).zone || "",
+          bgMember:        p.rsmName      || "",
+          canopy:          canopy,
+          enquiryPlanned:  totalEnqPlanned,
+          enquiryActual:   totalEnqActual,
+          perCanopy:       canopy > 0 ? Math.round(totalEnqActual / canopy) : 0,
+          hot:             0,
+          trPlanned:       totalTrPlanned,
+          trActual:        totalTrActual,
+          trPerCanopy:     canopy > 0 ? Math.round(totalTrActual / canopy) : 0,
+          bookToday:       totalBookToday,
+          bookInHand:      totalBookToday,
+          retailToday:     totalRetail,
+          retailMtdAct:    totalRetail,
+          retailMtd:       totalRetail,
+          leads:           totalPunched,
+          punched:         totalPunched,
+          gap:             Math.max(0, (a.leadTarget || 0) - totalPunched),
+          convPct:         totalEnqActual > 0 ? Math.round(totalRetail / totalEnqActual * 100) : 0,
+          retailRatePerCanopy: canopy > 0 ? Math.round((totalRetail / canopy) * 10) / 10 : 0,
+          activityDay:     0,
+          closingStock:    0,
+          photos:          totalPhotos,
+          activityType:    a.activityType || "",
+        } as DailySummaryRow & { photos: number; activityType: string });
       }
     }
     return rows;
   }, [proposals]);
+
 
   // Daily summary totals — computed from LIVE data
   const dsTotals = useMemo(() => {
@@ -603,18 +621,12 @@ export default function DashboardPage() {
           <span className="dash-action-icon">📋</span>
           <div><div className="dash-action-title">New Proposal</div><div className="dash-action-desc">Submit a BTL activity plan</div></div>
         </button>
-        {/* {isAdmin && (
+        {isAdmin && (
           <button className="dash-action-card" onClick={() => navigate("/approver")}>
             <span className="dash-action-icon">✅</span>
             <div><div className="dash-action-title">Review Proposals</div><div className="dash-action-desc">Approve or reject pending plans</div></div>
           </button>
-        )} */}
-       
-          <button className="dash-action-card" onClick={() => navigate("/approver")}>
-            <span className="dash-action-icon">✅</span>
-            <div><div className="dash-action-title">Review Proposals</div><div className="dash-action-desc">Approve or reject pending plans</div></div>
-          </button>
-        
+        )}
         <button className="dash-action-card dash-action-card--report" onClick={() => navigate("/reports")}>
           <span className="dash-action-icon">📊</span>
           <div><div className="dash-action-title">Download Report</div><div className="dash-action-desc">Excel &amp; PDF · by period, state, dealer</div></div>
@@ -649,23 +661,23 @@ export default function DashboardPage() {
               value={String(stats.totalProposals)}
               sub={`${stats.dealerCount} dealers · ${stats.stateCount} states`}
               accent="blue" active={activeFilter === "All"}
-              onClick={() => handleKpiClick("All")}/>
+              onClick={() => { handleKpiClick("All"); }}/>
             <KpiCard icon="⏳" label="Pending Approval"
               value={String(stats.pendingCount)}
               sub={`Budget: ${inrCompact(stats.pendingBudget)}`}
               accent="amber" active={activeFilter === "Pending"}
               badge={stats.pendingCount > 0 ? "action needed" : undefined}
-              onClick={() => { handleKpiClick("Pending"); if (isAdmin) navigate("/approver"); }}/>
+              onClick={() => { handleKpiClick("Pending"); }}/>
             <KpiCard icon="✅" label="Approved"
               value={String(stats.approvedCount)}
               sub={`Budget: ${inrCompact(stats.approvedBudget)}`}
               accent="green" active={activeFilter === "Approved"}
-              onClick={() => handleKpiClick("Approved")}/>
+              onClick={() => { handleKpiClick("Approved"); }}/>
             <KpiCard icon="❌" label="Rejected"
               value={String(stats.rejectedCount)}
               sub={`${Math.round(stats.totalRetailTarget).toLocaleString("en-IN")} total units`}
               accent="red" active={activeFilter === "Rejected"}
-              onClick={() => handleKpiClick("Rejected")}/>
+              onClick={() => { handleKpiClick("Rejected"); }}/>
             <KpiCard icon="💰" label="Total Budget"
               value={inrCompact(stats.totalBudget)}
               sub={`Avg CAC ₹${Math.round(stats.avgCac).toLocaleString("en-IN")}`}
@@ -674,11 +686,11 @@ export default function DashboardPage() {
               value={`₹${Math.round(stats.avgCpl).toLocaleString("en-IN")}`}
               sub={`${stats.totalLeadTarget.toLocaleString("en-IN")} total leads`}
               accent="blue" onClick={clearAllFilters}/>
-              {/* {isAdmin&&<KpiCard icon="↩" label="Needs Revision"
+            {/* {isAdmin&&<KpiCard icon="↩" label="Needs Revision"
               value={String(stats.needsRevision??0)}
               sub="Sent back for changes"
               accent="amber" active={activeFilter==="NeedsRevision"}
-              onClick={()=>handleKpiClick("NeedsRevision")}/>} */}
+              onClick={()=>{ handleKpiClick("NeedsRevision"); }}/>} */}
             {stats.needsRevision !== undefined && (
               <KpiCard icon="↩" label="Needs Revision"
                 value={String(stats.needsRevision??0)}
@@ -718,8 +730,8 @@ export default function DashboardPage() {
             <div className="dash-report-tabs">
               {([
                 { id: "overview",      label: "📋 BTL Overview",   desc: "Proposals, state & dealer summary" },
-                { id: "daily-summary", label: "📅 Daily Activity", desc: "Today's canopy & activity sheet" },
-                { id: "lead-report",   label: "🎯 Lead Report",    desc: "State-wise planned vs actual leads" },
+                // { id: "daily-summary", label: "📅 Daily Activity", desc: "Today's canopy & activity sheet" },
+                // { id: "lead-report",   label: "🎯 Lead Report",    desc: "State-wise planned vs actual leads" },
               ] as { id: ReportTab; label: string; desc: string }[]).map(({ id, label, desc }) => (
                 <button key={id}
                   className={`dash-report-tab${reportTab === id ? " dash-report-tab--active" : ""}`}
@@ -1137,48 +1149,32 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div className="dash-table-wrap dash-table-wrap--wide">
-                <table id="daily-summary-table" className="dash-table" style={{minWidth:1500}}>
+                <table id="daily-summary-table" className="dash-table" style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
                   <thead>
                     <tr style={{background:"#0a2540"}}>
-                      <th className="dash-th" rowSpan={2} style={{minWidth:32}}>#</th>
-                      <th className="dash-th" rowSpan={2} style={{minWidth:120,textAlign:"left"}}>Dealer</th>
-                      <th className="dash-th" rowSpan={2} style={{minWidth:90,textAlign:"left"}}>Location</th>
-                      <th className="dash-th" rowSpan={2} style={{width:45}}>State</th>
-                      <th className="dash-th" rowSpan={2} style={{width:55}}>Zone</th>
-                      <th className="dash-th" rowSpan={2} style={{minWidth:90,textAlign:"left"}}>BG Member</th>
-                      <th className="dash-th" rowSpan={2} style={{width:55}}>Canopy</th>
-                      <th className="dash-th" colSpan={4} style={{textAlign:"center",background:"#1e3a5f",borderBottom:"1px solid rgba(255,255,255,0.1)"}}>Enquiry</th>
-                      <th className="dash-th" colSpan={3} style={{textAlign:"center",background:"#166534",borderBottom:"1px solid rgba(255,255,255,0.1)"}}>Test Rides</th>
-                      <th className="dash-th" colSpan={2} style={{textAlign:"center",background:"#7c3aed",borderBottom:"1px solid rgba(255,255,255,0.1)"}}>Bookings</th>
-                      <th className="dash-th" colSpan={4} style={{textAlign:"center",background:"#b45309",borderBottom:"1px solid rgba(255,255,255,0.1)"}}>Retail</th>
-                      <th className="dash-th" rowSpan={2} style={{width:55}}>Activity Day</th>
-                      <th className="dash-th" rowSpan={2} style={{width:65}}>Closing Stock</th>
-                      <th className="dash-th" colSpan={4} style={{textAlign:"center",background:"#1e40af",borderBottom:"1px solid rgba(255,255,255,0.1)"}}>LMS / Retail</th>
-                    </tr>
-                    <tr style={{background:"#0f172a"}}>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#1e3a5f"}}>Planned</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#1e3a5f"}}>Actual</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#1e3a5f"}}>Per Canopy</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#1e3a5f"}}>Hot</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#166534"}}>Planned</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#166534"}}>Actual</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#166534"}}>Per Canopy</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#7c3aed"}}>Today</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#7c3aed"}}>In Hand</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#b45309"}}>Today</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#b45309"}}>MTD (Act.)</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#b45309"}}>MTD</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#b45309"}}>Rate/Canopy</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#1e40af"}}>Leads</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#1e40af"}}>Punched</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#1e40af"}}>Gap</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#1e40af"}}>Conv%</th>
+                      <th style={{padding:"8px 10px",color:"#e2e8f0",textAlign:"center",fontSize:11,fontWeight:700,width:36}}>#</th>
+                      <th style={{padding:"8px 10px",color:"#e2e8f0",textAlign:"left",fontSize:11,fontWeight:700,minWidth:120}}>Dealer</th>
+                      <th style={{padding:"8px 8px",color:"#e2e8f0",textAlign:"left",fontSize:11,fontWeight:700,minWidth:90}}>Location</th>
+                      <th style={{padding:"8px 8px",color:"#e2e8f0",textAlign:"center",fontSize:11,fontWeight:700,width:50}}>State</th>
+                      <th style={{padding:"8px 8px",color:"#e2e8f0",textAlign:"left",fontSize:11,fontWeight:700,minWidth:90}}>BG Member</th>
+                      <th style={{padding:"8px 8px",color:"#e2e8f0",textAlign:"left",fontSize:11,fontWeight:700,minWidth:90}}>Activity Type</th>
+                      <th style={{padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:11,fontWeight:700,width:60}}>Canopy</th>
+                      <th style={{padding:"8px 6px",color:"#93c5fd",textAlign:"center",fontSize:11,fontWeight:700}}>Enq Plan</th>
+                      <th style={{padding:"8px 6px",color:"#6ee7b7",textAlign:"center",fontSize:11,fontWeight:700}}>Enq Actual</th>
+                      <th style={{padding:"8px 6px",color:"#e2e8f0",textAlign:"center",fontSize:11,fontWeight:700}}>/Canopy</th>
+                      <th style={{padding:"8px 6px",color:"#93c5fd",textAlign:"center",fontSize:11,fontWeight:700}}>TD Plan</th>
+                      <th style={{padding:"8px 6px",color:"#c4b5fd",textAlign:"center",fontSize:11,fontWeight:700}}>TD Actual</th>
+                      <th style={{padding:"8px 6px",color:"#fbbf24",textAlign:"center",fontSize:11,fontWeight:700}}>Booking</th>
+                      <th style={{padding:"8px 6px",color:"#fbbf24",textAlign:"center",fontSize:11,fontWeight:700}}>Retail Today</th>
+                      <th style={{padding:"8px 6px",color:"#6ee7b7",textAlign:"center",fontSize:11,fontWeight:700}}>Retail MTD</th>
+                      <th style={{padding:"8px 6px",color:"#a5b4fc",textAlign:"center",fontSize:11,fontWeight:700}}>Leads</th>
+                      <th style={{padding:"8px 6px",color:"#6ee7b7",textAlign:"center",fontSize:11,fontWeight:700,background:"#166534"}}>📸 Photos</th>
                     </tr>
                   </thead>
                   <tbody>
                     {liveDailySummary.length === 0 && (
                       <tr>
-                        <td colSpan={27} style={{textAlign:"center",padding:"48px 20px",color:"#6b7280"}}>
+                        <td colSpan={17} style={{textAlign:"center",padding:"48px 20px",color:"#6b7280"}}>
                           <div style={{fontSize:36,marginBottom:12}}>📋</div>
                           <div style={{fontWeight:700,fontSize:15,color:"#0a2540",marginBottom:6}}>
                             {proposals.filter(p=>p.status==="Approved").length === 0
@@ -1187,75 +1183,133 @@ export default function DashboardPage() {
                           </div>
                           <div style={{fontSize:13,color:"#94a3b8",maxWidth:400,margin:"0 auto"}}>
                             {proposals.filter(p=>p.status==="Approved").length === 0
-                              ? "Once proposals are approved, their activities will appear here with daily data."
-                              : `${proposals.filter(p=>p.status==="Approved").length} approved proposal(s) found. Open each from the Approver Dashboard → Post-Activity section to enter daily data (enquiry, test drives, bookings, retail, LMS).`}
+                              ? "Once proposals are approved their activities will appear here."
+                              : `${proposals.filter(p=>p.status==="Approved").length} approved proposal(s) found — fill post-activity data to see daily metrics.`}
                           </div>
                         </td>
                       </tr>
                     )}
                     {liveDailySummary.map((row, i) => {
-                      const enqColor  = cellColor(row.enquiryActual, row.enquiryPlanned);
-                      const trColor   = cellColor(row.trActual, row.trPlanned);
-                      const rateColor = row.retailRatePerCanopy >= 1 ? "#d1fae5" : row.retailRatePerCanopy >= 0.5 ? "#fef3c7" : "#fee2e2";
+                      const enqColor = cellColor(row.enquiryActual, row.enquiryPlanned);
+                      const trColor  = cellColor(row.trActual, row.trPlanned);
                       return (
-                        <tr key={row.sr} className={i % 2 === 0 ? "dash-row-even" : "dash-row-odd"}
+                        <tr key={row.sr}
+                          className={i % 2 === 0 ? "dash-row-even" : "dash-row-odd"}
                           style={{cursor:"pointer"}}
-                          onClick={() => { setSelectedDealerDaily(row); setReportTab("dealer-daily"); }}>
-                          <td className="dash-td" style={{textAlign:"center",color:"#64748b",fontSize:11}}>{row.sr}</td>
-                          <td className="dash-td" style={{fontWeight:700,color:"#0a2540"}}>{row.dealer}</td>
-                          <td className="dash-td" style={{fontSize:12,color:"#475569"}}>{row.location}</td>
-                          <td className="dash-td" style={{textAlign:"center"}}><span className="dash-state-tag">{row.state}</span></td>
-                          <td className="dash-td" style={{textAlign:"center",fontSize:11,color:"#64748b"}}>{row.zone}</td>
-                          <td className="dash-td" style={{fontSize:12,fontWeight:600,color:"#374151"}}>{row.bgMember}</td>
-                          <td className="dash-td" style={{textAlign:"center",fontWeight:700}}>{row.canopy}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.enquiryPlanned}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,background:enqColor}}>{row.enquiryActual}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,background:enqColor}}>{row.perCanopy}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.hot}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.trPlanned}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,background:trColor}}>{row.trActual}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,background:trColor}}>{row.trPerCanopy}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,color:"#7c3aed"}}>{row.bookToday}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12,color:"#7c3aed"}}>{row.bookInHand}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,color:row.retailToday>0?"#166534":"#64748b"}}>{row.retailToday}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.retailMtdAct}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700}}>{row.retailMtd}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,background:rateColor}}>{row.retailRatePerCanopy.toFixed(1)}</td>
-                          <td className="dash-td" style={{textAlign:"center",fontSize:11,color:"#64748b"}}>{row.activityDay}</td>
-                          <td className="dash-td" style={{textAlign:"center",fontSize:12}}>{row.closingStock}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.leads}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.punched}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12,color:row.gap>50?"#dc2626":"#374151"}}>{row.gap}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,background:achColor(row.convPct)}}>{row.convPct}%</td>
+                          onClick={() => {
+                            setSelectedDealerDaily(row);
+                            const dealerProposals = proposals.filter(p =>
+                              p.status === "Approved" && p.dealerName === row.dealer
+                            );
+                            const entries: typeof selectedDealerEntries = [];
+                            for (const p of dealerProposals) {
+                              for (const a of p.activities) {
+                                const raw = (a as any).dailyData;
+                                if (!raw) continue;
+                                try {
+                                  const parsed = JSON.parse(raw);
+                                  for (const e of parsed) {
+                                    const ex = entries.find(x => x.date === e.date);
+                                    if (ex) {
+                                      ex.enquiryPlanned   += e.enquiryPlanned   || 0;
+                                      ex.enquiryActual    += e.enquiryActual    || 0;
+                                      ex.testDrivePlanned += e.testDrivePlanned || 0;
+                                      ex.testDriveActual  += e.testDriveActual  || 0;
+                                      ex.bookingActual    += e.bookingActual    || 0;
+                                      ex.retailActual     += e.retailActual     || 0;
+                                      ex.leadsPunched     += e.leadsPunched     || 0;
+                                    } else {
+                                      entries.push({
+                                        date:             e.date,
+                                        enquiryPlanned:   e.enquiryPlanned   || 0,
+                                        enquiryActual:    e.enquiryActual    || 0,
+                                        testDrivePlanned: e.testDrivePlanned || 0,
+                                        testDriveActual:  e.testDriveActual  || 0,
+                                        bookingActual:    e.bookingActual    || 0,
+                                        retailActual:     e.retailActual     || 0,
+                                        leadsPunched:     e.leadsPunched     || 0,
+                                      });
+                                    }
+                                  }
+                                } catch {}
+                              }
+                            }
+                            entries.sort((a, b) => a.date.localeCompare(b.date));
+                            setSelectedDealerEntries(entries);
+                            setReportTab("dealer-daily");
+                          }}>
+                          <td style={{padding:"7px 10px",textAlign:"center",color:"#64748b",fontSize:11}}>{row.sr}</td>
+                          <td style={{padding:"7px 10px",fontWeight:700,color:"#0a2540",fontSize:12}}>{row.dealer}</td>
+                          <td style={{padding:"7px 8px",fontSize:11,color:"#475569"}}>{row.location}</td>
+                          <td style={{padding:"7px 8px",textAlign:"center"}}>
+                            <span className="dash-state-tag">{row.state}</span>
+                          </td>
+                          <td style={{padding:"7px 8px",fontSize:11,fontWeight:600,color:"#374151"}}>{row.bgMember}</td>
+                          <td style={{padding:"7px 8px",fontSize:11}}>
+                            {(row as any).activityType ? (
+                              <span style={{
+                                background:(row as any).activityType==="ATL"?"#eff6ff":"#f0fdf4",
+                                color:(row as any).activityType==="ATL"?"#1e40af":"#166534",
+                                fontWeight:700,fontSize:10,padding:"2px 7px",borderRadius:4
+                              }}>{(row as any).activityType}</span>
+                            ) : "—"}
+                          </td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontWeight:700}}>{row.canopy}</td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontSize:12,color:"#2563eb"}}>{row.enquiryPlanned||"—"}</td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontWeight:row.enquiryActual>0?700:400,
+                            color:row.enquiryActual>0?"#16a34a":"#94a3b8",background:enqColor}}>
+                            {row.enquiryActual||"—"}
+                          </td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontSize:11,color:"#6b7280"}}>
+                            {row.perCanopy>0?row.perCanopy.toFixed(1):"—"}
+                          </td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontSize:12,color:"#7c3aed"}}>{row.trPlanned||"—"}</td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontWeight:row.trActual>0?700:400,
+                            color:row.trActual>0?"#7c3aed":"#94a3b8",background:trColor}}>
+                            {row.trActual||"—"}
+                          </td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontWeight:row.bookToday>0?700:400,
+                            color:row.bookToday>0?"#f59e0b":"#94a3b8"}}>
+                            {row.bookToday||"—"}
+                          </td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontWeight:row.retailToday>0?700:400,
+                            color:row.retailToday>0?"#f59e0b":"#94a3b8"}}>
+                            {row.retailToday||"—"}
+                          </td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontWeight:row.retailMtd>0?700:400,
+                            color:row.retailMtd>0?"#16a34a":"#94a3b8"}}>
+                            {row.retailMtd||"—"}
+                          </td>
+                          <td style={{padding:"7px 6px",textAlign:"center",fontSize:12,color:"#6b7280"}}>{row.leads||"—"}</td>
+                          <td style={{padding:"7px 6px",textAlign:"center"}}>
+                            {(row as any).photos>0
+                              ? <span style={{color:"#16a34a",fontWeight:700,fontSize:11}}>📸 {(row as any).photos}</span>
+                              : <span style={{color:"#94a3b8",fontSize:11}}>—</span>}
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                   <tfoot>
-                    <tr style={{background:"#fef9c3",borderTop:"2px solid #fde68a"}}>
-                      <td className="dash-td" colSpan={6} style={{fontWeight:800,fontSize:12,color:"#92400e"}}>Total ({liveDailySummary.length})</td>
-                      <td className="dash-td" style={{textAlign:"center",fontWeight:800}}>{dsTotals.canopy}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>{dsTotals.enquiryPlanned}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.enquiryActual}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.perCanopy}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>{dsTotals.hot}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>{dsTotals.trPlanned}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.trActual}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.trPerCanopy}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.bookToday}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>{dsTotals.bookInHand}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.retailToday}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>{dsTotals.retailMtdAct}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.retailMtd}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>
-                        {dsTotals.canopy > 0 ? (dsTotals.retailMtd / dsTotals.canopy).toFixed(1) : "—"}
+                    <tr style={{background:"#0a2540"}}>
+                      <td colSpan={4} style={{padding:"8px 12px",fontWeight:800,color:"#fbbf24",fontSize:12}}>
+                        TOTAL ({liveDailySummary.length})
                       </td>
-                      <td className="dash-td" colSpan={2}/>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.leads}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>{dsTotals.punched}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>{dsTotals.gap}</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>
-                        {dsTotals.leads > 0 ? Math.round(dsTotals.retailMtd / dsTotals.leads * 100) + "%" : "—"}
+                      <td colSpan={2}/>
+                      <td style={{textAlign:"center",fontWeight:800,color:"#e2e8f0"}}>{dsTotals.canopy}</td>
+                      <td style={{textAlign:"center",fontWeight:700,color:"#93c5fd"}}>{dsTotals.enquiryPlanned}</td>
+                      <td style={{textAlign:"center",fontWeight:800,color:"#6ee7b7"}}>{dsTotals.enquiryActual}</td>
+                      <td/>
+                      <td style={{textAlign:"center",fontWeight:700,color:"#93c5fd"}}>{dsTotals.trPlanned}</td>
+                      <td style={{textAlign:"center",fontWeight:800,color:"#c4b5fd"}}>{dsTotals.trActual}</td>
+                      <td/>
+                      <td style={{textAlign:"center",fontWeight:800,color:"#fbbf24"}}>{dsTotals.retailToday}</td>
+                      <td style={{textAlign:"center",fontWeight:800,color:"#6ee7b7"}}>{dsTotals.retailMtd}</td>
+                      <td style={{textAlign:"center",fontWeight:800,color:"#a5b4fc"}}>{dsTotals.leads}</td>
+                      <td style={{textAlign:"center",fontWeight:700,color:"#6ee7b7"}}>
+                        {liveDailySummary.reduce((s,r)=>(s+((r as any).photos||0)),0) > 0
+                          ? `📸 ${liveDailySummary.reduce((s,r)=>(s+((r as any).photos||0)),0)}`
+                          : "—"}
                       </td>
                     </tr>
                   </tfoot>
@@ -1300,6 +1354,7 @@ export default function DashboardPage() {
                       <th className="dash-th" rowSpan={3} style={{width:65}}>Leads Variance</th>
                       <th className="dash-th" rowSpan={3} style={{width:65,background:"#fef3c7",color:"#92400e"}}>Leads Ach.%</th>
                       <th className="dash-th" rowSpan={3} style={{width:65}}>Jul 26 Retail Target</th>
+                       <th className="dash-th" rowSpan={3} style={{width:65,background:"#166534",color:"#fff"}}>📸 Photos</th>
                       <th className="dash-th" rowSpan={3} style={{width:65}}>MTD Retail Target</th>
                       <th className="dash-th" rowSpan={3} style={{width:65}}>MTD Retail Achieved</th>
                       <th className="dash-th" rowSpan={3} style={{width:70,background:"#166534"}}>MTD Retail Ach.%</th>
@@ -1341,6 +1396,7 @@ export default function DashboardPage() {
                           <td className="dash-td dash-td--right" style={{fontWeight:700}}>{row.mtdRetailAch}</td>
                           <td className="dash-td dash-td--right" style={{fontWeight:800,background:retailAchColor}}>{row.mtdRetailAchPct}%</td>
                           <td className="dash-td dash-td--right" style={{fontSize:12,color:"#475569"}}>{row.retailEnqPct}%</td>
+                           <td className="dash-td" style={{textAlign:"center",fontWeight:700,color:"#166534"}}>{(row as any).photos>0?`📸 ${(row as any).photos}`:"—"}</td>
                         </tr>
                       );
                     })}
@@ -1384,115 +1440,158 @@ export default function DashboardPage() {
               <div className="dash-section-head">
                 <div>
                   <button onClick={() => setReportTab("daily-summary")}
-                    style={{background:"none",border:"none",color:"#2563eb",cursor:"pointer",fontSize:13,fontWeight:600,padding:"0 0 6px",display:"flex",alignItems:"center",gap:5}}>
+                    style={{background:"none",border:"none",color:"#2563eb",cursor:"pointer",
+                      fontSize:13,fontWeight:600,padding:"0 0 6px",
+                      display:"flex",alignItems:"center",gap:5}}>
                     ← Back to Daily Summary
                   </button>
                   <h2 className="dash-section-title" style={{fontSize:16}}>
                     🏪 {selectedDealerDaily.dealer} — {selectedDealerDaily.location}
-                    <span style={{fontSize:12,fontWeight:400,color:"#64748b",marginLeft:10}}>July 2026 · BG Team: {selectedDealerDaily.bgMember}</span>
+                    <span style={{fontSize:12,fontWeight:400,color:"#64748b",marginLeft:10}}>
+                      BG Member: {selectedDealerDaily.bgMember} · {selectedDealerDaily.canopy} Canopy
+                    </span>
                   </h2>
+                  <div style={{display:"flex",gap:16,marginTop:6,flexWrap:"wrap"}}>
+                    {[
+                      {label:"Enq Planned", value:selectedDealerDaily.enquiryPlanned, color:"#2563eb"},
+                      {label:"Enq Actual",  value:selectedDealerDaily.enquiryActual,  color:"#16a34a"},
+                      {label:"TD Planned",  value:selectedDealerDaily.trPlanned,      color:"#2563eb"},
+                      {label:"TD Actual",   value:selectedDealerDaily.trActual,       color:"#7c3aed"},
+                      {label:"Booking",     value:selectedDealerDaily.bookToday,      color:"#f59e0b"},
+                      {label:"Retail MTD",  value:selectedDealerDaily.retailMtd,      color:"#f59e0b"},
+                      {label:"LMS Leads",   value:selectedDealerDaily.leads,          color:"#6366f1"},
+                    ].map(k=>(
+                      <div key={k.label} style={{textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#94a3b8",textTransform:"uppercase",letterSpacing:"0.5px"}}>{k.label}</div>
+                        <div style={{fontSize:20,fontWeight:800,color:k.color}}>{k.value||"—"}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <span style={{fontSize:11,background:"#fef3c7",color:"#92400e",padding:"3px 10px",borderRadius:20,fontWeight:700}}>🔴 Mock data</span>
-                  <button
-                    onClick={()=>printSection("dealer-daily-table",`${selectedDealerDaily.dealer} — ${selectedDealerDaily.location} Daily Sheet`)}
-                    style={{background:"#dc2626",color:"#fff",border:"none",borderRadius:6,
-                      padding:"6px 14px",fontSize:11,fontWeight:700,cursor:"pointer",
-                      display:"flex",alignItems:"center",gap:5}}>
-                    ⬇ PDF
-                  </button>
+                <button
+                  onClick={()=>printSection("dealer-daily-table",`${selectedDealerDaily.dealer} Daily Sheet`)}
+                  style={{background:"#dc2626",color:"#fff",border:"none",borderRadius:6,
+                    padding:"8px 16px",fontSize:12,fontWeight:700,cursor:"pointer",
+                    alignSelf:"flex-start"}}>
+                  ⬇ PDF
+                </button>
+              </div>
+
+              {selectedDealerEntries.length === 0 ? (
+                <div style={{textAlign:"center",padding:"48px 20px",color:"#6b7280"}}>
+                  <div style={{fontSize:36,marginBottom:12}}>📋</div>
+                  <div style={{fontWeight:700,fontSize:15,color:"#0a2540",marginBottom:6}}>
+                    No daily post-activity entries yet
+                  </div>
+                  <div style={{fontSize:13,color:"#94a3b8",maxWidth:400,margin:"0 auto"}}>
+                    Once the RSM fills post-activity data for this dealer's approved proposals,
+                    the day-by-day entries will appear here.
+                  </div>
                 </div>
-              </div>
-              <div className="dash-table-wrap dash-table-wrap--wide">
-                <table id="dealer-daily-table" className="dash-table" style={{minWidth:1100}}>
-                  <thead>
-                    <tr style={{background:"#0a2540"}}>
-                      <th className="dash-th" rowSpan={2} style={{minWidth:90,textAlign:"left"}}>Date</th>
-                      <th className="dash-th" rowSpan={2} style={{width:70}}>Opening Stock</th>
-                      <th className="dash-th" rowSpan={2} style={{width:65}}>Canopy</th>
-                      <th className="dash-th" colSpan={7} style={{textAlign:"center",background:"#1e3a5f",borderBottom:"1px solid rgba(255,255,255,0.1)"}}>Enquiry</th>
-                      <th className="dash-th" colSpan={2} style={{textAlign:"center",background:"#166534",borderBottom:"1px solid rgba(255,255,255,0.1)"}}>Test Drive</th>
-                      <th className="dash-th" colSpan={2} style={{textAlign:"center",background:"#7c3aed",borderBottom:"1px solid rgba(255,255,255,0.1)"}}>Booking · BG-{selectedDealerDaily.bgMember}</th>
-                      <th className="dash-th" rowSpan={2} style={{width:65,background:"#b45309"}}>Retail</th>
-                      <th className="dash-th" rowSpan={2} style={{width:65,background:"#b45309"}}>MTD Retail</th>
-                    </tr>
-                    <tr style={{background:"#0f172a"}}>
-                      {["Canopy","Planned","Actual","Walk in","In LMS","Gap","Hot","Revised Hot"].map((h, i) => (
-                        <th key={i} className="dash-th dash-th--right" style={{fontSize:9,background:"#1e3a5f"}}>{h}</th>
-                      ))}
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#166534"}}>Planned</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#166534"}}>Actual</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#7c3aed"}}>Today</th>
-                      <th className="dash-th dash-th--right" style={{fontSize:9,background:"#7c3aed"}}>In hand</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {DEALER_DAILY.map((row, i) => {
-                      const hasData  = row.enquiryActual !== undefined;
-                      const enqColor = hasData ? cellColor(row.enquiryActual ?? 0, row.enquiryPlanned) : "";
-                      return (
-                        <tr key={row.date} className={i % 2 === 0 ? "dash-row-even" : "dash-row-odd"}>
-                          <td className="dash-td" style={{fontSize:12,fontWeight:600,color:"#374151"}}>{row.date}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12,color:"#64748b"}}>{row.openingStock ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700}}>{row.canopy ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12,color:"#64748b"}}>{row.canopy ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.enquiryPlanned || ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,background:enqColor}}>{row.enquiryActual ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12,color:"#475569"}}>{row.walkIn ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12,color:"#475569"}}>{row.inLms ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12,color:row.gap !== undefined && row.gap < 0 ? "#dc2626" : "#166534",fontWeight:700}}>{row.gap ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.hot ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.revisedHot ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12}}>{row.trPlanned || ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,background:hasData?cellColor(row.trActual??0,row.trPlanned):""}}>{row.trActual ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,color:"#7c3aed"}}>{row.bookToday ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontSize:12,color:"#7c3aed"}}>{row.bookInHand ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700,color:row.retail&&row.retail>0?"#166534":"inherit"}}>{row.retail ?? ""}</td>
-                          <td className="dash-td dash-td--right" style={{fontWeight:700}}>{row.mtdRetail ?? ""}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot>
-                    <tr style={{background:"#fef9c3",borderTop:"2px solid #fde68a"}}>
-                      <td className="dash-td" colSpan={2} style={{fontWeight:800,fontSize:12,color:"#92400e"}}>Total</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>5</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>5</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>175</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>154</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>14</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>99</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800,color:"#dc2626"}}>-55</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>14</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>8</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>149</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800}}>105</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800,color:"#7c3aed"}}>6</td>
-                      <td className="dash-td dash-td--right" style={{color:"#7c3aed"}}>0</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800,color:"#166534"}}>6</td>
-                      <td className="dash-td"/>
-                    </tr>
-                    <tr style={{background:"#f0fdf4",borderTop:"1px solid #bbf7d0"}}>
-                      <td className="dash-td" colSpan={2} style={{fontWeight:600,fontSize:11,color:"#166534"}}>Avg Per Canopy</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>1</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>1</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>35</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800,background:"#fef3c7"}}>31</td>
-                      <td className="dash-td dash-td--right">3</td>
-                      <td className="dash-td"/>
-                      <td className="dash-td"/>
-                      <td className="dash-td dash-td--right">3</td>
-                      <td className="dash-td dash-td--right">2</td>
-                      <td className="dash-td dash-td--right">30</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800,background:"#fef3c7"}}>21</td>
-                      <td className="dash-td dash-td--right" style={{fontWeight:700}}>1.2</td>
-                      <td className="dash-td"/>
-                      <td className="dash-td dash-td--right" style={{fontWeight:800,background:"#fef3c7"}}>1.2</td>
-                      <td className="dash-td"/>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
+              ) : (
+                <div className="dash-table-wrap dash-table-wrap--wide">
+                  <table id="dealer-daily-table" className="dash-table" style={{minWidth:760}}>
+                    <thead>
+                      <tr style={{background:"#1e293b"}}>
+                        <th style={{padding:"8px 10px",textAlign:"left",color:"#e2e8f0",fontSize:10,fontWeight:700,width:100}}>Date</th>
+                        <th style={{padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700}}>Setup<br/>Count</th>
+                        <th style={{padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700}}>Enquiry<br/>Plan</th>
+                        <th style={{padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700}}>Enquiry<br/>Actual</th>
+                        <th style={{padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700}}>Test Drive<br/>Plan</th>
+                        <th style={{padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700}}>Test Drive<br/>Actual</th>
+                        <th style={{padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700}}>Booking</th>
+                        <th style={{padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700}}>Retail</th>
+                        <th style={{padding:"8px 8px",textAlign:"center",color:"#a5b4fc",fontSize:10,fontWeight:700}}>LMS Leads<br/>Punched</th>
+                        <th style={{padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700}}>Enq<br/>Conv%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedDealerEntries.map((row, i) => {
+                        const pctC = (actual:number, planned:number) => {
+                          if (!planned) return "";
+                          const r = planned > 0 ? actual / planned : 0;
+                          return r >= 0.9 ? "#d1fae5" : r >= 0.6 ? "#fef3c7" : "#fee2e2";
+                        };
+                        const hasData = row.enquiryActual>0||row.testDriveActual>0||row.bookingActual>0||row.retailActual>0;
+                        const conv = row.enquiryPlanned > 0 ? Math.round(row.enquiryActual/row.enquiryPlanned*100) : 0;
+                        return (
+                          <tr key={row.date} style={{
+                            background: i%2===0?"#fff":"#f8fafc",
+                            borderBottom:"1px solid #f1f5f9",
+                            opacity: hasData ? 1 : 0.5
+                          }}>
+                            <td style={{padding:"6px 10px",fontWeight:600,color:"#374151",fontSize:11,whiteSpace:"nowrap"}}>{row.date}</td>
+                            <td style={{padding:"6px 8px",textAlign:"center",color:"#64748b",fontSize:11}}>—</td>
+                            <td style={{padding:"6px 8px",textAlign:"center",fontSize:11,color:"#2563eb"}}>{row.enquiryPlanned||"—"}</td>
+                            <td style={{padding:"6px 8px",textAlign:"center",fontWeight:row.enquiryActual>0?700:400,
+                              background:pctC(row.enquiryActual,row.enquiryPlanned),fontSize:11}}>
+                              {row.enquiryActual||"—"}
+                            </td>
+                            <td style={{padding:"6px 8px",textAlign:"center",fontSize:11,color:"#2563eb"}}>{row.testDrivePlanned||"—"}</td>
+                            <td style={{padding:"6px 8px",textAlign:"center",fontWeight:row.testDriveActual>0?700:400,
+                              background:pctC(row.testDriveActual,row.testDrivePlanned),fontSize:11}}>
+                              {row.testDriveActual||"—"}
+                            </td>
+                            <td style={{padding:"6px 8px",textAlign:"center",fontWeight:700,color:"#7c3aed",fontSize:11}}>{row.bookingActual||"—"}</td>
+                            <td style={{padding:"6px 8px",textAlign:"center",fontWeight:700,
+                              color:row.retailActual>0?"#166534":"#94a3b8",fontSize:11}}>
+                              {row.retailActual||"—"}
+                            </td>
+                            <td style={{padding:"6px 8px",textAlign:"center",fontWeight:row.leadsPunched>0?700:400,
+                              color:row.leadsPunched>0?"#6366f1":"#94a3b8",fontSize:11}}>
+                              {row.leadsPunched||"—"}
+                            </td>
+                            <td style={{padding:"6px 8px",textAlign:"center"}}>
+                              {row.enquiryPlanned > 0 ? (
+                                <span style={{fontSize:11,fontWeight:700,
+                                  color:conv>=90?"#16a34a":conv>=60?"#f59e0b":"#dc2626"}}>
+                                  {conv}%
+                                </span>
+                              ) : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{background:"#fef9c3",borderTop:"2px solid #fde68a"}}>
+                        <td style={{padding:"8px 10px",fontWeight:800,fontSize:12,color:"#92400e"}}>
+                          Total ({selectedDealerEntries.length} days)
+                        </td>
+                        <td/>
+                        <td style={{textAlign:"center",fontWeight:700,color:"#2563eb"}}>
+                          {selectedDealerEntries.reduce((s,r)=>s+r.enquiryPlanned,0)}
+                        </td>
+                        <td style={{textAlign:"center",fontWeight:800,color:"#16a34a"}}>
+                          {selectedDealerEntries.reduce((s,r)=>s+r.enquiryActual,0)}
+                        </td>
+                        <td style={{textAlign:"center",fontWeight:700,color:"#2563eb"}}>
+                          {selectedDealerEntries.reduce((s,r)=>s+r.testDrivePlanned,0)}
+                        </td>
+                        <td style={{textAlign:"center",fontWeight:800,color:"#7c3aed"}}>
+                          {selectedDealerEntries.reduce((s,r)=>s+r.testDriveActual,0)}
+                        </td>
+                        <td style={{textAlign:"center",fontWeight:800,color:"#7c3aed"}}>
+                          {selectedDealerEntries.reduce((s,r)=>s+r.bookingActual,0)}
+                        </td>
+                        <td style={{textAlign:"center",fontWeight:800,color:"#166534"}}>
+                          {selectedDealerEntries.reduce((s,r)=>s+r.retailActual,0)}
+                        </td>
+                        <td style={{textAlign:"center",fontWeight:800,color:"#6366f1"}}>
+                          {selectedDealerEntries.reduce((s,r)=>s+r.leadsPunched,0)}
+                        </td>
+                        <td style={{textAlign:"center",fontWeight:800}}>
+                          {(()=>{
+                            const ep=selectedDealerEntries.reduce((s,r)=>s+r.enquiryPlanned,0);
+                            const ea=selectedDealerEntries.reduce((s,r)=>s+r.enquiryActual,0);
+                            return ep>0?Math.round(ea/ep*100)+"%":"—";
+                          })()}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
             </section>
           )}
         </>

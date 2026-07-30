@@ -166,6 +166,9 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddTransient<IClaimsTransformation, DbRoleClaimsTransformation>();
+builder.Services.AddSingleton<GraphTokenStore>();
+builder.Services.AddHttpClient();
+builder.Services.AddHostedService<DailyDigestService>();
 
 // ── Email ─────────────────────────────────────────────────────────────────────
 builder.Services.AddHttpClient<GraphEmailService>();
