@@ -227,6 +227,7 @@ export default function AnalyticsDashboard() {
             if (!map[e.date]) map[e.date] = { date:e.date, enquiryPlanned:0, enquiryActual:0,
               testDrivePlanned:0, testDriveActual:0, bookingActual:0, retailActual:0, leadsPunched:0 };
             const d = map[e.date];
+            d.setupCount       = (d.setupCount||0) + ((e as any).setupCount || 0);
             d.enquiryPlanned  += e.enquiryPlanned  || 0;
             d.enquiryActual   += e.enquiryActual   || 0;
             d.testDrivePlanned += e.testDrivePlanned || 0;
@@ -242,6 +243,7 @@ export default function AnalyticsDashboard() {
   }, [approved]);
 
   const dailyTotals = useMemo(() => ({
+    setupCount:      dailyAgg.reduce((s,d) => s + (d.setupCount||0), 0),
     enquiryActual:  dailyAgg.reduce((s,d) => s + d.enquiryActual, 0),
     testDriveActual: dailyAgg.reduce((s,d) => s + d.testDriveActual, 0),
     bookingActual:  dailyAgg.reduce((s,d) => s + d.bookingActual, 0),
@@ -332,8 +334,9 @@ export default function AnalyticsDashboard() {
         }));
 
         const canopy = (a as any).qty || 1;
+        const totalSetupCount = entries.reduce((s,e)=>s+((e as any).setupCount||0),0);
         rows.push({
-          sr, dealer: p.dealerName||"", location: p.location||"",
+          sr, dealer: p.dealerName||"",  setupCount: totalSetupCount,location: p.location||"",
           state: p.state||"", zone: (p as any).zone||"", bgMember: p.rsmName||"",
           canopy, enquiryPlanned: totalEnqPlanned, enquiryActual: totalEnqActual,
           perCanopy: canopy>0?Math.round(totalEnqActual/canopy):0,
@@ -357,12 +360,14 @@ export default function AnalyticsDashboard() {
   const dsTotals = useMemo(() => {
     const src = liveDailySummary;
     const totalCanopy  = src.reduce((s, r) => s + r.canopy, 0);
+    // const totalSetupCount = src.reduce((s, r) => s + r.setupCount, 0);
     const totalEnqAct  = src.reduce((s, r) => s + r.enquiryActual, 0);
     const totalTrAct   = src.reduce((s, r) => s + r.trActual, 0);
     const totalRetail  = src.reduce((s, r) => s + r.retailMtd, 0);
     const totalLeads   = src.reduce((s, r) => s + r.leads, 0);
     return {
       canopy:         totalCanopy,
+      setupCount:     src.reduce((s, r) => s + (r.setupCount||0), 0),
       enquiryPlanned: src.reduce((s, r) => s + r.enquiryPlanned, 0),
       enquiryActual:  totalEnqAct,
       perCanopy:      totalCanopy > 0 ? Math.round(totalEnqAct / totalCanopy) : 0,
@@ -422,7 +427,7 @@ export default function AnalyticsDashboard() {
 
 interface DailySummaryRow {
   sr: number; dealer: string; location: string; state: string;
-  zone: string; bgMember: string; canopy: number;
+  zone: string; bgMember: string; canopy: number; setupCount: number,
   enquiryPlanned: number; enquiryActual: number; perCanopy: number; hot: number;
   trPlanned: number; trActual: number; trPerCanopy: number;
   bookToday: number; bookInHand: number;
@@ -915,6 +920,7 @@ interface LeadReportRow {
                   <tfoot>
                     <tr style={{ background:"#0a2540" }}>
                       <td style={{ padding:"8px 12px",fontWeight:800,color:"#fbbf24" }}>TOTAL</td>
+                      <td className="an-td-center" style={{ color:"#fde68a",fontWeight:700 }}>{dailyTotals.setupCount}</td>
                       <td className="an-td-center" style={{ color:"#93c5fd",fontWeight:700 }}>{dailyAgg.reduce((s,d)=>s+d.enquiryPlanned,0)}</td>
                       <td className="an-td-center" style={{ color:"#6ee7b7",fontWeight:700 }}>{dailyTotals.enquiryActual}</td>
                       <td className="an-td-center" style={{ color:"#93c5fd",fontWeight:700 }}>{dailyAgg.reduce((s,d)=>s+d.testDrivePlanned,0)}</td>
@@ -1077,8 +1083,8 @@ interface LeadReportRow {
               <div className="an-table-wrap">
                 <table className="an-table an-table-full">
                   <thead><tr>
-                    <th>#</th><th>Dealer</th><th>ActivityType</th><th>Location</th><th>State</th>
-                    <th>Canopy</th><th>Enq Plan</th><th>Enq Actual</th><th>/Canopy</th>
+                    <th>#</th><th>Dealer</th><th>Activity Type</th><th>Location</th><th>State</th>
+                    {/* <th>Canopy</th>*/}<th>Setup Count</th><th>Enq Plan</th><th>Enq Actual</th><th>/Canopy</th>
                     <th>TD Plan</th><th>TD Actual</th><th>Booking</th>
                     <th>Retail Today</th><th>Retail MTD</th><th>Leads</th><th>Photos</th>
                   </tr></thead>
@@ -1093,7 +1099,8 @@ interface LeadReportRow {
                         <td className="an-td-bold">{row.activityType}</td>
                         <td style={{ fontSize:11,color:"#6b7280" }}>{row.location}</td>
                         <td style={{ fontSize:11 }}>{row.state}</td>
-                        <td className="an-td-center">{row.canopy}</td>
+                        {/* <td className="an-td-center">{row.canopy}</td> */}
+                        <td className="an-td-center">{row.setupCount}</td>            
                         <td className="an-td-center" style={{ color:"#2563eb" }}>{row.enquiryPlanned||"—"}</td>
                         <td className="an-td-center" style={{ fontWeight:row.enquiryActual>0?700:400,color:row.enquiryActual>0?"#16a34a":"#94a3b8" }}>{row.enquiryActual||"—"}</td>
                         <td className="an-td-center" style={{ fontSize:11,color:"#6b7280" }}>{row.perCanopy>0?row.perCanopy.toFixed(1):"—"}</td>
@@ -1112,7 +1119,9 @@ interface LeadReportRow {
                   <tfoot>
                     <tr>
                       <td colSpan={4} style={{ padding:"8px 12px",fontWeight:800,color:"#0a2540" }}>TOTALS</td>
-                      <td className="an-td-center" style={{ fontWeight:700 }}>{dsTotals.canopy}</td>
+                      <td className="an-td-center" style={{ fontWeight:700 }}></td>
+                      {/* <td className="an-td-center" style={{ fontWeight:700 }}>{dsTotals.canopy}</td> */}
+                      <td className="an-td-center" style={{ fontWeight:700,color:"#92400e" }}>{dsTotals.setupCount}</td>
                       <td className="an-td-center" style={{ fontWeight:700,color:"#2563eb" }}>{dsTotals.enquiryPlanned}</td>
                       <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{dsTotals.enquiryActual}</td>
                       <td/>
@@ -1162,6 +1171,7 @@ interface LeadReportRow {
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
             {[
               { label:"Canopy", value: selectedDealerDaily.canopy },
+              { label:"Setup Count", value: selectedDealerDaily.setupCount },
               { label:"Enq Actual (MTD)", value: selectedDealerDaily.enquiryActual },
               { label:"TD Actual (MTD)", value: selectedDealerDaily.trActual },
               { label:"Retail MTD", value: selectedDealerDaily.retailMtd },
@@ -1186,6 +1196,7 @@ interface LeadReportRow {
                 <thead>
                   <tr style={{ background:"#0a2540" }}>
                     <th style={{ color:"#e2e8f0",textAlign:"left" }}>Date</th>
+                    <th style={{ color:"#93fdd3",textAlign:"center"}}> Setup Count</th>
                     <th style={{ color:"#93c5fd",textAlign:"center" }}>Enq Plan</th>
                     <th style={{ color:"#6ee7b7",textAlign:"center" }}>Enq Actual</th>
                     <th style={{ color:"#93c5fd",textAlign:"center" }}>TD Plan</th>
@@ -1206,6 +1217,7 @@ interface LeadReportRow {
                     return (
                       <tr key={entry.date} style={{ background:i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.5 }}>
                         <td style={{ padding:"6px 12px",fontWeight:600,fontSize:12,color:"#374151" }}>{entry.date}</td>
+                        <td className="an-td-center" style={{ fontSize:12 }}>{entry.setupCount||"—"}</td>
                         <td className="an-td-center" style={{ fontSize:12 }}>{entry.enquiryPlanned||"—"}</td>
                         <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.enquiryActual>0?700:400,color:entry.enquiryActual>0?"#0891b2":"#94a3b8" }}>{entry.enquiryActual||"—"}</td>
                         <td className="an-td-center" style={{ fontSize:12 }}>{entry.testDrivePlanned||"—"}</td>
@@ -1238,7 +1250,7 @@ interface LeadReportRow {
                 <tfoot>
                   <tr style={{ background:"#0a2540" }}>
                     <td style={{ padding:"8px 12px",fontWeight:800,color:"#fbbf24" }}>TOTAL</td>
-                    {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key) => (
+                    {(["setupCount","enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key) => (
                       <td key={key} className="an-td-center" style={{ color:"#e2e8f0",fontWeight:700 }}>
                         {selectedDealerDaily.dailyEntries.reduce((s,e)=>s+(Number((e as any)[key])||0),0)}
                       </td>

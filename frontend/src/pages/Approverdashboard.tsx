@@ -356,11 +356,17 @@ export default function ApproverDashboard() {
     if (filterStatus!=="All"&&p.status!==filterStatus) return false;
     if (filterMonth!=="All"&&p.month!==filterMonth) return false;
     if (filterYear!=="All"&&(p as any).year!==filterYear) return false;
+    // ── NEW: filter by the date the proposal was forwarded (checkedAt) ──
+    if (fwdDateFilter) {
+      if (!p.checkedAt) return false;
+      const checkedDate = isoDate(new Date(p.checkedAt)); // "YYYY-MM-DD" local
+      if (checkedDate !== fwdDateFilter) return false;
+    }
     if (search){ const q=search.toLowerCase();
       return p.dealerName.toLowerCase().includes(q)||p.rsmName.toLowerCase().includes(q)||
-             p.location.toLowerCase().includes(q)||(p.tokenNumber??"").toLowerCase().includes(q); }
+            p.location.toLowerCase().includes(q)||(p.tokenNumber??"").toLowerCase().includes(q); }
     return true;
-  }),[proposals,filterStatus,filterMonth,filterYear,search]);
+  }),[proposals,filterStatus,filterMonth,filterYear,search,fwdDateFilter]); // ← add fwdDateFilter here
   const pendingFiltered = useMemo(()=>filtered.filter((p)=>p.status==="Pending"),[filtered]);
   const stats = useMemo(()=>{
     const approved=proposals.filter((p)=>p.status==="Approved");
@@ -1757,7 +1763,7 @@ export default function ApproverDashboard() {
                                           <tfoot>
                                             <tr style={{ background:"#0a2540",borderTop:"2px solid #1e3a5f" }}>
                                               <td style={{ padding:"7px 10px",fontWeight:800,color:"#fbbf24",fontSize:11 }}>TOTAL</td>
-                                              {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key,ki)=>(
+                                              {(["setupCount","enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key,ki)=>(
                                                 <td key={key} style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:[0,2].includes(ki)?"#93c5fd":[1,3].includes(ki)?"#6ee7b7":ki===4?"#c4b5fd":ki===5?"#fbbf24":"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any)[key] as number),0)}</td>
                                               ))}
                                               <td style={{ padding:"7px 8px",textAlign:"center" }}>
