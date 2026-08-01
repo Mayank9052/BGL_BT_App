@@ -4,6 +4,8 @@ import { useState, useMemo, useEffect } from "react";
 import { useMsal } from "@azure/msal-react";
 import { fetchProposals, type ProposalResponse } from "../services/proposalService";
 import { useAuthStore } from "../store/authStore";
+import DownloadReportButton from "../components/DownloadReportButton";
+import type { ExportColumn } from "../utils/exportReport";
 import "./AnalyticsDashboard.css";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -29,6 +31,58 @@ const Bar = ({ value, max, color, height = 8 }: { value: number; max: number; co
       borderRadius:99, transition:"width 0.6s cubic-bezier(.4,0,.2,1)" }}/>
   </div>
 );
+
+const dailySummaryExportColumns: ExportColumn[] = [
+  { header: "Sr.No", key: "sr" },
+  { header: "Dealer", key: "dealer" },
+  { header: "Activity Type", key: "activityType" },
+  { header: "Location", key: "location" },
+  { header: "State", key: "state" },
+  { header: "Setup Count", key: "setupCount" },
+  { header: "Enquiry Planned", key: "enquiryPlanned" },
+  { header: "Enquiry Actual", key: "enquiryActual" },
+  { header: "Enquiry Per Canopy", key: "perCanopy" },
+  { header: "Hot", key: "hot" },
+  { header: "Test Rides Planned", key: "trPlanned" },
+  { header: "Test Rides Actual", key: "trActual" },
+  { header: "Test Rides Per Canopy", key: "trPerCanopy" },
+  { header: "Booking Today", key: "bookToday" },
+  { header: "Booking In Hand", key: "bookInHand" },
+  { header: "Retail Today", key: "retailToday" },
+  { header: "MTD Retail (Activity)", key: "retailMtdAct" },
+  { header: "Retail MTD", key: "retailMtd" },
+  { header: "Retail Rate/Canopy", key: "retailRatePerCanopy" },
+  { header: "Activity Day", key: "activityDay" },
+  { header: "Closing Stock", key: "closingStock" },
+  { header: "LMS Leads", key: "leads" },
+  { header: "LMS Punched", key: "punched" },
+  { header: "LMS Gap", key: "gap" },
+  { header: "Conv%", key: "convPct" },
+];
+
+const dealerDailyExportColumns: ExportColumn[] = [
+  { header: "Date", key: "date" },
+  { header: "Setup Count", key: "setupCount" },
+  { header: "Enquiry Planned", key: "enquiryPlanned" },
+  { header: "Enquiry Actual", key: "enquiryActual" },
+  { header: "Enquiry Per Canopy", key: "enqPerCanopy" },
+  { header: "Hot", key: "enquiryHot" },
+  { header: "Test Rides Planned", key: "testDrivePlanned" },
+  { header: "Test Rides Actual", key: "testDriveActual" },
+  { header: "Test Rides Per Canopy", key: "tdPerCanopy" },
+  { header: "Booking Today", key: "bookingActual" },
+  { header: "Booking In Hand", key: "bookingInHand" },
+  { header: "Retail Today", key: "retailActual" },
+  { header: "MTD Retail (Activity)", key: "retailMtdActivity" },
+  { header: "Retail MTD", key: "retailMtd" },
+  { header: "Retail Rate/Canopy", key: "retailRatePerCanopy" },
+  { header: "Activity Day", key: "activityDay" },
+  { header: "Closing Stock", key: "closingStock" },
+  { header: "LMS Leads", key: "lmsLeads" },
+  { header: "LMS Punched", key: "leadsPunched" },
+  { header: "LMS Gap", key: "lmsGap" },
+  { header: "Retail Conv%", key: "retailConvPct" },
+];
 
 // ─── Mini sparkline ────────────────────────────────────────────────────────────
 const Sparkline = ({ data, color }: { data: number[]; color: string }) => {
@@ -104,9 +158,13 @@ const Section = ({ title, subtitle, children, action }: {
 // ─── Daily entry / media types (same shape ApproverDashboard writes) ────────
 interface DailyEntry {
   date: string; setupCount?: number;
-  enquiryPlanned: number; enquiryActual: number;
-  testDrivePlanned: number; testDriveActual: number;
-  bookingActual: number; retailActual: number; leadsPunched: number;
+  enquiryPlanned: number; enquiryActual: number; enquiryHot?: number;
+  testDrivePlanned: number; testDriveActual: number; testDrivePerCanopy?: number;
+  bookingActual: number; bookingInHand?: number;
+  retailActual: number; retailMtdActivity?: number; closingStock?: number;
+  retailMtd?: number; retailRatePerCanopy?: number;   // ← manual fields (open in ApproverDashboard)
+  lmsLeads?: number;
+  leadsPunched: number;
 }
 interface ProofMedia {
   id: string; fileUrl: string; fileName: string; fileType: string | null;
@@ -151,6 +209,7 @@ export default function AnalyticsDashboard() {
   const [reportSubTab, setReportSubTab] = useState<"summary"|"dealer-daily">("summary");
   const [dailySearch, setDailySearch] = useState("");
   const [dailyStateFilter, setDailyStateFilter] = useState("All");
+  const [dailyActivityTypeFilter, setDailyActivityTypeFilter] = useState("All");
   const [anMediaViewer, setAnMediaViewer] = useState<{url:string;name:string;type:string|null}|null>(null);
 
   const toggleKpi = (key: string, filter: () => void, reset: () => void) => {
@@ -234,6 +293,7 @@ export default function AnalyticsDashboard() {
             d.testDriveActual += e.testDriveActual || 0;
             d.bookingActual   += e.bookingActual   || 0;
             d.retailActual    += e.retailActual    || 0;
+            d.lmsLeads         = (d.lmsLeads||0) + ((e as any).lmsLeads || 0);
             d.leadsPunched    += e.leadsPunched    || 0;
           }
         } catch {}
@@ -248,6 +308,7 @@ export default function AnalyticsDashboard() {
     testDriveActual: dailyAgg.reduce((s,d) => s + d.testDriveActual, 0),
     bookingActual:  dailyAgg.reduce((s,d) => s + d.bookingActual, 0),
     retailActual:   dailyAgg.reduce((s,d) => s + d.retailActual, 0),
+    lmsLeads:       dailyAgg.reduce((s,d) => s + ((d as any).lmsLeads||0), 0),
     leadsPunched:   dailyAgg.reduce((s,d) => s + d.leadsPunched, 0),
   }), [dailyAgg]);
 
@@ -274,6 +335,12 @@ export default function AnalyticsDashboard() {
     const map: Record<string,ActivityRow> = {};
     for (const p of filtered) {
       for (const a of p.activities) {
+        // ── FIX: when ATL/BTL KPI filter is active, only include activities
+        // matching that category — previously the whole proposal was kept
+        // if ANY activity matched, letting the other category leak through. ──
+        if (actFilter === "ATL_FILTER" && (a as any).category !== "ATL") continue;
+        if (actFilter === "BTL_FILTER" && (a as any).category === "ATL") continue;
+
         const n = a.activityType || "Unknown";
         if (!map[n]) map[n] = { name:n, count:0, budget:0, lead:0, retail:0, atl:0, btl:0 };
         map[n].count++;
@@ -285,7 +352,7 @@ export default function AnalyticsDashboard() {
       }
     }
     return Object.values(map).sort((a,b) => b.budget - a.budget);
-  }, [filtered]);
+  }, [filtered, actFilter]);
 
   const maxActBudget = Math.max(...activityRows.map(r => r.budget), 1);
 
@@ -325,6 +392,7 @@ export default function AnalyticsDashboard() {
         const totalBookToday  = entries.reduce((s,e)=>s+(e.bookingActual||0),0);
         const totalRetail     = entries.reduce((s,e)=>s+(e.retailActual||0),0);
         const totalPunched    = entries.reduce((s,e)=>s+(e.leadsPunched||0),0);
+        const totalLmsLeads   = entries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
 
         const rawMedia = (a as any).mediaFiles ?? [];
         const media: ProofMedia[] = rawMedia.map((m: any) => ({
@@ -335,18 +403,54 @@ export default function AnalyticsDashboard() {
 
         const canopy = (a as any).qty || 1;
         const totalSetupCount = entries.reduce((s,e)=>s+((e as any).setupCount||0),0);
+        const totalHot        = entries.reduce((s,e)=>s+((e as any).enquiryHot||0),0);
+        const lastBookInHand = [...entries].reverse().find(e=>((e as any).bookingInHand||0)>0) as any;
+        const bookInHandVal = lastBookInHand?.bookingInHand ?? 0;
+        // const lastMtdActivity = [...entries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any;
+        // const retailMtdActivityVal = lastMtdActivity?.retailMtdActivity ?? 0;
+        // const lastClosingStock = [...entries].reverse().find(e=>((e as any).closingStock||0)>0) as any;
+        // const closingStockVal = lastClosingStock?.closingStock ?? 0;
+        // const retailRatePerCanopyVal = totalSetupCount > 0 ? Math.round((totalRetail / totalSetupCount) * 10) / 10 : 0;
+        // const activityDayCount = entries.length; // auto-locked — days elapsed since actual start
+        const lastMtdActivity = [...entries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any;
+        const retailMtdActivityVal = lastMtdActivity?.retailMtdActivity ?? 0;
+        const lastClosingStock = [...entries].reverse().find(e=>((e as any).closingStock||0)>0) as any;
+        const closingStockVal = lastClosingStock?.closingStock ?? 0;
+        // ── FIX: Retail MTD and Retail Rate/Canopy are now MANUAL, per-day
+        // open input fields in ApproverDashboard (entry.retailMtd /
+        // entry.retailRatePerCanopy) — not computed from retailActual or
+        // setupCount. Read the latest non-zero manually-entered value,
+        // exactly matching ApproverDashboard's own footer logic. ──
+        const lastRetailMtd = [...entries].reverse().find(e=>((e as any).retailMtd||0)>0) as any;
+        const retailMtdVal = lastRetailMtd?.retailMtd ?? 0;
+        const lastRetailRate = [...entries].reverse().find(e=>((e as any).retailRatePerCanopy||0)>0) as any;
+        const retailRatePerCanopyVal = lastRetailRate?.retailRatePerCanopy ?? 0;
+        const activityDayCount = entries.filter(e =>
+          (e.enquiryActual||0) > 0 || (e.testDriveActual||0) > 0 ||
+          (e.bookingActual||0) > 0 || (e.retailActual||0) > 0 ||
+          (e.leadsPunched||0) > 0 || ((e as any).setupCount||0) > 0
+        ).length;
+
+
         rows.push({
-          sr, dealer: p.dealerName||"",  setupCount: totalSetupCount,location: p.location||"",
-          state: p.state||"", zone: (p as any).zone||"", bgMember: p.rsmName||"",
-          canopy, enquiryPlanned: totalEnqPlanned, enquiryActual: totalEnqActual,
-          perCanopy: canopy>0?Math.round(totalEnqActual/canopy):0,
-          hot: 0, trPlanned: totalTrPlanned, trActual: totalTrActual,
-          trPerCanopy: canopy>0?Math.round(totalTrActual/canopy):0,
-          bookToday: totalBookToday, bookInHand: totalBookToday,
-          retailToday: totalRetail, retailMtdAct: totalRetail, retailMtd: totalRetail,
-          leads: totalPunched, punched: totalPunched,
-          gap: Math.max(0,(a.leadTarget||0)-totalPunched),
-          convPct: totalEnqActual>0?Math.round(totalRetail/totalEnqActual*100):0,
+          sr, dealer: p.dealerName||"", location: p.location||"",
+          state: p.state||"", zone: (p as any).zone||"", bgMember: p.commandoName||"",
+          canopy, setupCount: totalSetupCount,
+          enquiryPlanned: totalEnqPlanned, enquiryActual: totalEnqActual,
+          perCanopy: totalSetupCount>0?Math.round(totalEnqActual/totalSetupCount):0,
+          hot: totalHot,
+          trPlanned: totalTrPlanned, trActual: totalTrActual,
+          trPerCanopy: totalSetupCount>0?Math.round(totalTrActual/totalSetupCount):0,
+          // bookToday: totalBookToday, bookInHand: totalBookInHand,
+          // retailToday: totalRetail, retailMtdAct: retailMtdActivityVal, retailMtd: totalRetail,
+          // retailRatePerCanopy: retailRatePerCanopyVal,
+          bookToday: totalBookToday, bookInHand: bookInHandVal,
+          retailToday: totalRetail, retailMtdAct: retailMtdActivityVal, retailMtd: retailMtdVal,
+          retailRatePerCanopy: retailRatePerCanopyVal,
+          activityDay: activityDayCount, closingStock: closingStockVal,
+          leads: totalLmsLeads, punched: totalPunched,
+          gap: totalLmsLeads - totalPunched,
+          convPct: totalLmsLeads > 0 ? Math.round((retailMtdActivityVal/totalLmsLeads)*100) : 0,
           photos: media.length,
           proposalId: p.id, activityId: a.id, activityType: a.activityType,
           dailyEntries: entries, media,
@@ -360,21 +464,23 @@ export default function AnalyticsDashboard() {
   const dsTotals = useMemo(() => {
     const src = liveDailySummary;
     const totalCanopy  = src.reduce((s, r) => s + r.canopy, 0);
-    // const totalSetupCount = src.reduce((s, r) => s + r.setupCount, 0);
+    const totalSetupCount = src.reduce((s, r) => s + (r.setupCount||0), 0);
     const totalEnqAct  = src.reduce((s, r) => s + r.enquiryActual, 0);
     const totalTrAct   = src.reduce((s, r) => s + r.trActual, 0);
     const totalRetail  = src.reduce((s, r) => s + r.retailMtd, 0);
     const totalLeads   = src.reduce((s, r) => s + r.leads, 0);
     return {
       canopy:         totalCanopy,
-      setupCount:     src.reduce((s, r) => s + (r.setupCount||0), 0),
+      setupCount:     totalSetupCount,
       enquiryPlanned: src.reduce((s, r) => s + r.enquiryPlanned, 0),
       enquiryActual:  totalEnqAct,
-      perCanopy:      totalCanopy > 0 ? Math.round(totalEnqAct / totalCanopy) : 0,
+      // ── FIX: sum each dealer row's own Per Canopy / Conv% value,
+      // not a single ratio recomputed from combined totals. ──
+      perCanopy:      src.reduce((s, r) => s + (r.perCanopy||0), 0),
       hot:            src.reduce((s, r) => s + r.hot, 0),
       trPlanned:      src.reduce((s, r) => s + r.trPlanned, 0),
       trActual:       totalTrAct,
-      trPerCanopy:    totalCanopy > 0 ? Math.round(totalTrAct / totalCanopy) : 0,
+      trPerCanopy:    src.reduce((s, r) => s + (r.trPerCanopy||0), 0),
       bookToday:      src.reduce((s, r) => s + r.bookToday, 0),
       bookInHand:     src.reduce((s, r) => s + r.bookInHand, 0),
       retailToday:    src.reduce((s, r) => s + r.retailToday, 0),
@@ -383,6 +489,7 @@ export default function AnalyticsDashboard() {
       leads:          totalLeads,
       punched:        src.reduce((s, r) => s + r.punched, 0),
       gap:            src.reduce((s, r) => s + r.gap, 0),
+      convPct:        src.reduce((s, r) => s + (r.convPct||0), 0),
     };
   }, [liveDailySummary]);
   // ── RSM-wise aggregation ─────────────────────────────────────────────────────
@@ -414,14 +521,20 @@ export default function AnalyticsDashboard() {
     return Object.values(map).sort((a,b) => b.budget - a.budget).slice(0,10);
   }, [filtered]);
 
+  const dailyActivityTypes = useMemo(() => {
+    const types = Array.from(new Set(liveDailySummary.map(r => r.activityType).filter(Boolean))).sort();
+    return ["All", ...types];
+  }, [liveDailySummary]);
+
   const filteredDailySummary = useMemo(() => liveDailySummary.filter(row => {
     if (dailyStateFilter !== "All" && row.state !== dailyStateFilter) return false;
+    if (dailyActivityTypeFilter !== "All" && row.activityType !== dailyActivityTypeFilter) return false;
     if (dailySearch) {
       const q = dailySearch.toLowerCase();
       return (row.dealer+row.location+row.state+row.bgMember).toLowerCase().includes(q);
     }
     return true;
-  }), [liveDailySummary, dailySearch, dailyStateFilter]);
+  }), [liveDailySummary, dailySearch, dailyStateFilter, dailyActivityTypeFilter]);
 
   const maxDealerBudget = Math.max(...dealerRows.map(r => r.budget), 1);
 
@@ -529,7 +642,7 @@ interface LeadReportRow {
           ["overview",      "📊 Overview"],
           ["region",        "🗺 Region"],
           ["activity",      "🎯 Activities"],
-          ["daily",         "📅 Daily Data"],
+          // ["daily",         "📅 Daily Data"],
           ["budget",        "💰 Budget"],
           ["daily-activity","📅 Daily Activity Report"],
           ["lead-report",   "🎯 Lead Report"],
@@ -1046,18 +1159,30 @@ interface LeadReportRow {
             <option value="All">All States</option>
             {stateRows.map(s=><option key={s.state} value={s.state}>{s.state}</option>)}
           </select>
-          {(dailySearch||dailyStateFilter!=="All")&&(
-            <button onClick={()=>{setDailySearch("");setDailyStateFilter("All");}}
+          <select value={dailyActivityTypeFilter} onChange={e=>setDailyActivityTypeFilter(e.target.value)}
+            style={{ height:36,padding:"0 10px",border:"1.5px solid #e2e8f0",borderRadius:8,
+              fontSize:12,fontFamily:"inherit",outline:"none" }}>
+            {dailyActivityTypes.map(t=><option key={t} value={t}>{t==="All"?"All Activity Types":t}</option>)}
+          </select>
+          {(dailySearch||dailyStateFilter!=="All"||dailyActivityTypeFilter!=="All")&&(
+            <button onClick={()=>{setDailySearch("");setDailyStateFilter("All");setDailyActivityTypeFilter("All");}}
               style={{ height:36,padding:"0 14px",background:"none",border:"1.5px solid #e2e8f0",
                 borderRadius:8,fontSize:12,cursor:"pointer",color:"#64748b" }}>Clear ✕</button>
           )}
           <span style={{ fontSize:12,color:"#64748b" }}>
             {filteredDailySummary.length} of {liveDailySummary.length} entries
           </span>
+          <div style={{ marginLeft:"auto" }}>
+            <DownloadReportButton
+              filename="Daily_Activity_Sheet_Summary"
+              title="Daily Activity Sheet Summary"
+              columns={dailySummaryExportColumns}
+              rows={filteredDailySummary as any}
+            />
+          </div>
         </div>
         <Section title="Daily Activity Sheet Summary"
-          subtitle={`Live · ${filteredDailySummary.length} activities · ${approved.length} approved proposals`}>
-          {liveDailySummary.length === 0 ? (
+          subtitle={`Live · ${filteredDailySummary.length} activities · ${approved.length} approved proposals`}>{liveDailySummary.length === 0 ? (
             <div style={{ textAlign:"center",padding:"60px 24px",color:"#9ca3af" }}>
               <div style={{ fontSize:40,marginBottom:12 }}>📅</div>
               <div style={{ fontWeight:700,fontSize:15,color:"#0a2540",marginBottom:6 }}>No post-activity data yet</div>
@@ -1066,11 +1191,12 @@ interface LeadReportRow {
           ) : (
             <>
               {/* Summary KPIs */}
-              <div style={{ display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:16 }}>
+              <div style={{ display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:10,marginBottom:16 }}>
                 {[
                   {label:"Total Canopy",  value:String(dsTotals.canopy),      color:"#0a2540"},
-                  {label:"Enq Planned",   value:String(dsTotals.enquiryPlanned),color:"#2563eb"},
+                  {label:"Setup Count",   value:String(dsTotals.setupCount),  color:"#92400e"},
                   {label:"Enq Actual",    value:String(dsTotals.enquiryActual), color:"#16a34a"},
+                  {label:"Hot",           value:String(dsTotals.hot),         color:"#dc2626"},
                   {label:"TD Actual",     value:String(dsTotals.trActual),      color:"#7c3aed"},
                   {label:"Retail MTD",    value:String(dsTotals.retailMtd),        color:"#f59e0b"},
                 ].map(k=>(
@@ -1080,62 +1206,142 @@ interface LeadReportRow {
                   </div>
                 ))}
               </div>
-              <div className="an-table-wrap">
-                <table className="an-table an-table-full">
-                  <thead><tr>
-                    <th>#</th><th>Dealer</th><th>Activity Type</th><th>Location</th><th>State</th>
-                    {/* <th>Canopy</th>*/}<th>Setup Count</th><th>Enq Plan</th><th>Enq Actual</th><th>/Canopy</th>
-                    <th>TD Plan</th><th>TD Actual</th><th>Booking</th>
-                    <th>Retail Today</th><th>Retail MTD</th><th>Leads</th><th>Photos</th>
-                  </tr></thead>
-                  <tbody>
-                    {filteredDailySummary.map((row,i)=>(
-                      <tr key={i} className="an-tr-click"
-                        onClick={()=>{ setSelectedDealerDaily(row); setReportSubTab("dealer-daily"); }}
-                        style={{ background:i%2===0?"#fff":"#f8fafc" }}
-                        title={`View ${row.dealer} daily sheet`}>
-                        <td className="an-td-muted">{row.sr}</td>
-                        <td className="an-td-bold">{row.dealer}</td>
-                        <td className="an-td-bold">{row.activityType}</td>
-                        <td style={{ fontSize:11,color:"#6b7280" }}>{row.location}</td>
-                        <td style={{ fontSize:11 }}>{row.state}</td>
-                        {/* <td className="an-td-center">{row.canopy}</td> */}
-                        <td className="an-td-center">{row.setupCount}</td>            
-                        <td className="an-td-center" style={{ color:"#2563eb" }}>{row.enquiryPlanned||"—"}</td>
-                        <td className="an-td-center" style={{ fontWeight:row.enquiryActual>0?700:400,color:row.enquiryActual>0?"#16a34a":"#94a3b8" }}>{row.enquiryActual||"—"}</td>
-                        <td className="an-td-center" style={{ fontSize:11,color:"#6b7280" }}>{row.perCanopy>0?row.perCanopy.toFixed(1):"—"}</td>
-                        <td className="an-td-center" style={{ color:"#7c3aed" }}>{row.trPlanned||"—"}</td>
-                        <td className="an-td-center" style={{ fontWeight:row.trActual>0?700:400,color:row.trActual>0?"#7c3aed":"#94a3b8" }}>{row.trActual||"—"}</td>
-                        <td className="an-td-center" style={{ color:"#f59e0b",fontWeight:row.bookToday>0?700:400 }}>{row.bookToday||"—"}</td>
-                        <td className="an-td-center" style={{ color:"#f59e0b",fontWeight:700 }}>{row.retailToday||"—"}</td>
-                        <td className="an-td-center" style={{ color:"#16a34a",fontWeight:700 }}>{row.retailMtd||"—"}</td>
-                        <td className="an-td-center">{row.leads||"—"}</td>
-                        <td className="an-td-center">
-                          {(row as any).photos>0?<span style={{ color:"#16a34a",fontWeight:700,fontSize:11 }}>📸 {(row as any).photos}</span>:<span style={{ color:"#e2e8f0",fontSize:11 }}>—</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr>
-                      <td colSpan={4} style={{ padding:"8px 12px",fontWeight:800,color:"#0a2540" }}>TOTALS</td>
-                      <td className="an-td-center" style={{ fontWeight:700 }}></td>
-                      {/* <td className="an-td-center" style={{ fontWeight:700 }}>{dsTotals.canopy}</td> */}
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#92400e" }}>{dsTotals.setupCount}</td>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#2563eb" }}>{dsTotals.enquiryPlanned}</td>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{dsTotals.enquiryActual}</td>
-                      <td/>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#7c3aed" }}>{dsTotals.trPlanned}</td>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#7c3aed" }}>{dsTotals.trActual}</td>
-                      <td/>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#f59e0b" }}>{liveDailySummary.reduce((s,r)=>s+r.retailToday,0)}</td>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{dsTotals.retailMtd}</td>
-                      <td className="an-td-center" style={{ fontWeight:700 }}>{dsTotals.leads}</td>
-                      <td/>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
+
+              {(()=>{
+                // ── Excel-style banded colors (mirrors "Daily Summary Sheet" layout) ──
+                const bandEnquiry = "#0e5f7a";   // dark teal
+                const bandTestRide = "#0369a1";  // cyan-blue
+                const bandBooking  = "#1d4ed8";  // blue
+                const bandRetail   = "#c2410c";  // orange
+                const bandLms      = "#be123c";  // rose
+                const bandConv     = "#0891b2";  // cyan
+
+                const perCanopyColor = (v:number) => v>=25?"#16a34a":v>=15?"#ca8a04":v>0?"#dc2626":"#94a3b8";
+                const perCanopyBg    = (v:number) => v>=25?"#dcfce7":v>=15?"#fef9c3":v>0?"#fee2e2":"transparent";
+                const convBg = (v:number) => v>=10?"#dcfce7":v>=5?"#fef9c3":"#fee2e2";
+                const convColor = (v:number) => v>=10?"#166534":v>=5?"#854d0e":"#991b1b";
+
+                return (
+                  <div className="an-table-wrap">
+                    <table className="an-table an-table-full" style={{ minWidth:2000, borderCollapse:"separate", borderSpacing:0 }}>
+                      <thead>
+                        {/* Row 1 — grouped section bands */}
+                        <tr>
+                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 8px",textAlign:"center",verticalAlign:"middle" }}>Sr.No</th>
+                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 10px",textAlign:"left",verticalAlign:"middle" }}>Dealer</th>
+                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 10px",textAlign:"left",verticalAlign:"middle" }}>Activity Type</th>
+                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 10px",textAlign:"left",verticalAlign:"middle" }}>Location</th>
+                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 10px",textAlign:"left",verticalAlign:"middle" }}>State</th>
+                          <th colSpan={5} style={{ background:bandEnquiry,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>Enquiry</th>
+                          <th colSpan={3} style={{ background:bandTestRide,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>Test Rides</th>
+                          <th colSpan={2} style={{ background:bandBooking,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>Bookings</th>
+                          <th colSpan={4} style={{ background:bandRetail,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>Retail</th>
+                          <th rowSpan={2} style={{ background:"#334155",color:"#fff",padding:"6px 8px",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Activity<br/>Day</th>
+                          <th rowSpan={2} style={{ background:"#334155",color:"#fff",padding:"6px 8px",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Closing<br/>Stock</th>
+                          <th colSpan={3} style={{ background:bandLms,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>LMS</th>
+                          <th rowSpan={2} style={{ background:bandConv,color:"#fff",padding:"6px 8px",textAlign:"center",verticalAlign:"middle" }}>Conv%</th>
+                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"6px 8px",textAlign:"center",verticalAlign:"middle" }}>Photos</th>
+                        </tr>
+                        {/* Row 2 — individual column labels within each band */}
+                        <tr>
+                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Setup<br/>Count</th>
+                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Planned</th>
+                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Actual</th>
+                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Per<br/>Canopy</th>
+                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Hot</th>
+                          <th style={{ background:bandTestRide,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Planned</th>
+                          <th style={{ background:bandTestRide,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Actual</th>
+                          <th style={{ background:bandTestRide,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Per<br/>Canopy</th>
+                          <th style={{ background:bandBooking,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Today</th>
+                          <th style={{ background:bandBooking,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>In Hand</th>
+                          <th style={{ background:bandRetail,color:"#ffedd5",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Today</th>
+                          <th style={{ background:bandRetail,color:"#ffedd5",padding:"5px 6px",fontSize:11,textAlign:"center" }}>MTD Retail<br/>(Activity)</th>
+                          <th style={{ background:bandRetail,color:"#ffedd5",padding:"5px 6px",fontSize:11,textAlign:"center" }}>MTD</th>
+                          <th style={{ background:bandRetail,color:"#ffedd5",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Rate/<br/>Canopy</th>
+                          <th style={{ background:bandLms,color:"#ffe4e6",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Leads</th>
+                          <th style={{ background:bandLms,color:"#ffe4e6",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Punched</th>
+                          <th style={{ background:bandLms,color:"#ffe4e6",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Gap</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredDailySummary.map((row,i)=>(
+                          <tr key={i} className="an-tr-click"
+                            onClick={()=>{ setSelectedDealerDaily(row); setReportSubTab("dealer-daily"); }}
+                            style={{ background:i%2===0?"#fff":"#f8fafc" }}
+                            title={`View ${row.dealer} daily sheet`}>
+                            <td className="an-td-muted">{row.sr}</td>
+                            <td className="an-td-bold">{row.dealer}</td>
+                            <td className="an-td-bold">{row.activityType}</td>
+                            <td style={{ fontSize:11,color:"#6b7280" }}>{row.location}</td>
+                            <td style={{ fontSize:11 }}>{row.state}</td>
+                            {/* Enquiry */}
+                            <td className="an-td-center" style={{ fontWeight:700,background:"#fefce8" }}>{row.setupCount||"—"}</td>
+                            <td className="an-td-center" style={{ color:"#0369a1" }}>{row.enquiryPlanned||"—"}</td>
+                            <td className="an-td-center" style={{ fontWeight:700,color:"#0e7490" }}>{row.enquiryActual||"—"}</td>
+                            <td className="an-td-center" style={{ fontWeight:700,background:perCanopyBg(row.perCanopy),color:perCanopyColor(row.perCanopy) }}>{row.perCanopy||"—"}</td>
+                            <td className="an-td-center" style={{ color:row.hot>0?"#dc2626":"#94a3b8",fontWeight:row.hot>0?700:400 }}>{row.hot||"—"}</td>
+                            {/* Test Rides */}
+                            <td className="an-td-center" style={{ color:"#0369a1" }}>{row.trPlanned||"—"}</td>
+                            <td className="an-td-center" style={{ fontWeight:700,color:"#0369a1" }}>{row.trActual||"—"}</td>
+                            <td className="an-td-center" style={{ fontWeight:700,background:perCanopyBg(row.trPerCanopy),color:perCanopyColor(row.trPerCanopy) }}>{row.trPerCanopy||"—"}</td>
+                            {/* Bookings */}
+                            <td className="an-td-center" style={{ color:"#1d4ed8",fontWeight:row.bookToday>0?700:400 }}>{row.bookToday||"—"}</td>
+                            <td className="an-td-center" style={{ color:"#1d4ed8" }}>{row.bookInHand||"—"}</td>
+                            {/* Retail */}
+                            <td className="an-td-center" style={{ color:"#c2410c",fontWeight:700 }}>{row.retailToday||"—"}</td>
+                            <td className="an-td-center" style={{ color:"#c2410c" }}>{row.retailMtdAct||"—"}</td>
+                            <td className="an-td-center" style={{ color:"#c2410c",fontWeight:700 }}>{row.retailMtd||"—"}</td>
+                            <td className="an-td-center" style={{ fontWeight:700,background:row.retailRatePerCanopy>=1?"#dcfce7":row.retailRatePerCanopy>0?"#fef9c3":"#fee2e2",color:row.retailRatePerCanopy>=1?"#166534":row.retailRatePerCanopy>0?"#854d0e":"#991b1b" }}>{row.retailRatePerCanopy||"0.0"}</td>
+                            {/* Activity Day / Closing Stock */}
+                            <td className="an-td-center" style={{ color:"#64748b" }}>{row.activityDay||"—"}</td>
+                            <td className="an-td-center" style={{ color:"#64748b" }}>{row.closingStock||"—"}</td>
+                            {/* LMS */}
+                            <td className="an-td-center" style={{ color:"#be123c" }}>{row.leads||"—"}</td>
+                            <td className="an-td-center" style={{ color:"#be123c",fontWeight:700 }}>{row.punched||"—"}</td>
+                            <td className="an-td-center" style={{ color:"#be123c" }}>{row.gap||"0"}</td>
+                            {/* Conv% */}
+                            <td className="an-td-center" style={{ fontWeight:700,background:convBg(row.convPct),color:convColor(row.convPct) }}>{row.convPct}%</td>
+                            {/* Photos */}
+                            <td className="an-td-center">
+                              {(row as any).photos>0?<span style={{ color:"#16a34a",fontWeight:700,fontSize:11 }}>📸 {(row as any).photos}</span>:<span style={{ color:"#e2e8f0",fontSize:11 }}>—</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr>
+                          <td colSpan={5} style={{ padding:"8px 12px",fontWeight:800,color:"#0a2540",background:"#fce7d6" }}>Total ({filteredDailySummary.length})</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.setupCount}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.enquiryPlanned}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.enquiryActual}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.perCanopy}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.hot}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.trPlanned}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.trActual}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.trPerCanopy}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.bookToday}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.bookInHand}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.retailToday}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.retailMtdAct}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.retailMtd}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>
+                            {dsTotals.setupCount>0?(Math.round((dsTotals.retailMtd/dsTotals.setupCount)*10)/10):"0.0"}
+                          </td>
+                          <td style={{ background:"#fce7d6" }}/>
+                          <td style={{ background:"#fce7d6" }}/>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.leads}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.punched}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>{dsTotals.gap}</td>
+                          <td className="an-td-center" style={{ fontWeight:700,color:"#0a2540",background:"#fce7d6" }}>
+                            {dsTotals.convPct}%
+                          </td>
+                          <td style={{ background:"#fce7d6" }}/>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                );
+              })()}
             </>
           )}
         </Section>
@@ -1143,18 +1349,7 @@ interface LeadReportRow {
         ) : (
       // ── NEW: dealer detail view, shown when reportSubTab === "dealer-daily" ──
       selectedDealerDaily && (
-        <Section
-          title={`${selectedDealerDaily.dealer} — ${selectedDealerDaily.location}`}
-          subtitle={`${selectedDealerDaily.state} · ${selectedDealerDaily.activityType} · Live daily history`}
-          action={
-            <button
-              onClick={() => { setReportSubTab("summary"); setSelectedDealerDaily(null); }}
-              style={{ background:"#f1f5f9", border:"1px solid #e2e8f0", borderRadius:7,
-                padding:"6px 14px", fontSize:12, fontWeight:600, cursor:"pointer", color:"#374151" }}>
-              ← Back to summary
-            </button>
-          }
-        >
+        <>
           {anMediaViewer && (
             <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:10000,
               display:"flex",alignItems:"center",justifyContent:"center" }} onClick={()=>setAnMediaViewer(null)}>
@@ -1168,15 +1363,86 @@ interface LeadReportRow {
             </div>
           )}
 
+          <div style={{ marginBottom:14, display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+             <button
+              onClick={() => { setReportSubTab("summary"); setSelectedDealerDaily(null); }}
+              style={{ background:"#f1f5f9", border:"1px solid #e2e8f0", borderRadius:7,
+                padding:"6px 14px", fontSize:12, fontWeight:600, cursor:"pointer", color:"#374151" }}>
+              ← Back to summary
+            </button>
+            <span style={{ fontSize:12, color:"#64748b" }}>
+              {selectedDealerDaily.state} · {selectedDealerDaily.activityType} · Live daily history
+            </span>
+            <div style={{ marginLeft:"auto" }}>
+              <DownloadReportButton
+                filename={`${selectedDealerDaily.dealer.replace(/[^a-z0-9]/gi,"_")}_Daily_Activity`}
+                title={`${selectedDealerDaily.dealer}, ${selectedDealerDaily.location} — Daily Activity`}
+                columns={dealerDailyExportColumns}
+                rows={selectedDealerDaily.dailyEntries.map((entry, i) => {
+                  const setupCount = (entry as any).setupCount || 0;
+                  const enqPerCanopy = setupCount>0 ? Math.round(entry.enquiryActual/setupCount) : 0;
+                  const tdPerCanopy = setupCount>0 ? Math.round(entry.testDriveActual/setupCount) : 0;
+                  const lmsLeadsDay = (entry as any).lmsLeads || 0;
+                  const lmsGap = lmsLeadsDay - (entry.leadsPunched||0);
+                  const mtdAct = (entry as any).retailMtdActivity || 0;
+                  const retailConvPct = lmsLeadsDay>0 ? Math.round((mtdAct/lmsLeadsDay)*100) : 0;
+                  return {
+                    date: entry.date,
+                    setupCount,
+                    enquiryPlanned: entry.enquiryPlanned || 0,
+                    enquiryActual: entry.enquiryActual || 0,
+                    enqPerCanopy,
+                    enquiryHot: (entry as any).enquiryHot || 0,
+                    testDrivePlanned: entry.testDrivePlanned || 0,
+                    testDriveActual: entry.testDriveActual || 0,
+                    tdPerCanopy,
+                    bookingActual: entry.bookingActual || 0,
+                    bookingInHand: (entry as any).bookingInHand || 0,
+                    retailActual: entry.retailActual || 0,
+                    retailMtdActivity: mtdAct,
+                    retailMtd: (entry as any).retailMtd || 0,
+                    retailRatePerCanopy: (entry as any).retailRatePerCanopy || 0,
+                    activityDay: i+1,
+                    closingStock: (entry as any).closingStock || 0,
+                    lmsLeads: lmsLeadsDay,
+                    leadsPunched: entry.leadsPunched || 0,
+                    lmsGap,
+                    retailConvPct: `${retailConvPct}%`,
+                  };
+                })}
+              />
+            </div>
+          </div>
+          
+
+          {/* ── Green title banner (matches Excel "Daily Summary Sheet") ── */}
+          <div style={{
+            background:"#0a2540", borderRadius:8,
+            padding:"14px 28px", textAlign:"center", marginBottom:16,
+            boxShadow:"0 4px 10px rgba(22,163,74,0.25)"
+          }}>
+            <span style={{ color:"#fff", fontWeight:800, fontSize:20, letterSpacing:"0.02em" }}>
+              {selectedDealerDaily.dealer}, {selectedDealerDaily.location}
+            </span>
+          </div>
+
+          {/* ── KPI summary cards (kept from before) ── */}
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
             {[
               { label:"Canopy", value: selectedDealerDaily.canopy },
               { label:"Setup Count", value: selectedDealerDaily.setupCount },
               { label:"Enq Actual (MTD)", value: selectedDealerDaily.enquiryActual },
+              { label:"Hot", value: selectedDealerDaily.hot },
               { label:"TD Actual (MTD)", value: selectedDealerDaily.trActual },
+              { label:"Booking In Hand", value: selectedDealerDaily.bookInHand },
               { label:"Retail MTD", value: selectedDealerDaily.retailMtd },
+              { label:"Retail Rate/Canopy", value: selectedDealerDaily.retailRatePerCanopy },
+              { label:"Activity Day", value: selectedDealerDaily.activityDay },
+              { label:"Closing Stock", value: selectedDealerDaily.closingStock },
+              { label:"Leads (Target)", value: selectedDealerDaily.leads },
               { label:"Leads Punched", value: selectedDealerDaily.punched },
-              { label:"Conv %", value: `${selectedDealerDaily.convPct}%` },
+              { label:"Gap", value: selectedDealerDaily.gap },
+              // { label:"Conv %", value: `${selectedDealerDaily.convPct}%` },
             ].map((f) => (
               <div key={f.label} style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 12px" }}>
                 <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>{f.label}</div>
@@ -1186,84 +1452,253 @@ interface LeadReportRow {
           </div>
 
           {selectedDealerDaily.dailyEntries.length === 0 ? (
-            <div style={{ textAlign:"center",padding:"40px 20px",color:"#9ca3af" }}>
+            <div className="an-card" style={{ textAlign:"center",padding:"40px 20px",color:"#9ca3af" }}>
               <div style={{ fontSize:32,marginBottom:10 }}>📋</div>
               <div style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>No daily entries yet for this activity</div>
             </div>
-          ) : (
-            <div className="an-table-wrap">
-              <table className="an-table an-table-full">
-                <thead>
-                  <tr style={{ background:"#0a2540" }}>
-                    <th style={{ color:"#e2e8f0",textAlign:"left" }}>Date</th>
-                    <th style={{ color:"#93fdd3",textAlign:"center"}}> Setup Count</th>
-                    <th style={{ color:"#93c5fd",textAlign:"center" }}>Enq Plan</th>
-                    <th style={{ color:"#6ee7b7",textAlign:"center" }}>Enq Actual</th>
-                    <th style={{ color:"#93c5fd",textAlign:"center" }}>TD Plan</th>
-                    <th style={{ color:"#6ee7b7",textAlign:"center" }}>TD Actual</th>
-                    <th style={{ color:"#c4b5fd",textAlign:"center" }}>Booking</th>
-                    <th style={{ color:"#fbbf24",textAlign:"center" }}>Retail</th>
-                    <th style={{ color:"#a5b4fc",textAlign:"center" }}>LMS Punched</th>
-                    <th style={{ color:"#e2e8f0",textAlign:"center" }}>Media</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedDealerDaily.dailyEntries.map((entry, i) => {
-                    const photosOnDay = selectedDealerDaily.media.filter(m =>
-                      m.capturedAt.startsWith(entry.date) && (isImageType(m.fileType) || isVideoType(m.fileType)));
-                    const invoicesOnDay = selectedDealerDaily.media.filter(m =>
-                      m.capturedAt.startsWith(entry.date) && !isImageType(m.fileType) && !isVideoType(m.fileType));
-                    const hasData = entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
-                    return (
-                      <tr key={entry.date} style={{ background:i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.5 }}>
-                        <td style={{ padding:"6px 12px",fontWeight:600,fontSize:12,color:"#374151" }}>{entry.date}</td>
-                        <td className="an-td-center" style={{ fontSize:12 }}>{entry.setupCount||"—"}</td>
-                        <td className="an-td-center" style={{ fontSize:12 }}>{entry.enquiryPlanned||"—"}</td>
-                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.enquiryActual>0?700:400,color:entry.enquiryActual>0?"#0891b2":"#94a3b8" }}>{entry.enquiryActual||"—"}</td>
-                        <td className="an-td-center" style={{ fontSize:12 }}>{entry.testDrivePlanned||"—"}</td>
-                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.testDriveActual>0?700:400,color:entry.testDriveActual>0?"#7c3aed":"#94a3b8" }}>{entry.testDriveActual||"—"}</td>
-                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#f59e0b":"#94a3b8" }}>{entry.bookingActual||"—"}</td>
-                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.retailActual>0?700:400,color:entry.retailActual>0?"#16a34a":"#94a3b8" }}>{entry.retailActual||"—"}</td>
-                        <td className="an-td-center" style={{ fontSize:12,fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#6366f1":"#94a3b8" }}>{entry.leadsPunched||"—"}</td>
-                        <td className="an-td-center">
-                          <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
-                            {photosOnDay.slice(0,3).map(m => {
-                              const url = resolveMediaUrl(m.fileUrl);
-                              return (
-                                <div key={m.id} style={{ width:24,height:24,borderRadius:3,overflow:"hidden",cursor:"pointer",border:"1px solid #bbf7d0" }}
-                                  onClick={() => setAnMediaViewer({ url, name: m.fileName, type: m.fileType })}>
-                                  {isImageType(m.fileType)
-                                    ? <img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
-                                    : <span style={{ fontSize:13,lineHeight:"24px",display:"block",textAlign:"center" }}>{mediaIconFor(m.fileType)}</span>}
-                                </div>
-                              );
-                            })}
-                            {photosOnDay.length > 3 && <span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-3}</span>}
-                            {invoicesOnDay.length > 0 && <span style={{ fontSize:10,color:"#64748b" }}>🧾{invoicesOnDay.length}</span>}
-                            {photosOnDay.length===0 && invoicesOnDay.length===0 && <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr style={{ background:"#0a2540" }}>
-                    <td style={{ padding:"8px 12px",fontWeight:800,color:"#fbbf24" }}>TOTAL</td>
-                    {(["setupCount","enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key) => (
-                      <td key={key} className="an-td-center" style={{ color:"#e2e8f0",fontWeight:700 }}>
-                        {selectedDealerDaily.dailyEntries.reduce((s,e)=>s+(Number((e as any)[key])||0),0)}
-                      </td>
-                    ))}
-                    <td className="an-td-center" style={{ color:"#e2e8f0",fontSize:10 }}>
-                      📸{selectedDealerDaily.media.filter(m=>isImageType(m.fileType)||isVideoType(m.fileType)).length}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          )}
-        </Section>
+          ) : (() => {
+            const entries = selectedDealerDaily.dailyEntries;
+            const activeEntries = entries.filter(e =>
+              (e.enquiryPlanned||0) > 0 || (e.enquiryActual||0) > 0 || ((e as any).setupCount||0) > 0
+            );
+            const activeCount = activeEntries.length || 1;
+            const sum = (fn: (e: DailyEntry) => number) => entries.reduce((s,e)=>s+(fn(e)||0),0);
+
+            const totals = {
+              canopy:        sum(e => (e as any).setupCount || 0),
+              planned:       sum(e => e.enquiryPlanned),
+              actual:        sum(e => e.enquiryActual),
+              gap:           sum(e => (e.enquiryActual||0) - (e.enquiryPlanned||0)),
+              hot:           sum(e => (e as any).enquiryHot || 0),
+              tdPlanned:     sum(e => e.testDrivePlanned),
+              tdActual:      sum(e => e.testDriveActual),
+              bookToday:     sum(e => e.bookingActual),
+              bookInHand:    sum(e => (e as any).bookingInHand || 0),
+              retail:        sum(e => e.retailActual),
+              leadsPunched:  sum(e => e.leadsPunched),
+            };
+
+            // ── Per Canopy & Retail Conv% totals = SUM of each day's own
+            // individual ratio, not a total÷total recalculation. Matches
+            // ApproverDashboard's per-day columns exactly. ──
+            const sumEnqPerCanopy = entries.reduce((s,e) => {
+              const sc = (e as any).setupCount || 0;
+              return s + (sc>0 ? Math.round((e.enquiryActual||0)/sc) : 0);
+            }, 0);
+            const sumTdPerCanopy = entries.reduce((s,e) => {
+              const sc = (e as any).setupCount || 0;
+              return s + (sc>0 ? Math.round((e.testDriveActual||0)/sc) : 0);
+            }, 0);
+            const sumRetailConvPct = entries.reduce((s,e) => {
+              const leads = (e as any).lmsLeads || 0;
+              const mtdAct = (e as any).retailMtdActivity || 0;
+              return s + (leads>0 ? Math.round((mtdAct/leads)*100) : 0);
+            }, 0);
+
+            // const avgRow = {
+            //   planned:    Math.round(totals.planned / activeCount),
+            //   actual:     Math.round(totals.actual / activeCount),
+            //   hot:        Math.round(totals.hot / activeCount),
+            //   tdPlanned:  Math.round(totals.tdPlanned / activeCount),
+            //   tdActual:   Math.round(totals.tdActual / activeCount),
+            //   booking:    Math.round((totals.bookToday / activeCount) * 10) / 10,
+            //   retail:     Math.round((totals.retail / activeCount) * 10) / 10,
+            // };
+            const avgRow = {
+              planned:    Math.round(totals.planned / activeCount),
+              actual:     Math.round(totals.actual / activeCount),
+              perCanopy:  totals.canopy>0?Math.round(totals.actual/totals.canopy):0,
+              hot:        Math.round(totals.hot / activeCount),
+              tdPlanned:  Math.round(totals.tdPlanned / activeCount),
+              tdActual:   Math.round(totals.tdActual / activeCount),
+              tdPerCanopy: totals.canopy>0?Math.round(totals.tdActual/totals.canopy):0,
+              booking:    Math.round((totals.bookToday / activeCount) * 10) / 10,
+              retail:     Math.round((totals.retail / activeCount) * 10) / 10,
+            };
+
+            const th = (label:React.ReactNode, extra:React.CSSProperties = {}) => (
+              <th style={{ padding:"6px 8px", fontSize:11, fontWeight:700, textAlign:"center",
+                border:"1px solid #cbd5e1", background:"#bfdbfe", color:"#0a2540", ...extra }}>{label}</th>
+            );
+            const td = (val: React.ReactNode, extra:React.CSSProperties = {}) => (
+              <td style={{ padding:"5px 8px", fontSize:12, textAlign:"center",
+                border:"1px solid #e2e8f0", ...extra }}>{val ?? ""}</td>
+            );
+
+            return (
+              <div className="an-table-wrap">
+                <table style={{ width:"100%", borderCollapse:"collapse", minWidth:1900, background:"#fff" }}>
+                  <thead>
+                    {/* Row 0 — dealer / BG member strip */}
+                    <tr>
+                      <th colSpan={2} style={{ background:"#e5e7eb", padding:"6px 8px", fontWeight:700,
+                        fontSize:13, textAlign:"left", border:"1px solid #cbd5e1" }}>
+                        {selectedDealerDaily.dealer}, {selectedDealerDaily.location}
+                      </th>
+                      <th colSpan={16} style={{ background:"#e5e7eb", border:"1px solid #cbd5e1" }}/>
+                      <th colSpan={2} style={{ background:"#e5e7eb", padding:"6px 8px", fontWeight:700,
+                        fontSize:13, textAlign:"center", border:"1px solid #cbd5e1" }}>
+                        BG- {selectedDealerDaily.bgMember || "—"}
+                      </th>
+                      <th style={{ background:"#e5e7eb", border:"1px solid #cbd5e1" }}/>
+                    </tr>
+                    {/* Row 1 — grouped bands */}
+                    <tr>
+                      <th rowSpan={2} style={{ background:"#93c5fd", padding:"6px 8px", fontSize:11,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Date</th>
+                      <th colSpan={5} style={{ background:"#93c5fd", padding:"5px 8px", fontSize:12,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Enquiry</th>
+                      <th colSpan={3} style={{ background:"#fbbf24", padding:"5px 8px", fontSize:12,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Test Drive</th>
+                      <th colSpan={2} style={{ background:"#93c5fd", padding:"5px 8px", fontSize:12,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Booking</th>
+                      <th colSpan={4} style={{ background:"#fbbf24", padding:"5px 8px", fontSize:12,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Retail</th>
+                      <th rowSpan={2} style={{ background:"#94a3b8", padding:"6px 8px", fontSize:11,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Activity<br/>Day</th>
+                      <th rowSpan={2} style={{ background:"#e2e8f0", padding:"6px 8px", fontSize:11,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Closing<br/>Stock</th>
+                      <th colSpan={3} style={{ background:"#a5b4fc", padding:"5px 8px", fontSize:12,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>LMS</th>
+                      <th rowSpan={2} style={{ background:"#67e8f9", padding:"6px 8px", fontSize:11,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Retail<br/>Conv%</th>
+                      <th rowSpan={2} style={{ background:"#c4b5fd", padding:"6px 8px", fontSize:11,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Media</th>
+                    </tr>
+                    <tr>
+                      {th("Setup Count")}{th("Planned")}{th("Actual")}{th("Per\u00A0Canopy")}{th("Hot")}
+                      {th("Planned")}{th("Actual")}{th("Per Canopy")}
+                      {th("Today")}{th("In hand")}
+                      {th("Today")}{th("MTD(Act.)")}{th("MTD")}{th("Rate/Canopy")}
+                      {th("Leads")}{th("Punched")}{th("Gap")}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map((entry, i) => {
+                      const photosOnDay = selectedDealerDaily.media.filter(m =>
+                        m.capturedAt.startsWith(entry.date) && (isImageType(m.fileType) || isVideoType(m.fileType)));
+                      const invoicesOnDay = selectedDealerDaily.media.filter(m =>
+                        m.capturedAt.startsWith(entry.date) && !isImageType(m.fileType) && !isVideoType(m.fileType));
+                      const hasCanopy = ((entry as any).setupCount||0) > 0 || (entry.enquiryPlanned||0) > 0;
+                      const hasData = entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
+                      const setupCount=(entry as any).setupCount||0;
+                      const enqPerCanopy=setupCount>0?Math.round(entry.enquiryActual/setupCount):0;
+                      const tdPerCanopy=setupCount>0?Math.round(entry.testDriveActual/setupCount):0;
+                      // const retailMtdRunning=entries.slice(0,i+1).reduce((s,e)=>s+(e.retailActual||0),0);
+                      // const retailRatePerCanopy=setupCount>0?Math.round((entry.retailActual/setupCount)*10)/10:0;
+                      // ── FIX: read manual retailMtd/retailRatePerCanopy fields directly
+                      // instead of computing from retailActual — matches ApproverDashboard,
+                      // where these are open manual inputs, not derived values.
+                      const retailMtdRunning=(entry as any).retailMtd || 0;
+                      const retailRatePerCanopy=(entry as any).retailRatePerCanopy || 0;
+                      const activityDay=i+1;
+                      const lmsLeadsDay=(entry as any).lmsLeads||0;
+                      const lmsGapDay=lmsLeadsDay-(entry.leadsPunched||0);
+                      const retailMtdActivityDay=(entry as any).retailMtdActivity||0;
+                      const retailConvPctDay=lmsLeadsDay>0?Math.round((retailMtdActivityDay/lmsLeadsDay)*100):0;
+                      return (
+                        <tr key={entry.date} style={{ background:i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.6 }}>
+                          {td(entry.date, { textAlign:"left", fontWeight:600, color:"#374151" })}
+                          {td(hasCanopy ? (setupCount||"") : "")}
+                          {td(entry.enquiryPlanned || 0)}
+                          {td(entry.enquiryActual || "")}
+                          {td(enqPerCanopy||"—", { color:"#059669", fontWeight:600 })}
+                          {td((entry as any).enquiryHot || "", { color:(entry as any).enquiryHot>0?"#b91c1c":undefined, fontWeight:(entry as any).enquiryHot>0?700:400 })}
+                          {td(entry.testDrivePlanned || 0)}
+                          {td(entry.testDriveActual || "")}
+                          {td(tdPerCanopy||"—", { color:"#7c3aed", fontWeight:600 })}
+                          {td(entry.bookingActual || "")}
+                          {td((entry as any).bookingInHand || "")}
+                          {td(entry.retailActual || "")}
+                          {td(retailMtdActivityDay || "")}
+                          {td(retailMtdRunning||"—", { color:"#92400e", fontWeight:700 })}
+                          {td(retailRatePerCanopy||"0.0", { color:"#c2410c", fontWeight:600 })}
+                          {td(<span title="Auto-locked">{activityDay} 🔒</span>, { color:"#64748b" })}
+                          {td((entry as any).closingStock || "")}
+                          {td(lmsLeadsDay||"", { color: lmsLeadsDay>0?"#3730a3":undefined, fontWeight: lmsLeadsDay>0?700:400 })}
+                          {td(entry.leadsPunched || "", { color: entry.leadsPunched>0?"#4338ca":undefined, fontWeight: entry.leadsPunched>0?700:400 })}
+                          {td(lmsGapDay, { color: lmsGapDay>0?"#b91c1c":lmsGapDay<0?"#166534":"#64748b", fontWeight:700 })}
+                          {td(`${retailConvPctDay}%`, { color:retailConvPctDay>=10?"#166534":retailConvPctDay>0?"#854d0e":"#94a3b8", fontWeight:700, background:retailConvPctDay>=10?"#f0fdf4":retailConvPctDay>0?"#fefce8":"transparent" })}
+                          {td(
+                            <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
+                              {photosOnDay.slice(0,3).map(m => {
+                                const url = resolveMediaUrl(m.fileUrl);
+                                return (
+                                  <div key={m.id} style={{ width:24,height:24,borderRadius:3,overflow:"hidden",cursor:"pointer",border:"1px solid #bbf7d0" }}
+                                    onClick={() => setAnMediaViewer({ url, name: m.fileName, type: m.fileType })}>
+                                    {isImageType(m.fileType)
+                                      ? <img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
+                                      : <span style={{ fontSize:13,lineHeight:"24px",display:"block",textAlign:"center" }}>{mediaIconFor(m.fileType)}</span>}
+                                  </div>
+                                );
+                              })}
+                              {photosOnDay.length > 3 && <span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-3}</span>}
+                              {invoicesOnDay.length > 0 && <span style={{ fontSize:10,color:"#64748b" }}>🧾{invoicesOnDay.length}</span>}
+                              {photosOnDay.length===0 && invoicesOnDay.length===0 && <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
+                            </div>
+                          )}
+                        </tr>
+                      );
+                    })}
+
+                    {/* ── Total row ── */}
+                    <tr style={{ background:"#93c5fd", fontWeight:800 }}>
+                      {td("Total", { textAlign:"left", background:"#93c5fd" })}
+                      {td(totals.canopy, { background:"#93c5fd" })}
+                      {td(totals.planned, { background:"#93c5fd" })}
+                      {td(totals.actual, { background:"#93c5fd" })}
+                      {td(sumEnqPerCanopy||"—", { background:"#93c5fd" })}
+                      {td(totals.hot, { background:"#93c5fd" })}
+                      {td(totals.tdPlanned, { background:"#93c5fd" })}
+                      {td(totals.tdActual, { background:"#93c5fd" })}
+                      {td(sumTdPerCanopy||"—", { background:"#93c5fd" })}
+                      {td(totals.bookToday, { background:"#93c5fd" })}
+                      {td(totals.bookInHand, { background:"#93c5fd" })}
+                      {td(totals.retail, { background:"#93c5fd" })}
+                      {/* {td(sum(e=>(e as any).retailMtdActivity||0), { background:"#93c5fd" })}
+                      {td(totals.retail, { background:"#93c5fd" })}
+                      {td("avg", { background:"#93c5fd", fontSize:9 })} */}
+                      {td(sum(e=>(e as any).retailMtdActivity||0), { background:"#93c5fd" })}
+                      {td((()=>{ const last=[...entries].reverse().find(e=>((e as any).retailMtd||0)>0) as any; return last?.retailMtd ?? 0; })(), { background:"#93c5fd" })}
+                      {td((()=>{ const last=[...entries].reverse().find(e=>((e as any).retailRatePerCanopy||0)>0) as any; return last?.retailRatePerCanopy ?? "0.0"; })(), { background:"#93c5fd" })}
+                      {td(`${entries.length}d 🔒`, { background:"#93c5fd", fontSize:10 })}
+                      {td(sum(e=>(e as any).closingStock||0)?[...entries].reverse().find(e=>((e as any).closingStock||0)>0) ? (([...entries].reverse().find(e=>((e as any).closingStock||0)>0) as any).closingStock) : "" : "", { background:"#93c5fd" })}
+                      {td(sum(e=>(e as any).lmsLeads||0), { background:"#93c5fd" })}
+                      {td(totals.leadsPunched, { background:"#93c5fd" })}
+                      {td(sum(e=>(e as any).lmsLeads||0) - totals.leadsPunched, { background:"#93c5fd" })}
+                      {/* {td((()=>{ const tl=sum(e=>(e as any).lmsLeads||0); const tm=sum(e=>(e as any).retailMtdActivity||0); return tl>0?Math.round((tm/tl)*100):0; })()+"%", { background:"#93c5fd" })} */}
+                      {td(sumRetailConvPct+"%", { background:"#93c5fd" })}
+                      {td("📸"+selectedDealerDaily.media.filter(m=>isImageType(m.fileType)||isVideoType(m.fileType)).length, { background:"#93c5fd", fontSize:10 })}
+                    </tr>
+
+                    {/* ── Avg Per Canopy row ── */}
+                    {/* ── Avg Per Canopy row ── */}
+                    <tr style={{ fontWeight:700 }}>
+                      {td("Avg Per Canopy", { textAlign:"left" })}
+                      {td("")}
+                      {td(avgRow.planned, { background:"#fef9c3" })}
+                      {td(avgRow.actual, { background:"#fef9c3" })}
+                      {td(avgRow.perCanopy, { background:"#fef9c3" })}
+                      {td(avgRow.hot)}
+                      {td(avgRow.tdPlanned, { background:"#fef9c3" })}
+                      {td(avgRow.tdActual, { background:"#fef9c3" })}
+                      {td(avgRow.tdPerCanopy, { background:"#fef9c3" })}
+                      {td(avgRow.booking, { background:"#fef9c3" })}
+                      {td("")}
+                      {td(avgRow.retail, { background:"#fef9c3" })}
+                      {td("")}
+                      {td(avgRow.retail, { background:"#fef9c3" })}
+                      {td("")}
+                      {td("")}
+                      {td("")}
+                      {td("")}{td("")}{td("")}{td("")}
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
+        </>
       )
     )}
     </>
