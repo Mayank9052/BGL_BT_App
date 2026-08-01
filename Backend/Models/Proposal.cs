@@ -52,6 +52,8 @@ public class Proposal
     public DateTimeOffset? DealerSentBackAt { get; set; }
     public string? DealerCode { get; set; }
     public bool? DigestSent { get; set; }
+    public DateTime? DigestSentAt { get; set; }
+    public string? DigestSendError { get; set; }
 
     public string? CheckerRemarks { get; set; }  // optional note from checker to approver
     public List<ProposalActivity> Activities { get; set; } = new();

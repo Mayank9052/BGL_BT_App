@@ -93,6 +93,10 @@
               "target": "Package",
               "version": "[8.0.19, )"
             },
+            "Microsoft.Identity.Client": {
+              "target": "Package",
+              "version": "[4.87.0, )"
+            },
             "Microsoft.Identity.Web": {
               "target": "Package",
               "version": "[2.21.1, )"

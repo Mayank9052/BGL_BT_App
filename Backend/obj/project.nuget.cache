@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "dEWE5KY2iiQ=",
+  "dgSpecHash": "f8w847Tc4lU=",
   "success": true,
   "projectFilePath": "c:\\Users\\priyanka.nikam\\Desktop\\BG-BTL\\BGL_BT_App\\Backend\\Backend.csproj",
   "expectedPackageFiles": [
@@ -61,7 +61,7 @@
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.extensions.options.configurationextensions\\8.0.0\\microsoft.extensions.options.configurationextensions.8.0.0.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.extensions.primitives\\8.0.0\\microsoft.extensions.primitives.8.0.0.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identity.abstractions\\6.0.0\\microsoft.identity.abstractions.6.0.0.nupkg.sha512",
-    "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identity.client\\4.61.3\\microsoft.identity.client.4.61.3.nupkg.sha512",
+    "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identity.client\\4.87.0\\microsoft.identity.client.4.87.0.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identity.client.extensions.msal\\4.61.3\\microsoft.identity.client.extensions.msal.4.61.3.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identity.web\\2.21.1\\microsoft.identity.web.2.21.1.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identity.web.certificate\\2.21.1\\microsoft.identity.web.certificate.2.21.1.nupkg.sha512",
@@ -69,7 +69,7 @@
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identity.web.diagnostics\\2.21.1\\microsoft.identity.web.diagnostics.2.21.1.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identity.web.tokenacquisition\\2.21.1\\microsoft.identity.web.tokenacquisition.2.21.1.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identity.web.tokencache\\2.21.1\\microsoft.identity.web.tokencache.2.21.1.nupkg.sha512",
-    "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identitymodel.abstractions\\7.7.1\\microsoft.identitymodel.abstractions.7.7.1.nupkg.sha512",
+    "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identitymodel.abstractions\\8.14.0\\microsoft.identitymodel.abstractions.8.14.0.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identitymodel.jsonwebtokens\\7.7.1\\microsoft.identitymodel.jsonwebtokens.7.7.1.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identitymodel.logging\\7.7.1\\microsoft.identitymodel.logging.7.7.1.nupkg.sha512",
     "C:\\Users\\priyanka.nikam\\.nuget\\packages\\microsoft.identitymodel.loggingextensions\\7.7.1\\microsoft.identitymodel.loggingextensions.7.7.1.nupkg.sha512",

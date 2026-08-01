@@ -331,6 +331,7 @@ export default function ApproverDashboard() {
   const [budgetAddAmounts,   setBudgetAddAmounts]   = useState<Record<string,string>>({});
   const [budgetAddNote,      setBudgetAddNote]      = useState("");
   const [budgetAddLoading,   setBudgetAddLoading]   = useState(false);
+  const [highlightedFromEmail, setHighlightedFromEmail] = useState<Set<string>>(new Set());
 
   const scrollBodyRef = useRef<HTMLDivElement|null>(null);
   const showToast = (msg:string, ok:boolean) => { setToast({msg,ok}); setTimeout(()=>setToast(null),3500); };
@@ -372,6 +373,20 @@ export default function ApproverDashboard() {
     document.body.style.overflow = selected ? "hidden" : "";
     return ()=>{ document.body.style.overflow=""; };
   },[selected]);
+  useEffect(() => {
+  const params = new URLSearchParams(window.location.search);
+  const highlightParam = params.get("highlight");
+  if (highlightParam && proposals.length > 0) {
+    const ids = highlightParam.split(",").filter(Boolean);
+    const validIds = ids.filter(id => proposals.some(p => p.id === id));
+    if (validIds.length > 0) {
+      setSelectedIds(new Set(validIds));
+      setHighlightedFromEmail(new Set(validIds));
+      // Clean the URL so refresh doesn't re-trigger
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }
+}, [proposals]);
 
   // ── Computed ───────────────────────────────────────────────────────────────
   const months   = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],[proposals]);
@@ -1226,7 +1241,13 @@ export default function ApproverDashboard() {
                     return (
                       <tr key={p.id}
                         className={`ap-row${isChecked?" ap-row--selected":""}${p.status==="NeedsRevision"?" ap-row--revision":""}${p.checkedByEmail&&isFinalApprover?" ap-row--forwarded":""}`}
-                        style={p.status==="NeedsRevision"?{borderLeft:"4px solid #f59e0b",background:"#fffbeb"}:p.checkedByEmail&&isFinalApprover?{borderLeft:"4px solid #16a34a",background:"#f0fdf4"}:{}}
+                        style={
+                          highlightedFromEmail.has(p.id)
+                            ? { borderLeft:"4px solid #2563eb", background:"#eff6ff", boxShadow:"inset 0 0 0 2px #93c5fd" }
+                            : p.status==="NeedsRevision"?{borderLeft:"4px solid #f59e0b",background:"#fffbeb"}
+                            : p.checkedByEmail&&isFinalApprover?{borderLeft:"4px solid #16a34a",background:"#f0fdf4"}
+                            : {}
+                        }
                         onClick={()=>openModal(p)}>
                         {isAdmin&&(
                           <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>

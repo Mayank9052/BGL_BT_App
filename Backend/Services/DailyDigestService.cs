@@ -17,24 +17,73 @@ public class DailyDigestService : BackgroundService
     private readonly IServiceScopeFactory        _scopeFactory;
     private readonly IConfiguration              _cfg;
     private readonly ILogger<DailyDigestService> _log;
-    private readonly GraphTokenStore             _tokenStore;
     private readonly IHttpClientFactory          _httpClientFactory;
 
-    // TEST: 5:00 PM IST = 11:30 UTC  (change back to 18,30,0 for midnight IST production)
-    private static readonly TimeSpan DigestTimeUtc = new(13, 0, 0); // 6:30 PM IST
-
+    // ── FIX: 18:30 UTC = 00:00 (midnight) IST — the actual production time. ──
+    private static readonly TimeSpan DigestTimeUtc = new(18, 30, 0);
+    
+    //private static readonly TimeSpan DigestTimeUtc = new(10, 0, 0);
+    
     public DailyDigestService(
         IServiceScopeFactory        scopeFactory,
         IConfiguration              cfg,
         ILogger<DailyDigestService> log,
-        GraphTokenStore             tokenStore,
         IHttpClientFactory          httpClientFactory)
     {
         _scopeFactory      = scopeFactory;
         _cfg               = cfg;
         _log               = log;
-        _tokenStore        = tokenStore;
         _httpClientFactory = httpClientFactory;
+    }
+
+    // ── NEW: app-only Graph token via Client Credentials flow.
+    // Doesn't depend on any Checker being logged in recently — a fresh
+    // token is acquired at send time, every time, guaranteed to be valid. ──
+    private async Task<string?> AcquireAppOnlyGraphTokenAsync()
+    {
+        var tenantId     = _cfg["AzureAd:TenantId"];
+        var clientId     = _cfg["AzureAd:ClientId"];
+        var clientSecret = _cfg["AzureAd:ClientSecret"];
+
+        _log.LogInformation(
+            "AcquireAppOnlyGraphTokenAsync: tenantId={tenant} clientId={client} secretLen={len}",
+            tenantId, clientId, clientSecret?.Length ?? 0);
+
+        if (string.IsNullOrWhiteSpace(tenantId) || string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
+        {
+            _log.LogError("AzureAd:ClientSecret not configured — cannot acquire app-only Graph token.");
+            return null;
+        }
+
+        try
+        {
+            var app = Microsoft.Identity.Client.ConfidentialClientApplicationBuilder
+                .Create(clientId)
+                .WithClientSecret(clientSecret)
+                .WithAuthority(new Uri($"https://login.microsoftonline.com/{tenantId}"))
+                .Build();
+
+            var result = await app.AcquireTokenForClient(new[] { "https://graph.microsoft.com/.default" })
+                .ExecuteAsync();
+
+            _log.LogInformation(
+                "Graph app-only token acquired OK. Expires: {exp}. Scopes: {scopes}. TokenSource: {source}",
+                result.ExpiresOn, string.Join(",", result.Scopes), result.AuthenticationResultMetadata.TokenSource);
+
+            return result.AccessToken;
+        }
+        catch (Microsoft.Identity.Client.MsalServiceException msalEx)
+        {
+            _log.LogError(msalEx,
+                "MSAL service exception acquiring app-only token. ErrorCode={code} CorrelationId={corr} ResponseBody={body}",
+                msalEx.ErrorCode, msalEx.CorrelationId, msalEx.ResponseBody);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Unexpected exception acquiring app-only Graph token for daily digest. Type={type}", ex.GetType().FullName);
+            return null;
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -103,31 +152,47 @@ public class DailyDigestService : BackgroundService
 
             var html = BuildDigestHtml(proposals, todayIst, portalUrl);
 
-            // Try Graph API first (preferred — same as rest of app)
-            var tokenInfo = _tokenStore.GetValid();
+            // ── FIX: acquire a fresh app-only Graph token every time —
+            // no dependency on any Checker's session or its 55-minute window. ──
+            var appToken = await AcquireAppOnlyGraphTokenAsync();
             bool sent = false;
 
-            if (tokenInfo != null)
+            if (appToken != null)
             {
-                sent = await SendViaGraphAsync(tokenInfo.Value.SenderEmail, finalEmail, subject, html, tokenInfo.Value.Token);
+                var senderMailbox = _cfg["Smtp:DigestSenderMailbox"]
+                                 ?? _cfg["Smtp:ApproverEmail"]
+                                 ?? "mayank.maheshwari@bgauss.com";
+                sent = await SendViaGraphAsync(senderMailbox, finalEmail, subject, html, appToken);
                 if (sent)
-                    _log.LogInformation("Digest sent via Graph API → {email}", finalEmail);
+                    _log.LogInformation("Digest sent via app-only Graph API → {email}", finalEmail);
+                else
+                    _log.LogWarning("App-only Graph send failed — trying SMTP fallback.");
+            }
+            else
+            {
+                _log.LogWarning("Could not acquire app-only Graph token — trying SMTP fallback.");
             }
 
             if (!sent)
             {
-                _log.LogWarning("Graph token unavailable or expired — trying SMTP fallback.");
                 sent = await SendViaSmtpFallbackAsync(finalEmail, subject, html);
             }
 
             if (!sent)
             {
-                _log.LogError("Could not send digest — both Graph and SMTP failed. Will retry tomorrow.");
+                _log.LogError("Could not send digest — both app-only Graph and SMTP failed. Will retry tomorrow.");
+                foreach (var p in proposals) p.DigestSendError = "Both Graph and SMTP send attempts failed.";
+                await db.SaveChangesAsync(ct);
                 return;
             }
 
-            // Mark digested
-            foreach (var p in proposals) p.DigestSent = true;
+            // Mark digested — record when it succeeded and clear any prior error
+            foreach (var p in proposals)
+            {
+                p.DigestSent      = true;
+                p.DigestSentAt    = DateTime.UtcNow;
+                p.DigestSendError = null;
+            }
             await db.SaveChangesAsync(ct);
             _log.LogInformation("Daily digest complete — {count} proposals marked digested.", proposals.Count);
         }
@@ -156,7 +221,7 @@ public class DailyDigestService : BackgroundService
                         new { emailAddress = new { address = toEmail } }
                     }
                 },
-                saveToSentItems = false
+                saveToSentItems = true
             };
 
             var json    = JsonSerializer.Serialize(payload);
@@ -167,11 +232,16 @@ public class DailyDigestService : BackgroundService
                 new AuthenticationHeaderValue("Bearer", graphToken);
 
             var url = $"https://graph.microsoft.com/v1.0/users/{senderEmail}/sendMail";
+            _log.LogInformation("Calling Graph sendMail: {url} (sender={sender}, to={to})", url, senderEmail, toEmail);
+
             var res = await client.PostAsync(url, content);
+            var responseBody = await res.Content.ReadAsStringAsync();
+
+            _log.LogInformation("Graph sendMail response: {status} body={body}",
+                res.StatusCode, string.IsNullOrEmpty(responseBody) ? "(empty)" : responseBody);
 
             if (res.IsSuccessStatusCode) return true;
-            var err = await res.Content.ReadAsStringAsync();
-            _log.LogWarning("Graph sendMail failed {status}: {err}", res.StatusCode, err);
+            _log.LogWarning("Graph sendMail failed {status}: {err}", res.StatusCode, responseBody);
             return false;
         }
         catch (Exception ex)
@@ -225,95 +295,37 @@ public class DailyDigestService : BackgroundService
         List<Proposal> proposals, DateTime date, string portalUrl)
     {
         var totalBudget = proposals.Sum(p => p.TotalBudget);
-        var sb          = new StringBuilder();
+        var proposalIds = string.Join(",", proposals.Select(p => p.Id));
+        var reviewUrl   = $"{portalUrl}/approver?highlight={Uri.EscapeDataString(proposalIds)}";
 
-        sb.Append($@"<!DOCTYPE html>
-<html>
-<head><meta charset='UTF-8'/>
-<style>
-  body{{font-family:'Segoe UI',Arial,sans-serif;background:#f8fafc;margin:0;padding:20px;color:#1e293b;}}
-  .wrap{{max-width:920px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.08);overflow:hidden;}}
-  .hdr{{background:#0a2540;padding:28px 32px;}}
-  .hdr h1{{color:#fff;margin:0;font-size:22px;font-weight:700;}}
-  .hdr p{{color:#93c5fd;margin:6px 0 0;font-size:14px;}}
-  .kpis{{display:flex;border-bottom:2px solid #f1f5f9;}}
-  .kpi{{flex:1;padding:18px 24px;text-align:center;border-right:1px solid #f1f5f9;}}
-  .kpi:last-child{{border-right:none;}}
-  .kv{{font-size:30px;font-weight:800;color:#0a2540;}}
-  .kl{{font-size:11px;color:#64748b;margin-top:4px;text-transform:uppercase;letter-spacing:.5px;}}
-  .sec{{padding:24px 32px;}}
-  table{{width:100%;border-collapse:collapse;font-size:13px;}}
-  th{{background:#0a2540;color:#e2e8f0;padding:10px 12px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;}}
-  td{{padding:9px 12px;border-bottom:1px solid #f1f5f9;vertical-align:top;}}
-  tr:nth-child(even) td{{background:#f8fafc;}}
-  .badge{{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:#fef3c7;color:#92400e;}}
-  .cta{{text-align:center;padding:28px 32px;background:#f0fdf4;}}
-  .btn{{display:inline-block;background:#0a2540;color:#fff;text-decoration:none;padding:14px 36px;border-radius:8px;font-weight:700;font-size:16px;}}
-  .foot{{padding:14px 32px;background:#f8fafc;font-size:11px;color:#94a3b8;text-align:center;}}
-  .mono{{font-family:monospace;}}
-</style>
-</head>
-<body>
-<div class='wrap'>
-  <div class='hdr'>
-    <h1>&#128203; BGauss BTL — Daily Forwarded Proposals Digest</h1>
-    <p>{date:dddd, dd MMMM yyyy} &middot; {proposals.Count} proposal{(proposals.Count != 1 ? "s" : "")} forwarded by Checker team</p>
-  </div>
-  <div class='kpis'>
-    <div class='kpi'><div class='kv'>{proposals.Count}</div><div class='kl'>Proposals</div></div>
-    <div class='kpi'><div class='kv'>&#8377;{totalBudget / 100000m:F1}L</div><div class='kl'>Total Budget</div></div>
-    <div class='kpi'><div class='kv'>{proposals.Select(p => p.State).Distinct().Count()}</div><div class='kl'>States</div></div>
-    <div class='kpi'><div class='kv'>{proposals.Select(p => p.DealerName).Distinct().Count()}</div><div class='kl'>Dealers</div></div>
-  </div>
-  <div class='sec'>
-    <h2 style='margin:0 0 16px;font-size:16px;color:#0a2540;'>Proposal Summary — Action Required</h2>
-    <table>
-      <tr><th>#</th><th>Token</th><th>Dealer</th><th>State</th><th>RSM</th><th>Month</th><th>Activities</th><th>Budget</th><th>Forwarded By</th><th>Status</th></tr>");
-
-        int n = 1;
-        foreach (var p in proposals)
-        {
-            var acts   = p.Activities?.Select(a => a.ActivityType).Distinct().Take(3) ?? [];
-            var actStr = string.Join(", ", acts);
-            var fwdBy  = (p.CheckedByEmail ?? "").Split('@')[0];
-            var fwdAt  = p.CheckedAt.HasValue
-                ? p.CheckedAt.Value.AddHours(5).AddMinutes(30).ToString("HH:mm")
-                : "—";
-
-            sb.Append($@"
-      <tr>
-        <td>{n++}</td>
-        <td><strong>{System.Net.WebUtility.HtmlEncode(p.TokenNumber ?? "—")}</strong></td>
-        <td><strong>{System.Net.WebUtility.HtmlEncode(p.DealerName ?? "—")}</strong></td>
-        <td>{System.Net.WebUtility.HtmlEncode(p.State ?? "—")}</td>
-        <td>{System.Net.WebUtility.HtmlEncode(p.RsmName ?? "—")}</td>
-        <td>{System.Net.WebUtility.HtmlEncode(p.Month ?? "—")}</td>
-        <td style='font-size:11px;'>{System.Net.WebUtility.HtmlEncode(actStr.Length > 0 ? actStr : "—")}</td>
-        <td class='mono'>&#8377;{p.TotalBudget / 100000m:F1}L</td>
-        <td style='font-size:11px;'>{System.Net.WebUtility.HtmlEncode(fwdBy)} at {fwdAt} IST</td>
-        <td><span class='badge'>Pending</span></td>
-      </tr>");
-        }
-
-        sb.Append($@"
-    </table>
-  </div>
-  <div class='cta'>
-    <p style='color:#374151;font-size:14px;margin-bottom:18px;font-weight:600;'>
-      Please log in and review these {proposals.Count} proposal{(proposals.Count != 1 ? "s" : "")} — Approve or Reject from the portal.
-    </p>
-    <a href='{portalUrl}/approver' class='btn'>&#128269; Open Approver Dashboard</a>
-    <p style='color:#94a3b8;font-size:12px;margin-top:14px;'>
-      <a href='{portalUrl}/approver' style='color:#2563eb;'>{portalUrl}/approver</a>
-    </p>
-  </div>
-  <div class='foot'>
-    Automated daily digest from BGauss BTL Portal &mdash; do not reply.<br/>
-    Generated: {DateTime.UtcNow.AddHours(5).AddMinutes(30):dd MMM yyyy HH:mm} IST
-  </div>
-</div>
-</body></html>");
-
-        return sb.ToString();
+        return $"""
+        <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;
+                    background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">
+          <div style="background:#0a2540;padding:24px 28px;text-align:center">
+            <div style="color:#fff;font-size:18px;font-weight:700">
+              📋 {proposals.Count} Proposal{(proposals.Count != 1 ? "s" : "")} Awaiting Your Review
+            </div>
+            <div style="color:#93c5fd;font-size:12px;margin-top:6px">
+              Forwarded by Checker · {date:dd MMM yyyy}
+            </div>
+          </div>
+          <div style="padding:24px 28px;text-align:center">
+            <div style="font-size:13px;color:#374151;margin-bottom:18px">
+              Total Budget: <strong>₹{totalBudget:N0}</strong> ·
+              States: <strong>{proposals.Select(p => p.State).Distinct().Count()}</strong> ·
+              Dealers: <strong>{proposals.Select(p => p.DealerName).Distinct().Count()}</strong>
+            </div>
+            <a href="{reviewUrl}"
+              style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;
+                     padding:13px 32px;border-radius:8px;font-weight:700;font-size:14px">
+              ✓ Review &amp; Approve →
+            </a>
+          </div>
+          <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:12px 28px;
+                     font-size:11px;color:#94a3b8;text-align:center">
+            BGauss BTL Portal · Automated digest, do not reply.
+          </div>
+        </div>
+        """;
     }
 }
