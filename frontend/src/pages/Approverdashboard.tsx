@@ -175,12 +175,17 @@ interface ProofMedia {
   id:string; fileUrl:string; fileName:string; fileType:string;
   capturedAt:string; latitude?:number|null; longitude?:number|null;
 }
-const DEFAULT_PLAN_PER_SETUP = 35; // Enquiry Plan & TD Plan = 35 × setupCount
+const DEFAULT_ENQ_PLAN_PER_SETUP = 35; // Enquiry Plan = 35 × setupCount
+const DEFAULT_TD_PLAN_PER_SETUP  = 30; // Test Drive Plan = 30 × setupCount
 interface DailyEntry {
   date:string; setupCount:number;
-  enquiryPlanned:number; enquiryActual:number;
-  testDrivePlanned:number; testDriveActual:number;
-  bookingActual:number; retailActual:number; leadsPunched:number;
+  enquiryPlanned:number; enquiryActual:number; enquiryHot:number;
+  testDrivePlanned:number; testDriveActual:number; testDrivePerCanopy:number; // manual
+  bookingActual:number; bookingInHand:number;
+  retailActual:number; retailMtdActivity:number; closingStock:number;
+  retailMtd:number; retailRatePerCanopy:number; // ← NEW: now manual/open
+  lmsLeads:number;
+  leadsPunched:number;
 }
 interface ActualEntry {
   actualStartDate:string; actualEndDate:string;
@@ -219,15 +224,35 @@ function toEditable(p: ProposalResponse): EditableProposal {
   };
 }
 
+// function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[] {
+//   if (!start||!end) return [];
+//   const entries:DailyEntry[]=[];
+//   const s=new Date(start), e=new Date(end), today=new Date();
+//   const cap=e<today?e:today;
+//   for (const d=new Date(s);d<=cap;d.setDate(d.getDate()+1)) {
+//     entries.push({ date:d.toISOString().split("T")[0],
+//       setupCount:0,enquiryPlanned:0,enquiryActual:0,enquiryHot:0,
+//       testDrivePlanned:0,testDriveActual:0,testDrivePerCanopy:0,
+//       bookingActual:0,bookingInHand:0,
+//       retailActual:0,retailMtdActivity:0,closingStock:0,
+//       retailMtd:0,retailRatePerCanopy:0,
+//       lmsLeads:0,leadsPunched:0 });
+//   }
+//   return entries;
+// }
+
 function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[] {
   if (!start||!end) return [];
   const entries:DailyEntry[]=[];
-  const s=new Date(start), e=new Date(end), today=new Date();
-  const cap=e<today?e:today;
-  for (const d=new Date(s);d<=cap;d.setDate(d.getDate()+1)) {
-    entries.push({ date:d.toISOString().split("T")[0],
-      setupCount:0,enquiryPlanned:0,enquiryActual:0,testDrivePlanned:0,testDriveActual:0,
-      bookingActual:0,retailActual:0,leadsPunched:0 });
+  const s=new Date(start), e=new Date(end);
+  for (const d=new Date(s);d<=e;d.setDate(d.getDate()+1)) {
+     entries.push({ date:d.toISOString().split("T")[0],
+      setupCount:0,enquiryPlanned:0,enquiryActual:0,enquiryHot:0,
+      testDrivePlanned:0,testDriveActual:0,testDrivePerCanopy:0,
+      bookingActual:0,bookingInHand:0,
+      retailActual:0,retailMtdActivity:0,closingStock:0,
+      retailMtd:0,retailRatePerCanopy:0,
+      lmsLeads:0,leadsPunched:0 });
   }
   return entries;
 }
@@ -237,11 +262,10 @@ function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[]
 // ═══════════════════════════════════════════════════════════════════════════════
 // ── Date range helper for post-activity: current + next month ──────────────
 function getActualDateRange() {
-  const now   = new Date();
-  const min   = new Date(now.getFullYear(), now.getMonth(), 1);
-  const max   = new Date(now.getFullYear(), now.getMonth() + 2, 0); // last day of next month
-  const fmt   = (d: Date) => d.toISOString().split("T")[0];
-  return { min: fmt(min), max: fmt(max) };
+  const now = new Date();
+  const min = new Date(now.getFullYear(), now.getMonth(), 1);       // first day of current month
+  const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);   // last day of next month
+  return { min: isoDate(min), max: isoDate(max) };
 }
 export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
@@ -537,6 +561,7 @@ export default function ApproverDashboard() {
         }
 
         // ── DEBUG CHECKPOINT 5: adding to UI state ───────────────────────────
+        // ── DEBUG CHECKPOINT 5: adding to UI state ───────────────────────────
         const proof:ProofMedia={
           id: saved.id,
           fileUrl: saved.fileUrl,
@@ -549,6 +574,27 @@ export default function ApproverDashboard() {
         console.log("[PROOF-UPLOAD] ✔ STEP 3 — added to UI state:", proof);
         setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
           proofMedia:[...prev[activityId].proofMedia,proof]}}));
+
+        // ── FIX: also sync the new media into `proposals` + `selected` so
+        // that closing and reopening this modal doesn't rebuild proofMedia
+        // from a stale `mediaFiles` list. Without this, initActuals(p) on
+        // reopen uses the OLD proposals-array snapshot (which never learns
+        // about media added mid-session) and the upload silently "disappears"
+        // even though it's fully saved in the DB. ──
+        const mediaEntry: ActivityMediaResponse = {
+          id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
+          fileType: saved.fileType, capturedAt: saved.capturedAt ?? capturedAt,
+          latitude: saved.latitude ?? geo?.lat ?? null,
+          longitude: saved.longitude ?? geo?.lng ?? null,
+        };
+        const syncMedia = (act: ActivityResponse) =>
+          act.id === activityId
+            ? { ...act, mediaFiles: [...(act.mediaFiles ?? []), mediaEntry] }
+            : act;
+        setProposals(prev => prev.map(pr =>
+          pr.id === proposalId ? { ...pr, activities: pr.activities.map(syncMedia) } : pr));
+        setSelected(prev => prev && prev.id === proposalId
+          ? { ...prev, activities: prev.activities.map(syncMedia) } : prev);
       }
 
       console.log("[PROOF-UPLOAD] ✅ All files uploaded successfully");
@@ -586,6 +632,22 @@ export default function ApproverDashboard() {
         };
         setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
           invoiceMedia:[...prev[activityId].invoiceMedia,inv]}}));
+
+        // ── FIX: same sync as photos — keep `proposals`/`selected` in sync
+        // so closing/reopening the modal doesn't lose this invoice. ──
+        const mediaEntry: ActivityMediaResponse = {
+          id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
+          fileType: saved.fileType, capturedAt: saved.capturedAt ?? new Date().toISOString(),
+          latitude: null, longitude: null,
+        };
+        const syncMedia = (act: ActivityResponse) =>
+          act.id === activityId
+            ? { ...act, mediaFiles: [...(act.mediaFiles ?? []), mediaEntry] }
+            : act;
+        setProposals(prev => prev.map(pr =>
+          pr.id === proposalId ? { ...pr, activities: pr.activities.map(syncMedia) } : pr));
+        setSelected(prev => prev && prev.id === proposalId
+          ? { ...prev, activities: prev.activities.map(syncMedia) } : prev);
       }
       showToast(`${fileArray.length} invoice${fileArray.length>1?"s":""} uploaded.`,true);
     } catch(err){ showToast(err instanceof Error?err.message:"Upload failed.",false); }
@@ -648,7 +710,14 @@ export default function ApproverDashboard() {
       });
       const updated=await updateProposalActuals(selected.id,payload,instance);
       setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
-      setSelected(updated); initActuals(updated); showToast("Actuals saved.",true);
+      // ── FIX: don't call initActuals(updated) here — it rebuilds proofMedia/
+      // invoiceMedia purely from `updated.activities[].mediaFiles`, and the
+      // /actuals PATCH endpoint's response doesn't eager-load that relation.
+      // That was wiping local media state to empty even though nothing was
+      // deleted in the DB. actualsData is already correct locally (it's what
+      // we just sent), so just refresh `selected` for display purposes.
+      setSelected(updated);
+      showToast("Actuals saved.",true);
     } catch(err){ showToast(err instanceof Error?err.message:"Failed.",false); }
     finally { setActualsLoading(false); }
   };
@@ -1476,12 +1545,31 @@ export default function ApproverDashboard() {
                             <td colSpan={14} style={{ padding:0,background:"#f0fdf4",borderBottom:"2px solid #bbf7d0" }}>
                               <div style={{ padding:"14px 20px" }}>
                                 {/* Header row */}
-                                <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap" }}>
+                                <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap" }}>
                                   <span style={{ background:"#16a34a",color:"#fff",borderRadius:4,padding:"2px 8px",fontSize:11,fontWeight:700 }}>📋 Post-Activity</span>
                                   <span style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>{a.activityType}</span>
                                   {a.category&&<span style={{ fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:3,background:a.category==="ATL"?"#eff6ff":"#dcfce7",color:a.category==="ATL"?"#1e40af":"#166534" }}>{a.category}</span>}
                                   <span style={{ fontSize:11,color:"#6b7280",marginLeft:"auto" }}>Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
                                 </div>
+
+                                {/* ── LMS / Retail Conv% badges — computed live from daily entries ── */}
+                                {(()=>{
+                                  const totalLmsLeads = d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
+                                  const totalPunched = d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0);
+                                  const lastMtdActivity = [...d.dailyEntries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any;
+                                  const mtdRetailActivity = lastMtdActivity?.retailMtdActivity ?? 0;
+                                  const lmsGap = totalLmsLeads - totalPunched;
+                                  const retailConvPct = totalLmsLeads > 0 ? Math.round((mtdRetailActivity/totalLmsLeads)*100) : 0;
+                                  return (
+                                    <div style={{ display:"flex",gap:8,flexWrap:"wrap",marginBottom:12 }}>
+                                      <span style={{ fontSize:11,background:"#eef2ff",color:"#4338ca",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Leads: {totalLmsLeads}</span>
+                                      <span style={{ fontSize:11,background:"#eef2ff",color:"#4338ca",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Punched: {totalPunched}</span>
+                                      <span style={{ fontSize:11,background:lmsGap>0?"#fef2f2":"#f0fdf4",color:lmsGap>0?"#b91c1c":"#166534",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Gap: {lmsGap}</span>
+                                      {/* <span style={{ fontSize:11,background:"#fffbeb",color:"#92400e",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>MTD Retail (Activity): {mtdRetailActivity}</span> */}
+                                      {/* <span style={{ fontSize:11,background:retailConvPct>=10?"#f0fdf4":"#fef9c3",color:retailConvPct>=10?"#166534":"#854d0e",padding:"3px 9px",borderRadius:5,fontWeight:700 }}>Retail Conv%: {retailConvPct}%</span> */}
+                                    </div>
+                                  );
+                                })()}
 
                                 {/* ── Actual Dates + compact action bar in one row ── */}
                                 <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
@@ -1651,18 +1739,30 @@ export default function ApproverDashboard() {
                                       <div style={{ padding:"24px",textAlign:"center",color:"#9ca3af",fontSize:13 }}>No entries yet for this date range.</div>
                                     ):(
                                       <div style={{ overflowX:"auto" }}>
-                                        <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:660 }}>
+                                        <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:1600 }}>
                                           <thead>
                                             <tr style={{ background:"#1e293b" }}>
                                               <th style={{ padding:"8px 10px",textAlign:"left",color:"#e2e8f0",fontSize:10,fontWeight:700,width:95 }}>Date</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Setup<br/>Count</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Enquiry<br/>Plan</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Enquiry<br/>Actual</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Test Drive<br/>Plan</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Test Drive<br/>Actual</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700 }}>Retail</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a5b4fc",fontSize:10,fontWeight:700 }}>LMS Leads<br/>Punched</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Enq<br/>Plan</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Enq<br/>Actual</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a7f3d0",fontSize:10,fontWeight:700 }}> Enq Per<br/>Canopy</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fca5a5",fontSize:10,fontWeight:700 }}>Enq Hot</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Test Rides<br/>Plan</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Test Rides<br/>Actual</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#d8b4fe",fontSize:10,fontWeight:700 }}>Test Rides<br/>/Canopy</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking<br/>Today</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking<br/>In Hand</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700 }}>Retail<br/>Today</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fcd34d",fontSize:10,fontWeight:700 }}>MTD Retail<br/>(Activity)</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Retail<br/>MTD</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fdba74",fontSize:10,fontWeight:700 }}>Retail Rate<br/>Per Canopy</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#94a3b8",fontSize:10,fontWeight:700 }}>Activity<br/>Day</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Closing<br/>Stock</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#c7d2fe",fontSize:10,fontWeight:700 }}>LMS<br/>Leads</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a5b4fc",fontSize:10,fontWeight:700 }}>LMS<br/>Punched</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fecaca",fontSize:10,fontWeight:700 }}>LMS<br/>Gap</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#67e8f9",fontSize:10,fontWeight:700 }}>Retail<br/>Conv%</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Media</th>
                                             </tr>
                                           </thead>
@@ -1673,28 +1773,42 @@ export default function ApproverDashboard() {
                                               const photosOnDay=d.proofMedia.filter(m=>m.capturedAt.startsWith(entryDate));
                                               const invoicesOnDay=d.invoiceMedia.filter(m=>m.capturedAt.startsWith(entryDate));
                                               const hasAnyData=entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
+                                              const setupCount=(entry as any).setupCount||0;
+                                              const enqPerCanopy=setupCount>0?Math.round(entry.enquiryActual/setupCount):0;
+                                              //const enqPerCanopy=setupCount>0?Math.round((entry.enquiryActual/setupCount)*10)/10:0;
+                                              const activityDay=ei+1; // auto-locked — sequential day count
+                                              const lmsLeads=(entry as any).lmsLeads||0;
+                                              const lmsGap=lmsLeads-(entry.leadsPunched||0);
+                                              const retailMtdActivity=(entry as any).retailMtdActivity||0;
+                                              const retailConvPct=lmsLeads>0?Math.round((retailMtdActivity/lmsLeads)*100):0;
                                               return (
                                                 <tr key={entry.date} style={{ background:ei%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",opacity:hasAnyData?1:0.5 }}>
                                                   <td style={{ padding:"5px 10px",fontWeight:600,color:"#374151",whiteSpace:"nowrap",fontSize:11 }}>{entry.date}</td>
-                                                  {/* Setup Count — auto-calcs Enquiry Plan & TD Plan (35 × count) */}
+                                                  {/* Canopy/Mela — auto-calcs Enquiry Plan (35×) & TD Plan (30×) */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} max={20}
                                                       style={{ width:40,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"2px",fontSize:11,outline:"none",background:"#fefce8",fontWeight:700 }}
-                                                      value={(entry as any).setupCount||""}
+                                                      value={setupCount||""}
                                                       placeholder="0"
-                                                      title="Setup Count — Enquiry Plan & TD Plan = 35 × this value"
+                                                      title="Canopy/Mela — Enquiry Plan = 35 × count, Test Rides Plan = 30 × count"
                                                       onChange={(ev)=>{
                                                         const sc=parseInt(ev.target.value)||0;
                                                         setDailyField(a.id,entry.date,"setupCount" as any,sc);
-                                                        setDailyField(a.id,entry.date,"enquiryPlanned",sc*DEFAULT_PLAN_PER_SETUP);
-                                                        setDailyField(a.id,entry.date,"testDrivePlanned",sc*DEFAULT_PLAN_PER_SETUP);
+                                                        setDailyField(a.id,entry.date,"enquiryPlanned",sc*DEFAULT_ENQ_PLAN_PER_SETUP);
+                                                        setDailyField(a.id,entry.date,"testDrivePlanned",sc*DEFAULT_TD_PLAN_PER_SETUP);
                                                       }}/>
                                                   </td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:(entry as any).setupCount>0?"#1e40af":"inherit",fontWeight:(entry as any).setupCount>0?700:400 }} value={entry.enquiryPlanned||""} placeholder="0" readOnly={(entry as any).setupCount>0} title={(entry as any).setupCount>0?"Auto-calculated (35 × Setup Count)":"Enter manually"} onChange={(e)=>!(entry as any).setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:setupCount>0?"#1e40af":"inherit",fontWeight:setupCount>0?700:400 }} value={entry.enquiryPlanned||""} placeholder="0" readOnly={setupCount>0} title={setupCount>0?"Auto-calculated (35 × Canopy/Mela)":"Enter manually"} onChange={(e)=>!setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
                                                   </td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.enquiryActual,entry.enquiryPlanned)||"#fff",fontWeight:entry.enquiryActual>0?700:400 }} value={entry.enquiryActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
+                                                  </td>
+                                                  {/* Per Canopy — computed, read-only */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,color:"#059669",fontWeight:600 }}>{enqPerCanopy||"—"}</td>
+                                                  {/* Hot */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:(entry as any).enquiryHot>0?"#fef2f2":"#fff",fontWeight:(entry as any).enquiryHot>0?700:400,color:(entry as any).enquiryHot>0?"#b91c1c":"inherit" }} value={(entry as any).enquiryHot||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryHot" as any,parseInt(e.target.value)||0)}/>
                                                   </td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.testDrivePlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
@@ -1702,15 +1816,51 @@ export default function ApproverDashboard() {
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.testDriveActual,entry.testDrivePlanned)||"#fff",fontWeight:entry.testDriveActual>0?700:400 }} value={entry.testDriveActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
                                                   </td>
+                                                  {/* TD Per Canopy — manual entry (not auto-derived) */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,color:"#7c3aed",fontWeight:600 }}>
+                                                    {setupCount>0?Math.round(entry.testDriveActual/setupCount):"—"}
+                                                  </td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.bookingActual>0?"#fdf4ff":"#fff",fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#7c3aed":"inherit" }} value={entry.bookingActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"bookingActual",parseInt(e.target.value)||0)}/>
+                                                  </td>
+                                                  {/* Booking In Hand */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:(entry as any).bookingInHand>0?"#fdf4ff":"#fff",fontWeight:(entry as any).bookingInHand>0?700:400,color:(entry as any).bookingInHand>0?"#7c3aed":"inherit" }} value={(entry as any).bookingInHand||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"bookingInHand" as any,parseInt(e.target.value)||0)}/>
                                                   </td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.retailActual>0?"#fef9c3":"#fff",fontWeight:entry.retailActual>0?700:400,color:entry.retailActual>0?"#92400e":"inherit" }} value={entry.retailActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"retailActual",parseInt(e.target.value)||0)}/>
                                                   </td>
+                                                  {/* MTD Retail (Activity) — manual cumulative figure dealer reports */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #fcd34d",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb" }} value={retailMtdActivity||""} placeholder="0" title="Manual — cumulative MTD as reported by dealer" onChange={(e)=>setDailyField(a.id,entry.date,"retailMtdActivity" as any,parseInt(e.target.value)||0)}/>
+                                                  </td>
+                                                  {/* Retail MTD — now manual/open, not auto-computed */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb",fontWeight:(entry as any).retailMtd>0?700:400,color:(entry as any).retailMtd>0?"#92400e":"inherit" }} value={(entry as any).retailMtd||""} placeholder="0" title="Manual — enter Retail MTD" onChange={(e)=>setDailyField(a.id,entry.date,"retailMtd" as any,parseInt(e.target.value)||0)}/>
+                                                  </td>
+                                                  {/* Retail Rate Per Canopy — now manual/open, not auto-computed */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} step="0.1" style={{ width:50,textAlign:"center",border:"1px solid #fdba74",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fff7ed",fontWeight:(entry as any).retailRatePerCanopy>0?700:400,color:(entry as any).retailRatePerCanopy>0?"#c2410c":"inherit" }} value={(entry as any).retailRatePerCanopy||""} placeholder="0.0" title="Manual — enter Retail Rate Per Canopy" onChange={(e)=>setDailyField(a.id,entry.date,"retailRatePerCanopy" as any,parseFloat(e.target.value)||0)}/>
+                                                  </td>
+                                                  {/* Activity Day — auto-locked sequential counter */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,color:"#64748b" }}>
+                                                    <span title="Auto-locked — sequential day count">{activityDay} 🔒</span>
+                                                  </td>
+                                                  {/* Closing Stock — manual */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={(entry as any).closingStock||""} placeholder="0" title="Manual — inventory closing stock" onChange={(e)=>setDailyField(a.id,entry.date,"closingStock" as any,parseInt(e.target.value)||0)}/>
+                                                  </td>
+                                                  {/* LMS Leads — manual, per-day leads generated */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:lmsLeads>0?"#eef2ff":"#fff",fontWeight:lmsLeads>0?700:400,color:lmsLeads>0?"#3730a3":"inherit" }} value={lmsLeads||""} placeholder="0" title="Manual — leads generated this day" onChange={(e)=>setDailyField(a.id,entry.date,"lmsLeads" as any,parseInt(e.target.value)||0)}/>
+                                                  </td>
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.leadsPunched>0?"#eef2ff":"#fff",fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#4338ca":"inherit" }} value={entry.leadsPunched||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"leadsPunched",parseInt(e.target.value)||0)}/>
                                                   </td>
+                                                  {/* LMS Gap — computed = Leads − Punched */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,fontWeight:700,color:lmsGap>0?"#b91c1c":lmsGap<0?"#166534":"#64748b" }}>{lmsGap}</td>
+                                                  {/* Retail Conv% — computed = (MTD Retail (Activity) / LMS Leads) × 100 */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,fontWeight:700,color:retailConvPct>=10?"#166534":retailConvPct>0?"#854d0e":"#94a3b8",background:retailConvPct>=10?"#f0fdf4":retailConvPct>0?"#fefce8":"transparent" }}>{retailConvPct}%</td>
                                                   {/* Media thumbnails for this date */}
                                                   <td style={{ padding:"4px 8px",textAlign:"center" }}>
                                                     <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
@@ -1733,24 +1883,50 @@ export default function ApproverDashboard() {
                                                           onChange={async(ev)=>{
                                                             if (!ev.target.files?.length) return;
                                                             const files = ev.target.files;
-                                                            // Upload files and stamp capturedAt = entryDate
                                                             const geo = await captureGeo();
                                                             for (const file of Array.from(files)) {
-                                                              const fd=new FormData(); fd.append("file",file);
-                                                              const tokenResp = await instance.acquireTokenSilent({ scopes:["User.Read"], account: instance.getAllAccounts()[0] }).catch(()=>null);
-                                              const tok = tokenResp?.accessToken ?? "";
-                                              const resp=await fetch(`${API_BASE}/api/media/upload`,{method:"POST",headers:{"Authorization":`Bearer ${tok}`},body:fd});
-                                                              if (!resp.ok) continue;
-                                                              const data=await resp.json();
-                                                              const proof:ProofMedia={
-                                                                id:crypto.randomUUID(),
-                                                                fileUrl:data.url||data.fileUrl,
-                                                                fileName:data.fileName||file.name,
-                                                                fileType:data.fileType||file.type,
-                                                                capturedAt:`${entryDate}T12:00:00.000Z`,
-                                                                latitude:geo?.lat??null,longitude:geo?.lng??null,
-                                                              };
-                                                              setActualsData(prev=>({...prev,[a.id]:{...prev[a.id],proofMedia:[...prev[a.id].proofMedia,proof]}}));
+                                                              try {
+                                                                const data = await uploadActivityMedia(file, instance);
+                                                                // ── FIX: also persist to DB via addActivityMedia — the
+                                                                // previous version only uploaded the raw file and stored
+                                                                // it in local actualsData, never saving an association
+                                                                // in the DB. That meant it "disappeared" on modal reopen
+                                                                // because nothing in the DB actually linked it to this
+                                                                // activity yet. ──
+                                                                const capturedAtIso = `${entryDate}T12:00:00.000Z`;
+                                                                const saved = await addActivityMedia(selected!.id, a.id, {
+                                                                  fileUrl: data.url, fileName: data.fileName || file.name,
+                                                                  fileType: data.fileType || file.type,
+                                                                  capturedAt: capturedAtIso,
+                                                                  latitude: geo?.lat ?? null, longitude: geo?.lng ?? null,
+                                                                }, instance);
+                                                                const proof:ProofMedia={
+                                                                  id:saved.id,
+                                                                  fileUrl:saved.fileUrl,
+                                                                  fileName:saved.fileName,
+                                                                  fileType:saved.fileType,
+                                                                  capturedAt:saved.capturedAt ?? capturedAtIso,
+                                                                  latitude:saved.latitude ?? geo?.lat ?? null,
+                                                                  longitude:saved.longitude ?? geo?.lng ?? null,
+                                                                };
+                                                                setActualsData(prev=>({...prev,[a.id]:{...prev[a.id],proofMedia:[...prev[a.id].proofMedia,proof]}}));
+                                                                const mediaEntry: ActivityMediaResponse = {
+                                                                  id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
+                                                                  fileType: saved.fileType, capturedAt: saved.capturedAt ?? capturedAtIso,
+                                                                  latitude: saved.latitude ?? geo?.lat ?? null,
+                                                                  longitude: saved.longitude ?? geo?.lng ?? null,
+                                                                };
+                                                                const syncMedia = (act: ActivityResponse) =>
+                                                                  act.id === a.id
+                                                                    ? { ...act, mediaFiles: [...(act.mediaFiles ?? []), mediaEntry] }
+                                                                    : act;
+                                                                setProposals(prev => prev.map(pr =>
+                                                                  pr.id === selected!.id ? { ...pr, activities: pr.activities.map(syncMedia) } : pr));
+                                                                setSelected(prev => prev
+                                                                  ? { ...prev, activities: prev.activities.map(syncMedia) } : prev);
+                                                              } catch (err) {
+                                                                console.error("Date-wise photo upload failed:", err);
+                                                              }
                                                             }
                                                           }}/>
                                                       </label>
@@ -1763,9 +1939,44 @@ export default function ApproverDashboard() {
                                           <tfoot>
                                             <tr style={{ background:"#0a2540",borderTop:"2px solid #1e3a5f" }}>
                                               <td style={{ padding:"7px 10px",fontWeight:800,color:"#fbbf24",fontSize:11 }}>TOTAL</td>
-                                              {(["setupCount","enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key,ki)=>(
-                                                <td key={key} style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:[0,2].includes(ki)?"#93c5fd":[1,3].includes(ki)?"#6ee7b7":ki===4?"#c4b5fd":ki===5?"#fbbf24":"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any)[key] as number),0)}</td>
-                                              ))}
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).setupCount||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#93c5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryPlanned||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#6ee7b7" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryActual||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:9,color:"#94a3b8" }}>avg</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fca5a5" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).enquiryHot||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c4b5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDrivePlanned||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fbbf24" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#7c3aed",fontWeight:700 }}>
+                                                {(()=>{ const totalSetup=d.dailyEntries.reduce((s,e)=>s+((e as any).setupCount||0),0); const totalTdAct=d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0); return totalSetup>0?Math.round(totalTdAct/totalSetup):"—"; })()}
+                                              </td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+(e.bookingActual||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).bookingInHand||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+(e.retailActual||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#fcd34d" }}>
+                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any; return last?.retailMtdActivity ?? 0; })()}
+                                              </td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#fde68a" }}>
+                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).retailMtd||0)>0) as any; return last?.retailMtd ?? 0; })()}
+                                              </td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#fdba74" }}>
+                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).retailRatePerCanopy||0)>0) as any; return last?.retailRatePerCanopy ?? "0.0"; })()}
+                                              </td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#94a3b8" }}>{d.dailyEntries.length}d 🔒</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#e2e8f0" }}>
+                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).closingStock||0)>0) as any; return last?.closingStock ?? 0; })()}
+                                              </td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c7d2fe" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fecaca" }}>
+                                                {d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0) - d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0)}
+                                              </td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#67e8f9" }}>
+                                                {(()=>{
+                                                  const totalLeads=d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
+                                                  const totalMtdAct=d.dailyEntries.reduce((s,e)=>s+((e as any).retailMtdActivity||0),0);
+                                                  return totalLeads>0?Math.round((totalMtdAct/totalLeads)*100):0;
+                                                })()}%
+                                              </td>
                                               <td style={{ padding:"7px 8px",textAlign:"center" }}>
                                                 <span style={{ fontSize:10,color:"#94a3b8" }}>
                                                   {d.proofMedia.length>0&&`📸${d.proofMedia.length} `}{d.invoiceMedia.length>0&&`🧾${d.invoiceMedia.length}`}
