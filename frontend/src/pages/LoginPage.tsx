@@ -54,6 +54,9 @@ export default function LoginPage({ onDealerLogin }: LoginPageProps) {
               className="login-logo-img"
             />
           </div>
+          {/* <p className="login-brand-sub" style={{ marginTop: -8 }}>
+            Field activity, budgets, and approvals — powered end to end.
+          </p> */}
           <div className="login-scooty-wrap">
             <img src="/login/Bg0-scooty.png" alt="BGauss scooter" className="login-scooty-img" />
           </div>

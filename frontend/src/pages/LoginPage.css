@@ -1,17 +1,25 @@
 /* frontend/src/pages/LoginPage.css */
 
+:root {
+  --volt: #00e676;
+  --volt-dim: #00c264;
+  --ink: #0b0f14;
+  --navy: #0a2540;
+  --card-bg: #f5f7fa;
+  --slate: #7c8798;
+}
+
 /* ─── Root ───────────────────────────────────────────────────────────────── */
 .login-root {
   display: flex;
   min-height: 100vh;
   font-family: 'Inter', 'Segoe UI', sans-serif;
-  background: #f0f4f8;
+  background: var(--card-bg);
 }
 
-/* ─── Left brand panel ───────────────────────────────────────────────────── */
 .login-brand {
   flex: 1.1;
-  background: linear-gradient(145deg, #0a2540 0%, #0d3b6e 55%, #0077b6 100%);
+  background: linear-gradient(145deg, #0a2540 0%, #1e3a5f 55%, #2d5580 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -25,11 +33,30 @@
   background-image: radial-gradient(circle, rgba(255,255,255,0.05) 1px, transparent 1px);
   background-size: 28px 28px;
 }
+
+.login-brand::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: -30%;
+  width: 160%; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0,230,118,0.3), transparent);
+  animation: chargeSweep 5.5s ease-in-out infinite 2.2s;
+}
+@keyframes chargeSweep {
+  0%   { transform: translateY(0) translateX(-10%); opacity: 0; }
+  10%  { opacity: 1; }
+  50%  { transform: translateY(340px) translateX(10%); opacity: 1; }
+  90%  { opacity: 0; }
+  100% { transform: translateY(680px) translateX(-10%); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .login-brand::before, .login-brand::after { animation: none; opacity: 0; }
+}
+
 .login-brand-inner {
   position: relative; z-index: 1; max-width: 420px; width: 100%;
 }
 
-/* ── Logo on left (navy) panel — white version, no box ── */
 .login-logo {
   display: flex;
   align-items: center;
@@ -41,35 +68,38 @@
   height: auto;
   display: block;
   object-fit: contain;
-  /* transparent PNG on dark bg — no background, no border, no box */
   background: transparent;
   border: none;
   padding: 0;
-  /* subtle drop shadow so white text pops on the gradient */
-  filter: drop-shadow(0 2px 8px rgba(0,0,0,0.25));
-}
-.login-logo-text {
-  font-size: 1.4rem; font-weight: 700; color: #fff; letter-spacing: -0.3px;
+  filter: drop-shadow(0 0 24px rgba(0,230,118,0.15)) drop-shadow(0 2px 8px rgba(0,0,0,0.4));
 }
 
-/* ── Headline + sub (hidden when logo replaces them) ── */
 .login-brand-headline {
-  font-size: clamp(1.8rem, 3vw, 2.8rem);
-  font-weight: 800; color: #fff; line-height: 1.15;
-  margin: 0 0 0.8rem; letter-spacing: -0.5px;
+  font-family: 'Space Grotesk', 'Inter', sans-serif;
+  font-size: clamp(1.8rem, 3vw, 2.6rem);
+  font-weight: 700; color: #fff; line-height: 1.15;
+  margin: 0 0 0.8rem; letter-spacing: -0.02em;
 }
 .login-brand-sub {
-  font-size: 0.95rem; color: rgba(255,255,255,0.6);
+  font-size: 0.95rem; color: rgba(255,255,255,0.55);
   line-height: 1.6; margin-bottom: 2rem;
 }
 
-/* Scooty image */
+/* Scooty — gentle idle float, like it's ready to roll */
 .login-scooty-wrap {
   margin-top: 2.5rem; display: flex; justify-content: center;
 }
 .login-scooty-img {
   width: 100%; max-width: 340px; height: auto; object-fit: contain;
-  filter: drop-shadow(0 6px 20px rgba(0,0,0,0.3));
+  filter: drop-shadow(0 8px 28px rgba(0,230,118,0.18)) drop-shadow(0 6px 20px rgba(0,0,0,0.35));
+  animation: idleFloat 4.5s ease-in-out infinite;
+}
+@keyframes idleFloat {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-8px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .login-scooty-img { animation: none; }
 }
 
 /* ─── Right card panel ───────────────────────────────────────────────────── */
@@ -79,11 +109,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 2rem 2rem;
-  background: #f8fafc;
+  padding: 2rem;
+  background: var(--card-bg);
 }
 
-/* Logo above card on right panel — navy/transparent version */
 .login-card-logo-top {
   display: flex;
   justify-content: center;
@@ -109,62 +138,84 @@
   width: 100%; max-width: 380px;
   box-shadow: 0 4px 24px rgba(0,0,0,0.07), 0 1px 4px rgba(0,0,0,0.04);
   border: 1px solid #e2e8f0;
+  border-top: 3px solid #1e3a5f;
+}
+@keyframes cardRise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Card header */
 .login-card-header { margin-bottom: 1.75rem; }
 .login-card-title {
-  font-size: 1.6rem; font-weight: 700; color: #0a2540;
-  margin: 0 0 0.35rem; letter-spacing: -0.3px;
+  font-family: 'Space Grotesk', 'Inter', sans-serif;
+  font-size: 1.65rem; font-weight: 700; color: var(--navy);
+  margin: 0 0 0.35rem; letter-spacing: -0.01em;
 }
-.login-card-desc { color: #64748b; font-size: 0.88rem; margin: 0; }
+.login-card-desc { color: var(--slate); font-size: 0.88rem; margin: 0; }
+.login-card-desc strong { color: var(--navy); }
 
 /* Mode toggle */
 .login-mode-toggle {
   display: flex; gap: 6px; margin-bottom: 1.4rem;
-  background: #f1f5f9; border-radius: 8px; padding: 3px;
+  background: #eef1f5; border-radius: 9px; padding: 3px;
 }
 .login-mode-btn {
-  flex: 1; padding: 7px 0; border: none; background: none;
-  font-size: 0.85rem; font-weight: 600; color: #64748b;
-  border-radius: 6px; cursor: pointer; font-family: inherit;
-  transition: background 0.15s, color 0.15s;
+  flex: 1; padding: 8px 0; border: none; background: none;
+  font-size: 0.85rem; font-weight: 600; color: var(--slate);
+  border-radius: 7px; cursor: pointer; font-family: inherit;
+  transition: background 0.18s, color 0.18s;
 }
 .login-mode-btn--active {
   background: #fff; color: #0a2540;
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  border-bottom: 2px solid #1e3a5f;
 }
 
-/* Microsoft button */
+/* Microsoft button — power-on glow on hover instead of stock MS blue-hover */
 .btn-microsoft {
   display: flex; align-items: center; justify-content: center; gap: 11px;
   width: 100%; padding: 0.82rem 1.25rem;
-  background: #0078d4; color: #fff;
+  background: #1e3a5f; color: #fff;
   border: none; border-radius: 8px;
   font-size: 0.92rem; font-weight: 600; cursor: pointer;
   transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
-  box-shadow: 0 2px 8px rgba(0,120,212,0.25);
+  box-shadow: 0 2px 8px rgba(30,58,95,0.3);
   font-family: inherit;
 }
 .btn-microsoft:hover:not(:disabled) {
-  background: #005fa3;
-  box-shadow: 0 4px 14px rgba(0,120,212,0.35);
+  background: #16304f;
+  box-shadow: 0 4px 14px rgba(30,58,95,0.4);
+  transform: translateY(-1px);
+}
+.btn-microsoft::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(0,230,118,0.25), transparent);
+  transform: translateX(-100%);
+  transition: transform 0.5s ease;
+}
+.btn-microsoft:hover:not(:disabled)::after { transform: translateX(100%); }
+.btn-microsoft:hover:not(:disabled) {
+  box-shadow: 0 4px 18px rgba(0,230,118,0.28);
   transform: translateY(-1px);
 }
 .btn-microsoft:active:not(:disabled) { transform: translateY(0); }
 .btn-microsoft:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-microsoft:focus-visible {
+  outline: 2px solid var(--volt); outline-offset: 2px;
+}
 
 /* Divider */
 .login-divider {
   display: flex; align-items: center; gap: 10px;
-  margin: 1.4rem 0 1.2rem; color: #94a3b8; font-size: 0.75rem;
+  margin: 1.4rem 0 1.2rem; color: var(--slate); font-size: 0.75rem;
 }
 .login-divider::before,
 .login-divider::after { content: ''; flex: 1; height: 1px; background: #e2e8f0; }
 
 /* Footer note */
 .login-footer-note {
-  text-align: center; font-size: 0.75rem; color: #94a3b8;
+  text-align: center; font-size: 0.75rem; color: #9aa5b1;
   margin: 0; line-height: 1.5;
 }
 
@@ -173,23 +224,23 @@
 .login-dealer-field { display: flex; flex-direction: column; gap: 4px; }
 .login-dealer-field label { font-size: 0.78rem; font-weight: 600; color: #374151; }
 .login-dealer-field input {
-  border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 0.7rem 0.9rem;
-  font-size: 0.9rem; outline: none; font-family: inherit; transition: border-color 0.15s;
+  border: 1.5px solid #e2e8f0; border-radius: 9px; padding: 0.7rem 0.9rem;
+  font-size: 0.9rem; outline: none; font-family: inherit; transition: border-color 0.15s, box-shadow 0.15s;
 }
-.login-dealer-field input:focus { border-color: #0078d4; }
+.login-dealer-field input:focus { border-color: #1e3a5f; box-shadow: 0 0 0 3px rgba(30,58,95,0.12); }
 
 .login-forgot-link {
-  font-size: 0.78rem; color: #0078d4; text-decoration: none;
+  font-size: 0.78rem; color: #1e3a5f; text-decoration: none;
   align-self: flex-end; margin-top: 2px;
 }
 .login-forgot-link:hover { text-decoration: underline; }
 
-.btn-dealer { background: #166534; box-shadow: 0 2px 8px rgba(22,101,52,0.25); }
-.btn-dealer:hover:not(:disabled) { background: #14532d; box-shadow: 0 4px 14px rgba(22,101,52,0.35); }
+.btn-dealer { background: #1e3a5f; box-shadow: 0 2px 8px rgba(30,58,95,0.3); }
+.btn-dealer:hover:not(:disabled) { background: #16304f; box-shadow: 0 4px 14px rgba(30,58,95,0.4); }
 
 .login-dealer-error {
   background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
-  border-radius: 7px; padding: 8px 12px; font-size: 0.8rem;
+  border-radius: 8px; padding: 8px 12px; font-size: 0.8rem;
 }
 
 /* ══════════════════════════════════════════════════════
@@ -203,15 +254,10 @@
 
 /* ══════════════════════════════════════════════════════
    RESPONSIVE — Mobile (≤ 768px)
-   Brand on top, card slides up from bottom
 ══════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-  .login-root {
-    flex-direction: column;
-    background: #0a2540;
-  }
+  .login-root { flex-direction: column; background: var(--ink); }
 
-  /* Brand becomes compact top banner */
   .login-brand {
     flex: none;
     align-items: flex-start;
@@ -225,21 +271,19 @@
   .login-brand-headline { font-size: 1.9rem; }
   .login-brand-sub    { font-size: 0.88rem; margin-bottom: 0; }
 
-  /* Scooter sits bottom-right of brand */
   .login-scooty-wrap {
     position: absolute;
     bottom: 0; right: 0;
     margin: 0;
     justify-content: flex-end;
   }
-  .login-scooty-img { max-width: 200px; opacity: 0.85; }
+  .login-scooty-img { max-width: 200px; opacity: 0.9; }
 
-  /* Card panel slides up over brand */
   .login-card-panel {
     flex: 1;
     flex-direction: column;
-    background: #f8fafc;
-    border-radius: 24px 24px 0 0;
+    background: var(--card-bg);
+    border-radius: 26px 26px 0 0;
     margin-top: -28px;
     padding: 2rem 1.25rem 2rem;
     position: relative;
@@ -248,7 +292,6 @@
     align-items: center;
     justify-content: flex-start;
   }
-  /* Pull handle */
   .login-card-panel::before {
     content: '';
     display: block;
@@ -262,9 +305,6 @@
   .login-card { max-width: 100%; box-shadow: 0 2px 16px rgba(0,0,0,0.07); }
 }
 
-/* ══════════════════════════════════════════════════════
-   RESPONSIVE — Small mobile (≤ 480px)
-══════════════════════════════════════════════════════ */
 @media (max-width: 480px) {
   .login-brand          { padding: 1.5rem 1.25rem 4.5rem; min-height: 230px; }
   .login-logo-img       { width: 190px; }
@@ -276,9 +316,6 @@
   .login-card-logo-img  { width: 160px; }
 }
 
-/* ══════════════════════════════════════════════════════
-   RESPONSIVE — Very small (≤ 360px)
-══════════════════════════════════════════════════════ */
 @media (max-width: 360px) {
   .login-logo-img       { width: 170px; }
   .login-brand-headline { font-size: 1.45rem; }
