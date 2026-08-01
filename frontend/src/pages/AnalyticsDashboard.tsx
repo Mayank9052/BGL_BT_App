@@ -882,7 +882,8 @@ interface LeadReportRow {
               const atlBudget = atl.reduce((s,a) => s+(a.budget||0),0);
               const btlBudget = btl.reduce((s,a) => s+(a.budget||0),0);
               return [
-                <KPI key="tot" label="Total Activities"  value={String(allActs.length)} color="#0a2540" sub={`${activityRows.length} types`} active={activeKpi==="act_tot"} onClick={()=>toggleKpi("act_tot",()=>{},()=>{})}/>,
+                <KPI key="tot" label="Total Activities"  value={String(allActs.length)} color="#0a2540" sub={`${activityRows.length} types`} active={activeKpi==="act_tot"} onClick={()=>toggleKpi("act_tot",()=>setActFilter(null),()=>setActFilter(null))}/>,
+                // <KPI key="tot" label="Total Activities"  value={String(allActs.length)} color="#0a2540" sub={`${activityRows.length} types`} active={activeKpi==="act_tot"} onClick={()=>toggleKpi("act_tot",()=>{},()=>{})}/>,
                 <KPI key="atl" label="ATL Activities" value={String(atl.length)} color="#1e40af" sub={inrL(atlBudget)} active={activeKpi==="atl"} onClick={()=>toggleKpi("atl",()=>setActFilter("ATL_FILTER"),()=>setActFilter(null))}/>,
                 <KPI key="btl" label="BTL Activities" value={String(btl.length)} color="#166534" sub={inrL(btlBudget)} active={activeKpi==="btl"} onClick={()=>toggleKpi("btl",()=>setActFilter("BTL_FILTER"),()=>setActFilter(null))}/>,
                 <KPI key="cac" label="Overall CAC"       value={inrL(avgCac)}          color="#f59e0b" sub="avg per retail" active={activeKpi==="cac_act"} onClick={()=>toggleKpi("cac_act",()=>setActiveTab("budget"),()=>setActiveTab("activity"))}/>,
