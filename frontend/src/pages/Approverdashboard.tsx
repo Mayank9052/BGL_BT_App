@@ -178,12 +178,19 @@ interface ProofMedia {
 const DEFAULT_ENQ_PLAN_PER_SETUP = 35; // Enquiry Plan = 35 × setupCount
 const DEFAULT_TD_PLAN_PER_SETUP  = 30; // Test Drive Plan = 30 × setupCount
 interface DailyEntry {
-  date:string; setupCount:number;
-  enquiryPlanned:number; enquiryActual:number; enquiryHot:number;
-  testDrivePlanned:number; testDriveActual:number; testDrivePerCanopy:number; // manual
+  date:string;
+  openingStock:number;        // ← NEW manual
+  setupCount:number;          // "Canopy" column
+  enquiryPlanned:number; enquiryActual:number;
+  walkIn:number;               // ← NEW manual
+  inLms:number;                // ← NEW manual
+  enquiryGap:number;           // ← NEW computed: inLms − enquiryActual
+  enquiryHot:number;
+  revisedHot:number;           // ← NEW manual
+  testDrivePlanned:number; testDriveActual:number; testDrivePerCanopy:number;
   bookingActual:number; bookingInHand:number;
   retailActual:number; retailMtdActivity:number; closingStock:number;
-  retailMtd:number; retailRatePerCanopy:number; // ← NEW: now manual/open
+  retailMtd:number; retailRatePerCanopy:number;
   lmsLeads:number;
   leadsPunched:number;
 }
@@ -197,6 +204,32 @@ interface ActualEntry {
   proofMedia:ProofMedia[];
   invoiceMedia:ProofMedia[]; // multiple invoices/bills
   dailyEntries:DailyEntry[];
+}
+
+// Gap = In LMS − Enquiry Actual (confirmed from screenshot: 89−91=-2, 83−82=1)
+function recalcEnquiryGap(entries: DailyEntry[]): DailyEntry[] {
+  return entries.map((e) => ({ ...e, enquiryGap: (e.inLms || 0) - (e.enquiryActual || 0) }));
+}
+
+function recalcBookingInHand(entries: DailyEntry[]): DailyEntry[] {
+  let running = 0;
+  return entries.map((e) => {
+    const pending = (e.bookingActual || 0) - ((e as any).retailMtdActivity || 0);
+    running += pending;
+    return { ...e, bookingInHand: running } as DailyEntry;
+  });
+}
+
+function recalcRetailMtd(entries: DailyEntry[]): DailyEntry[] {
+  let running = 0;
+  return entries.map((e, i) => {
+    if (i === 0) {
+      running = e.retailMtd || 0;   // 1st day stays manual — just seed the running total
+      return e;
+    }
+    running += (e.retailMtdActivity || 0);   // every later day = prev MTD + today's Retail
+    return { ...e, retailMtd: running };
+  });
 }
 
 function toEditable(p: ProposalResponse): EditableProposal {
@@ -247,7 +280,8 @@ function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[]
   const s=new Date(start), e=new Date(end);
   for (const d=new Date(s);d<=e;d.setDate(d.getDate()+1)) {
      entries.push({ date:d.toISOString().split("T")[0],
-      setupCount:0,enquiryPlanned:0,enquiryActual:0,enquiryHot:0,
+      openingStock:0, setupCount:0,
+      enquiryPlanned:0,enquiryActual:0,walkIn:0,inLms:0,enquiryGap:0,enquiryHot:0,revisedHot:0,
       testDrivePlanned:0,testDriveActual:0,testDrivePerCanopy:0,
       bookingActual:0,bookingInHand:0,
       retailActual:0,retailMtdActivity:0,closingStock:0,
@@ -495,15 +529,28 @@ export default function ApproverDashboard() {
     setActualsData((prev)=>({...prev,[id]:{...prev[id],[key]:v}}));
 
   const setDailyField=(activityId:string,date:string,key:keyof DailyEntry,v:number)=>
-    setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
-      dailyEntries:prev[activityId].dailyEntries.map((e)=>e.date===date?{...e,[key]:v}:e)}}));
+    setActualsData((prev)=>{
+      const acc=prev[activityId]; if(!acc) return prev;
+      let entries=acc.dailyEntries.map((e)=>e.date===date?{...e,[key]:v}:e);
+      if (key==="bookingActual" || (key as string)==="retailMtdActivity") {
+        entries=recalcBookingInHand(entries);
+      }
+      if (key==="inLms" || key==="enquiryActual") {
+        entries=recalcEnquiryGap(entries);
+      }
+      if ((key as string)==="retailMtdActivity" || (key as string)==="retailMtd") {
+        entries=recalcRetailMtd(entries);   // ← recompute whole MTD chain
+      }
+      return {...prev,[activityId]:{...acc,dailyEntries:entries}};
+  });
 
   const rebuildDailyEntries=(activityId:string,startDate:string,endDate:string)=>{
     const fresh=buildDailyEntries(startDate,endDate);
     setActualsData((prev)=>{
       const existing=prev[activityId]?.dailyEntries??[];
       const merged=fresh.map((ne)=>existing.find((e)=>e.date===ne.date)??ne);
-      return {...prev,[activityId]:{...prev[activityId],dailyEntries:merged}};
+      return {...prev,[activityId]:{...prev[activityId],
+        dailyEntries:recalcRetailMtd(recalcEnquiryGap(recalcBookingInHand(merged)))}};
     });
   };
 
@@ -1764,125 +1811,162 @@ export default function ApproverDashboard() {
                                           <thead>
                                             <tr style={{ background:"#1e293b" }}>
                                               <th style={{ padding:"8px 10px",textAlign:"left",color:"#e2e8f0",fontSize:10,fontWeight:700,width:95 }}>Date</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Setup<br/>Count</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Enq<br/>Plan</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Enq<br/>Actual</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a7f3d0",fontSize:10,fontWeight:700 }}> Enq Per<br/>Canopy</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fca5a5",fontSize:10,fontWeight:700 }}>Enq Hot</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Test Rides<br/>Plan</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Test Rides<br/>Actual</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#d8b4fe",fontSize:10,fontWeight:700 }}>Test Rides<br/>/Canopy</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Opening<br/>Stock</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Canopy</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Planned</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Actual</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a7f3d0",fontSize:10,fontWeight:700 }}>Walk in</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a7f3d0",fontSize:10,fontWeight:700 }}>In LMS</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fca5a5",fontSize:10,fontWeight:700 }}>Gap</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fca5a5",fontSize:10,fontWeight:700 }}>Hot</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fca5a5",fontSize:10,fontWeight:700 }}>Revised<br/>Hot</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>TD<br/>Planned</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>TD<br/>Actual</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking<br/>Today</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking<br/>In Hand</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700 }}>Retail<br/>Today</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fcd34d",fontSize:10,fontWeight:700 }}>MTD Retail<br/>(Activity)</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Retail<br/>MTD</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fdba74",fontSize:10,fontWeight:700 }}>Retail Rate<br/>Per Canopy</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#94a3b8",fontSize:10,fontWeight:700 }}>Activity<br/>Day</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Closing<br/>Stock</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#c7d2fe",fontSize:10,fontWeight:700 }}>LMS<br/>Leads</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a5b4fc",fontSize:10,fontWeight:700 }}>LMS<br/>Punched</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fecaca",fontSize:10,fontWeight:700 }}>LMS<br/>Gap</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#67e8f9",fontSize:10,fontWeight:700 }}>Retail<br/>Conv%</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700 }}>Retail</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fcd34d",fontSize:10,fontWeight:700 }}>MTD<br/>Retail</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Media</th>
                                             </tr>
                                           </thead>
                                           <tbody>
                                             {d.dailyEntries.map((entry,ei)=>{
-                                              const pctC=(actual:number,planned:number)=>{ if(!actual) return ""; const r=planned>0?actual/planned:1; return r>=0.9?"#d1fae5":r>=0.6?"#fef3c7":"#fee2e2"; };
                                               const entryDate=entry.date;
                                               const photosOnDay=d.proofMedia.filter(m=>m.capturedAt.startsWith(entryDate));
                                               const invoicesOnDay=d.invoiceMedia.filter(m=>m.capturedAt.startsWith(entryDate));
-                                              const hasAnyData=entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
-                                              const setupCount=(entry as any).setupCount||0;
-                                              const enqPerCanopy=setupCount>0?Math.round(entry.enquiryActual/setupCount):0;
-                                              //const enqPerCanopy=setupCount>0?Math.round((entry.enquiryActual/setupCount)*10)/10:0;
-                                              const activityDay=ei+1; // auto-locked — sequential day count
-                                              const lmsLeads=(entry as any).lmsLeads||0;
-                                              const lmsGap=lmsLeads-(entry.leadsPunched||0);
-                                              const retailMtdActivity=(entry as any).retailMtdActivity||0;
-                                              const retailConvPct=lmsLeads>0?Math.round((retailMtdActivity/lmsLeads)*100):0;
+                                              const hasAnyData=entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||photosOnDay.length>0||invoicesOnDay.length>0;
+                                              const setupCount=entry.setupCount||0;
+                                              const gapColor = entry.enquiryGap < 0 ? "#dc2626" : entry.enquiryGap > 0 ? "#16a34a" : "#64748b";
                                               return (
                                                 <tr key={entry.date} style={{ background:ei%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",opacity:hasAnyData?1:0.5 }}>
                                                   <td style={{ padding:"5px 10px",fontWeight:600,color:"#374151",whiteSpace:"nowrap",fontSize:11 }}>{entry.date}</td>
-                                                  {/* Canopy/Mela — auto-calcs Enquiry Plan (35×) & TD Plan (30×) */}
+
+                                                  {/* Opening Stock — manual */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }}
+                                                      value={entry.openingStock||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"openingStock",parseInt(e.target.value)||0)}/>
+                                                  </td>
+
+                                                  {/* Canopy — auto-calcs Enquiry/TD Plan */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} max={20}
                                                       style={{ width:40,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"2px",fontSize:11,outline:"none",background:"#fefce8",fontWeight:700 }}
-                                                      value={setupCount||""}
-                                                      placeholder="0"
-                                                      title="Canopy/Mela — Enquiry Plan = 35 × count, Test Rides Plan = 30 × count"
+                                                      value={setupCount||""} placeholder="0"
+                                                      title="Canopy — Enquiry Plan = 35 × count, TD Plan = 30 × count"
                                                       onChange={(ev)=>{
                                                         const sc=parseInt(ev.target.value)||0;
-                                                        setDailyField(a.id,entry.date,"setupCount" as any,sc);
+                                                        setDailyField(a.id,entry.date,"setupCount",sc);
                                                         setDailyField(a.id,entry.date,"enquiryPlanned",sc*DEFAULT_ENQ_PLAN_PER_SETUP);
                                                         setDailyField(a.id,entry.date,"testDrivePlanned",sc*DEFAULT_TD_PLAN_PER_SETUP);
                                                       }}/>
                                                   </td>
+
+                                                  {/* Planned */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:setupCount>0?"#1e40af":"inherit",fontWeight:setupCount>0?700:400 }} value={entry.enquiryPlanned||""} placeholder="0" readOnly={setupCount>0} title={setupCount>0?"Auto-calculated (35 × Canopy/Mela)":"Enter manually"} onChange={(e)=>!setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:setupCount>0?"#1e40af":"inherit",fontWeight:setupCount>0?700:400 }}
+                                                      value={entry.enquiryPlanned||""} placeholder="0" readOnly={setupCount>0}
+                                                      onChange={(e)=>!setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
                                                   </td>
+
+                                                  {/* Actual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.enquiryActual,entry.enquiryPlanned)||"#fff",fontWeight:entry.enquiryActual>0?700:400 }} value={entry.enquiryActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",fontWeight:entry.enquiryActual>0?700:400 }}
+                                                      value={entry.enquiryActual||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* Per Canopy — computed, read-only */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,color:"#059669",fontWeight:600 }}>{enqPerCanopy||"—"}</td>
-                                                  {/* Hot */}
+
+                                                  {/* Walk in — manual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:(entry as any).enquiryHot>0?"#fef2f2":"#fff",fontWeight:(entry as any).enquiryHot>0?700:400,color:(entry as any).enquiryHot>0?"#b91c1c":"inherit" }} value={(entry as any).enquiryHot||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryHot" as any,parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #a7f3d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.walkIn>0?"#ecfdf5":"#fff" }}
+                                                      value={entry.walkIn||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"walkIn",parseInt(e.target.value)||0)}/>
                                                   </td>
+
+                                                  {/* In LMS — manual, drives Gap */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.testDrivePlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #a7f3d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.inLms>0?"#ecfdf5":"#fff",fontWeight:entry.inLms>0?700:400 }}
+                                                      value={entry.inLms||""} placeholder="0" title="Manual — drives Gap = In LMS − Actual"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"inLms",parseInt(e.target.value)||0)}/>
                                                   </td>
+
+                                                  {/* Gap — computed, read-only */}
+                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,fontWeight:700,color:gapColor }}>
+                                                    {entry.enquiryGap ?? 0}
+                                                  </td>
+
+                                                  {/* Hot — manual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.testDriveActual,entry.testDrivePlanned)||"#fff",fontWeight:entry.testDriveActual>0?700:400 }} value={entry.testDriveActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.enquiryHot>0?"#fef2f2":"#fff",fontWeight:entry.enquiryHot>0?700:400,color:entry.enquiryHot>0?"#b91c1c":"inherit" }}
+                                                      value={entry.enquiryHot||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"enquiryHot",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* TD Per Canopy — manual entry (not auto-derived) */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,color:"#7c3aed",fontWeight:600 }}>
-                                                    {setupCount>0?Math.round(entry.testDriveActual/setupCount):"—"}
-                                                  </td>
+
+                                                  {/* Revised Hot — manual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.bookingActual>0?"#fdf4ff":"#fff",fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#7c3aed":"inherit" }} value={entry.bookingActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"bookingActual",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.revisedHot>0?"#fef2f2":"#fff",fontWeight:entry.revisedHot>0?700:400,color:entry.revisedHot>0?"#b91c1c":"inherit" }}
+                                                      value={entry.revisedHot||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"revisedHot",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* Booking In Hand */}
+
+                                                  {/* Test Drive Planned */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:(entry as any).bookingInHand>0?"#fdf4ff":"#fff",fontWeight:(entry as any).bookingInHand>0?700:400,color:(entry as any).bookingInHand>0?"#7c3aed":"inherit" }} value={(entry as any).bookingInHand||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"bookingInHand" as any,parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }}
+                                                      value={entry.testDrivePlanned||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
                                                   </td>
+
+                                                  {/* Test Drive Actual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.retailActual>0?"#fef9c3":"#fff",fontWeight:entry.retailActual>0?700:400,color:entry.retailActual>0?"#92400e":"inherit" }} value={entry.retailActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"retailActual",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",fontWeight:entry.testDriveActual>0?700:400 }}
+                                                      value={entry.testDriveActual||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* MTD Retail (Activity) — manual cumulative figure dealer reports */}
+
+                                                  {/* Booking Today — manual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #fcd34d",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb" }} value={retailMtdActivity||""} placeholder="0" title="Manual — cumulative MTD as reported by dealer" onChange={(e)=>setDailyField(a.id,entry.date,"retailMtdActivity" as any,parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.bookingActual>0?"#fdf4ff":"#fff",fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#7c3aed":"inherit" }}
+                                                      value={entry.bookingActual||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"bookingActual",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* Retail MTD — now manual/open, not auto-computed */}
+
+                                                  {/* Booking In Hand — auto, running formula */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb",fontWeight:(entry as any).retailMtd>0?700:400,color:(entry as any).retailMtd>0?"#92400e":"inherit" }} value={(entry as any).retailMtd||""} placeholder="0" title="Manual — enter Retail MTD" onChange={(e)=>setDailyField(a.id,entry.date,"retailMtd" as any,parseInt(e.target.value)||0)}/>
+                                                    <div title="Auto: running (Booking Today − Retail), floored at 0"
+                                                      style={{ width:48,margin:"0 auto",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,
+                                                        background:(entry.bookingInHand>0)?"#fdf4ff":"#fff",
+                                                        fontWeight:(entry.bookingInHand>0)?700:400,
+                                                        color:(entry.bookingInHand>0)?"#7c3aed":"#9ca3af" }}>
+                                                      {entry.bookingInHand ?? 0} 🔒
+                                                    </div>
                                                   </td>
-                                                  {/* Retail Rate Per Canopy — now manual/open, not auto-computed */}
+
+                                                  {/* Retail — this IS "MTD Retail Activity" per screenshot's orange Retail column */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} step="0.1" style={{ width:50,textAlign:"center",border:"1px solid #fdba74",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fff7ed",fontWeight:(entry as any).retailRatePerCanopy>0?700:400,color:(entry as any).retailRatePerCanopy>0?"#c2410c":"inherit" }} value={(entry as any).retailRatePerCanopy||""} placeholder="0.0" title="Manual — enter Retail Rate Per Canopy" onChange={(e)=>setDailyField(a.id,entry.date,"retailRatePerCanopy" as any,parseFloat(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #fcd34d",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb",fontWeight:entry.retailMtdActivity>0?700:400,color:entry.retailMtdActivity>0?"#92400e":"inherit" }}
+                                                      value={entry.retailMtdActivity||""} placeholder="0" title="Manual — MTD Retail Activity"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"retailMtdActivity",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* Activity Day — auto-locked sequential counter */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,color:"#64748b" }}>
-                                                    <span title="Auto-locked — sequential day count">{activityDay} 🔒</span>
-                                                  </td>
-                                                  {/* Closing Stock — manual */}
+
+                                                  {/* MTD Retail — 1st day manual, every day after auto-sums prev MTD + today's Retail */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={(entry as any).closingStock||""} placeholder="0" title="Manual — inventory closing stock" onChange={(e)=>setDailyField(a.id,entry.date,"closingStock" as any,parseInt(e.target.value)||0)}/>
+                                                    {ei===0 ? (
+                                                      <input type="number" min={0}
+                                                        style={{ width:50,textAlign:"center",border:"1px solid #f59e0b",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb",fontWeight:700,color:"#92400e" }}
+                                                        value={entry.retailMtd||""} placeholder="0" title="Starting MTD Retail — this seeds the running total for all following days"
+                                                        onChange={(e)=>setDailyField(a.id,entry.date,"retailMtd",parseInt(e.target.value)||0)}/>
+                                                    ) : (
+                                                      <div title="Auto: previous day's MTD Retail + today's Retail"
+                                                        style={{ width:50,margin:"0 auto",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,
+                                                          background:(entry.retailMtd>0)?"#fffbeb":"#fff",
+                                                          fontWeight:(entry.retailMtd>0)?700:400,
+                                                          color:(entry.retailMtd>0)?"#92400e":"#9ca3af" }}>
+                                                        {entry.retailMtd ?? 0} 🔒
+                                                      </div>
+                                                    )}
                                                   </td>
-                                                  {/* LMS Leads — manual, per-day leads generated */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:lmsLeads>0?"#eef2ff":"#fff",fontWeight:lmsLeads>0?700:400,color:lmsLeads>0?"#3730a3":"inherit" }} value={lmsLeads||""} placeholder="0" title="Manual — leads generated this day" onChange={(e)=>setDailyField(a.id,entry.date,"lmsLeads" as any,parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.leadsPunched>0?"#eef2ff":"#fff",fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#4338ca":"inherit" }} value={entry.leadsPunched||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"leadsPunched",parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  {/* LMS Gap — computed = Leads − Punched */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,fontWeight:700,color:lmsGap>0?"#b91c1c":lmsGap<0?"#166534":"#64748b" }}>{lmsGap}</td>
-                                                  {/* Retail Conv% — computed = (MTD Retail (Activity) / LMS Leads) × 100 */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,fontWeight:700,color:retailConvPct>=10?"#166534":retailConvPct>0?"#854d0e":"#94a3b8",background:retailConvPct>=10?"#f0fdf4":retailConvPct>0?"#fefce8":"transparent" }}>{retailConvPct}%</td>
-                                                  {/* Media thumbnails for this date */}
+
+                                                  {/* Media */}
                                                   <td style={{ padding:"4px 8px",textAlign:"center" }}>
                                                     <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
                                                       {photosOnDay.slice(0,2).map(m=>{
@@ -1896,9 +1980,7 @@ export default function ApproverDashboard() {
                                                       {photosOnDay.length>2&&<span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-2}</span>}
                                                       {invoicesOnDay.length>0&&<span style={{ fontSize:10,background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:3,padding:"1px 4px",color:"#374151",whiteSpace:"nowrap" }}>🧾{invoicesOnDay.length}</span>}
                                                       {photosOnDay.length===0&&invoicesOnDay.length===0&&<span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
-                                                      {/* Date-wise upload: upload photo/invoice for this specific date */}
-                                                      <label title={`Upload photo for ${entryDate}`}
-                                                        style={{ cursor:"pointer",fontSize:11,color:"#60a5fa",marginLeft:2 }}>
+                                                      <label title={`Upload photo for ${entryDate}`} style={{ cursor:"pointer",fontSize:11,color:"#60a5fa",marginLeft:2 }}>
                                                         📷
                                                         <input type="file" accept="image/*,video/*" multiple style={{ display:"none" }}
                                                           onChange={async(ev)=>{
@@ -1908,12 +1990,6 @@ export default function ApproverDashboard() {
                                                             for (const file of Array.from(files)) {
                                                               try {
                                                                 const data = await uploadActivityMedia(file, instance);
-                                                                // ── FIX: also persist to DB via addActivityMedia — the
-                                                                // previous version only uploaded the raw file and stored
-                                                                // it in local actualsData, never saving an association
-                                                                // in the DB. That meant it "disappeared" on modal reopen
-                                                                // because nothing in the DB actually linked it to this
-                                                                // activity yet. ──
                                                                 const capturedAtIso = `${entryDate}T12:00:00.000Z`;
                                                                 const saved = await addActivityMedia(selected!.id, a.id, {
                                                                   fileUrl: data.url, fileName: data.fileName || file.name,
@@ -1921,33 +1997,16 @@ export default function ApproverDashboard() {
                                                                   capturedAt: capturedAtIso,
                                                                   latitude: geo?.lat ?? null, longitude: geo?.lng ?? null,
                                                                 }, instance);
-                                                                const proof:ProofMedia={
-                                                                  id:saved.id,
-                                                                  fileUrl:saved.fileUrl,
-                                                                  fileName:saved.fileName,
-                                                                  fileType:saved.fileType,
-                                                                  capturedAt:saved.capturedAt ?? capturedAtIso,
-                                                                  latitude:saved.latitude ?? geo?.lat ?? null,
-                                                                  longitude:saved.longitude ?? geo?.lng ?? null,
-                                                                };
+                                                                const proof:ProofMedia={ id:saved.id, fileUrl:saved.fileUrl, fileName:saved.fileName, fileType:saved.fileType,
+                                                                  capturedAt:saved.capturedAt ?? capturedAtIso, latitude:saved.latitude ?? geo?.lat ?? null, longitude:saved.longitude ?? geo?.lng ?? null };
                                                                 setActualsData(prev=>({...prev,[a.id]:{...prev[a.id],proofMedia:[...prev[a.id].proofMedia,proof]}}));
-                                                                const mediaEntry: ActivityMediaResponse = {
-                                                                  id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
+                                                                const mediaEntry: ActivityMediaResponse = { id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
                                                                   fileType: saved.fileType, capturedAt: saved.capturedAt ?? capturedAtIso,
-                                                                  latitude: saved.latitude ?? geo?.lat ?? null,
-                                                                  longitude: saved.longitude ?? geo?.lng ?? null,
-                                                                };
-                                                                const syncMedia = (act: ActivityResponse) =>
-                                                                  act.id === a.id
-                                                                    ? { ...act, mediaFiles: [...(act.mediaFiles ?? []), mediaEntry] }
-                                                                    : act;
-                                                                setProposals(prev => prev.map(pr =>
-                                                                  pr.id === selected!.id ? { ...pr, activities: pr.activities.map(syncMedia) } : pr));
-                                                                setSelected(prev => prev
-                                                                  ? { ...prev, activities: prev.activities.map(syncMedia) } : prev);
-                                                              } catch (err) {
-                                                                console.error("Date-wise photo upload failed:", err);
-                                                              }
+                                                                  latitude: saved.latitude ?? geo?.lat ?? null, longitude: saved.longitude ?? geo?.lng ?? null };
+                                                                const syncMedia = (act: ActivityResponse) => act.id === a.id ? { ...act, mediaFiles: [...(act.mediaFiles ?? []), mediaEntry] } : act;
+                                                                setProposals(prev => prev.map(pr => pr.id === selected!.id ? { ...pr, activities: pr.activities.map(syncMedia) } : pr));
+                                                                setSelected(prev => prev ? { ...prev, activities: prev.activities.map(syncMedia) } : prev);
+                                                              } catch (err) { console.error("Date-wise photo upload failed:", err); }
                                                             }
                                                           }}/>
                                                       </label>
@@ -1960,49 +2019,66 @@ export default function ApproverDashboard() {
                                           <tfoot>
                                             <tr style={{ background:"#0a2540",borderTop:"2px solid #1e3a5f" }}>
                                               <td style={{ padding:"7px 10px",fontWeight:800,color:"#fbbf24",fontSize:11 }}>TOTAL</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).setupCount||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#e2e8f0" }}>—</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+(e.setupCount||0),0)}</td>
                                               <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#93c5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryPlanned||0),0)}</td>
                                               <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#6ee7b7" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryActual||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:9,color:"#94a3b8" }}>avg</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fca5a5" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).enquiryHot||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c4b5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDrivePlanned||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fbbf24" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#7c3aed",fontWeight:700 }}>
-                                                {(()=>{ const totalSetup=d.dailyEntries.reduce((s,e)=>s+((e as any).setupCount||0),0); const totalTdAct=d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0); return totalSetup>0?Math.round(totalTdAct/totalSetup):"—"; })()}
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a7f3d0" }}>{d.dailyEntries.reduce((s,e)=>s+(e.walkIn||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a7f3d0" }}>{d.dailyEntries.reduce((s,e)=>s+(e.inLms||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fca5a5" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryGap||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fca5a5" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryHot||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fca5a5" }}>{d.dailyEntries.reduce((s,e)=>s+(e.revisedHot||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#93c5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDrivePlanned||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#6ee7b7" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c4b5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.bookingActual||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c4b5fd" }}>
+                                                {d.dailyEntries.length ? (d.dailyEntries[d.dailyEntries.length-1].bookingInHand ?? 0) : 0}
                                               </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+(e.bookingActual||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).bookingInHand||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+(e.retailActual||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#fcd34d" }}>
-                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any; return last?.retailMtdActivity ?? 0; })()}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#fde68a" }}>
-                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).retailMtd||0)>0) as any; return last?.retailMtd ?? 0; })()}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#fdba74" }}>
-                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).retailRatePerCanopy||0)>0) as any; return last?.retailRatePerCanopy ?? "0.0"; })()}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#94a3b8" }}>{d.dailyEntries.length}d 🔒</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#e2e8f0" }}>
-                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).closingStock||0)>0) as any; return last?.closingStock ?? 0; })()}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c7d2fe" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fecaca" }}>
-                                                {d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0) - d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0)}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#67e8f9" }}>
-                                                {(()=>{
-                                                  const totalLeads=d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
-                                                  const totalMtdAct=d.dailyEntries.reduce((s,e)=>s+((e as any).retailMtdActivity||0),0);
-                                                  return totalLeads>0?Math.round((totalMtdAct/totalLeads)*100):0;
-                                                })()}%
-                                              </td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fbbf24" }}>{d.dailyEntries.reduce((s,e)=>s+(e.retailMtdActivity||0),0)}</td>
+                                              {/* <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fcd34d" }}>
+                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>(e.retailMtd||0)>0); return last?.retailMtd ?? 0; })()}
+                                              </td> */}
+                                              <td></td>
                                               <td style={{ padding:"7px 8px",textAlign:"center" }}>
                                                 <span style={{ fontSize:10,color:"#94a3b8" }}>
                                                   {d.proofMedia.length>0&&`📸${d.proofMedia.length} `}{d.invoiceMedia.length>0&&`🧾${d.invoiceMedia.length}`}
                                                 </span>
                                               </td>
+                                            </tr>
+
+                                            {/* ── Avg Per Canopy row — matches your Excel's "Avg Per Canopy" footer ── */}
+                                            <tr style={{ background:"#fef9c3" }}>
+                                              <td style={{ padding:"6px 10px",fontWeight:700,color:"#92400e",fontSize:11 }}>Avg Per Canopy</td>
+                                              <td/><td/>
+                                              {(()=>{
+                                                const totalCanopy = d.dailyEntries.reduce((s,e)=>s+(e.setupCount||0),0);
+                                                const totalPlanned = d.dailyEntries.reduce((s,e)=>s+(e.enquiryPlanned||0),0);
+                                                const totalActual = d.dailyEntries.reduce((s,e)=>s+(e.enquiryActual||0),0);
+                                                const totalWalkIn = d.dailyEntries.reduce((s,e)=>s+(e.walkIn||0),0);
+                                                const totalHot = d.dailyEntries.reduce((s,e)=>s+(e.enquiryHot||0),0);
+                                                const totalRevisedHot = d.dailyEntries.reduce((s,e)=>s+(e.revisedHot||0),0);
+                                                const totalTdActual = d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0);
+                                                const totalBookToday = d.dailyEntries.reduce((s,e)=>s+(e.bookingActual||0),0);
+                                                const totalRetail = d.dailyEntries.reduce((s,e)=>s+(e.retailMtdActivity||0),0);
+                                                const avg=(v:number)=> totalCanopy>0 ? (Math.round((v/totalCanopy)*10)/10) : 0;
+                                                const td=(v:number|string,c="#92400e")=>(<td style={{ padding:"6px",textAlign:"center",fontWeight:700,fontSize:11,color:c,background:"#fef9c3" }}>{v}</td>);
+                                                return (<>
+                                                  {td(avg(totalPlanned))}
+                                                  {td(avg(totalActual))}
+                                                  {td(avg(totalWalkIn))}
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  {td(avg(totalHot))}
+                                                  {td(avg(totalRevisedHot))}
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  {td(avg(totalTdActual))}
+                                                  {td(avg(totalBookToday))}
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  {td(avg(totalRetail))}
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                </>);
+                                              })()}
                                             </tr>
                                           </tfoot>
                                         </table>

@@ -62,28 +62,22 @@ const dailySummaryExportColumns: ExportColumn[] = [
 
 const dealerDailyExportColumns: ExportColumn[] = [
   { header: "Date", key: "date" },
-  { header: "Setup Count", key: "setupCount" },
+  { header: "Opening Stock", key: "openingStock" },
+  { header: "Canopy", key: "setupCount" },
   { header: "Enquiry Planned", key: "enquiryPlanned" },
   { header: "Enquiry Actual", key: "enquiryActual" },
-  { header: "Enquiry Per Canopy", key: "enqPerCanopy" },
+  { header: "Walk in", key: "walkIn" },
+  { header: "In LMS", key: "inLms" },
+  { header: "Gap", key: "enquiryGap" },
   { header: "Hot", key: "enquiryHot" },
-  { header: "Test Rides Planned", key: "testDrivePlanned" },
-  { header: "Test Rides Actual", key: "testDriveActual" },
-  { header: "Test Rides Per Canopy", key: "tdPerCanopy" },
+  { header: "Revised Hot", key: "revisedHot" },
+  { header: "TD Planned", key: "testDrivePlanned" },
+  { header: "TD Actual", key: "testDriveActual" },
   { header: "Booking Today", key: "bookingActual" },
   { header: "Booking In Hand", key: "bookingInHand" },
-  { header: "Retail Today", key: "retailActual" },
-  { header: "MTD Retail (Activity)", key: "retailMtdActivity" },
-  { header: "Retail MTD", key: "retailMtd" },
-  { header: "Retail Rate/Canopy", key: "retailRatePerCanopy" },
-  { header: "Activity Day", key: "activityDay" },
-  { header: "Closing Stock", key: "closingStock" },
-  { header: "LMS Leads", key: "lmsLeads" },
-  { header: "LMS Punched", key: "leadsPunched" },
-  { header: "LMS Gap", key: "lmsGap" },
-  { header: "Retail Conv%", key: "retailConvPct" },
+  { header: "Retail", key: "retailMtdActivity" },
+  { header: "MTD Retail", key: "retailMtd" },
 ];
-
 // ─── Mini sparkline ────────────────────────────────────────────────────────────
 const Sparkline = ({ data, color }: { data: number[]; color: string }) => {
   if (!data.length) return null;
@@ -157,12 +151,13 @@ const Section = ({ title, subtitle, children, action }: {
 // };
 // ─── Daily entry / media types (same shape ApproverDashboard writes) ────────
 interface DailyEntry {
-  date: string; setupCount?: number;
-  enquiryPlanned: number; enquiryActual: number; enquiryHot?: number;
+  date: string; setupCount?: number; openingStock?: number;
+  enquiryPlanned: number; enquiryActual: number; enquiryHot?: number; revisedHot?: number;
+  walkIn?: number; inLms?: number; enquiryGap?: number;
   testDrivePlanned: number; testDriveActual: number; testDrivePerCanopy?: number;
   bookingActual: number; bookingInHand?: number;
   retailActual: number; retailMtdActivity?: number; closingStock?: number;
-  retailMtd?: number; retailRatePerCanopy?: number;   // ← manual fields (open in ApproverDashboard)
+  retailMtd?: number; retailRatePerCanopy?: number;
   lmsLeads?: number;
   leadsPunched: number;
 }
@@ -184,6 +179,42 @@ const isVideoType = (t: string | null) => !!t?.startsWith("video/");
 interface StateRow { state:string; proposals:number; budget:number; approved:number; lead:number; retail:number; cac:number; }
 interface ActivityRow { name:string; count:number; budget:number; lead:number; retail:number; atl:number; btl:number; }
 interface MonthRow { month:string; proposals:number; budget:number; lead:number; retail:number; }
+
+interface DailySummaryRow {
+  sr: number; dealer: string; location: string; state: string;
+  zone: string; bgMember: string; canopy: number; setupCount: number,
+  enquiryPlanned: number; enquiryActual: number; perCanopy: number; hot: number;
+  trPlanned: number; trActual: number; trPerCanopy: number;
+  bookToday: number; bookInHand: number;
+  retailToday: number; retailMtdAct: number; retailMtd: number; retailRatePerCanopy: number;
+  activityDay: number; closingStock: number;
+  leads: number; punched: number; gap: number; convPct: number;
+  proposalId: string; activityId: string; activityType: string;
+  dailyEntries: DailyEntry[]; media: ProofMedia[];
+}
+
+interface LeadReportRow {
+  state: string;
+  // Per-channel: Target (month), MTD Target, MTD Achieved
+  walkinTarget: number; walkinMtdT: number; walkinMtdA: number;
+  btlTarget: number; btlMtdT: number; btlMtdA: number;
+  referralTarget: number; referralMtdT: number; referralMtdA: number;
+  atlTarget: number; atlMtdT: number; atlMtdA: number;
+  digitalTarget: number; digitalMtdT: number; digitalMtdA: number;
+  // Rollups
+  leadsMonthTarget: number;   // sum of 5 channel Targets
+  leadsMtdTarget: number;     // sum of 5 channel MTD Targets
+  totalReceived: number;      // sum of 5 channel MTD Ach.
+  variance: number;           // totalReceived - leadsMonthTarget
+  achPct: number;             // totalReceived / leadsMonthTarget * 100
+  achPctMtd: number;          // totalReceived / leadsMtdTarget * 100
+  // Retail
+  retailTarget: number;       // manual open field
+  mtdRetailTarget: number;    // pro-rated till-date target
+  mtdRetailAchieved: number;  // actual achieved to date (from BTL data)
+  mtdRetailAchPct: number;    // mtdRetailAchieved / mtdRetailTarget * 100
+  retailEnqPct: number;       // mtdRetailAchieved / totalReceived * 100
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function AnalyticsDashboard() {
@@ -211,6 +242,12 @@ export default function AnalyticsDashboard() {
   const [dailyStateFilter, setDailyStateFilter] = useState("All");
   const [dailyActivityTypeFilter, setDailyActivityTypeFilter] = useState("All");
   const [anMediaViewer, setAnMediaViewer] = useState<{url:string;name:string;type:string|null}|null>(null);
+  // ── FIX: moved above the early loading/error returns below — this hook
+  // was previously declared AFTER `if (loading) return...` / `if (error) return...`,
+  // which violates React's Rules of Hooks (a hook must be called on every render,
+  // in the same order). That caused "Rendered more hooks than during the previous
+  // render" once loading flipped from true → false. ──
+  const [manualRetailTargets, setManualRetailTargets] = useState<Record<string,string>>({});
 
   const toggleKpi = (key: string, filter: () => void, reset: () => void) => {
     if (activeKpi === key) { setActiveKpi(null); reset(); }
@@ -406,21 +443,15 @@ export default function AnalyticsDashboard() {
         const totalHot        = entries.reduce((s,e)=>s+((e as any).enquiryHot||0),0);
         const lastBookInHand = [...entries].reverse().find(e=>((e as any).bookingInHand||0)>0) as any;
         const bookInHandVal = lastBookInHand?.bookingInHand ?? 0;
-        // const lastMtdActivity = [...entries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any;
-        // const retailMtdActivityVal = lastMtdActivity?.retailMtdActivity ?? 0;
-        // const lastClosingStock = [...entries].reverse().find(e=>((e as any).closingStock||0)>0) as any;
-        // const closingStockVal = lastClosingStock?.closingStock ?? 0;
-        // const retailRatePerCanopyVal = totalSetupCount > 0 ? Math.round((totalRetail / totalSetupCount) * 10) / 10 : 0;
-        // const activityDayCount = entries.length; // auto-locked — days elapsed since actual start
         const lastMtdActivity = [...entries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any;
         const retailMtdActivityVal = lastMtdActivity?.retailMtdActivity ?? 0;
         const lastClosingStock = [...entries].reverse().find(e=>((e as any).closingStock||0)>0) as any;
         const closingStockVal = lastClosingStock?.closingStock ?? 0;
-        // ── FIX: Retail MTD and Retail Rate/Canopy are now MANUAL, per-day
-        // open input fields in ApproverDashboard (entry.retailMtd /
-        // entry.retailRatePerCanopy) — not computed from retailActual or
-        // setupCount. Read the latest non-zero manually-entered value,
-        // exactly matching ApproverDashboard's own footer logic. ──
+        // ── Retail MTD and Retail Rate/Canopy are MANUAL, per-day open input
+        // fields in ApproverDashboard (entry.retailMtd / entry.retailRatePerCanopy)
+        // — not computed from retailActual or setupCount. Read the latest
+        // non-zero manually-entered value, matching ApproverDashboard's own
+        // footer logic. ──
         const lastRetailMtd = [...entries].reverse().find(e=>((e as any).retailMtd||0)>0) as any;
         const retailMtdVal = lastRetailMtd?.retailMtd ?? 0;
         const lastRetailRate = [...entries].reverse().find(e=>((e as any).retailRatePerCanopy||0)>0) as any;
@@ -431,7 +462,6 @@ export default function AnalyticsDashboard() {
           (e.leadsPunched||0) > 0 || ((e as any).setupCount||0) > 0
         ).length;
 
-
         rows.push({
           sr, dealer: p.dealerName||"", location: p.location||"",
           state: p.state||"", zone: (p as any).zone||"", bgMember: p.commandoName||"",
@@ -441,9 +471,6 @@ export default function AnalyticsDashboard() {
           hot: totalHot,
           trPlanned: totalTrPlanned, trActual: totalTrActual,
           trPerCanopy: totalSetupCount>0?Math.round(totalTrActual/totalSetupCount):0,
-          // bookToday: totalBookToday, bookInHand: totalBookInHand,
-          // retailToday: totalRetail, retailMtdAct: retailMtdActivityVal, retailMtd: totalRetail,
-          // retailRatePerCanopy: retailRatePerCanopyVal,
           bookToday: totalBookToday, bookInHand: bookInHandVal,
           retailToday: totalRetail, retailMtdAct: retailMtdActivityVal, retailMtd: retailMtdVal,
           retailRatePerCanopy: retailRatePerCanopyVal,
@@ -474,7 +501,7 @@ export default function AnalyticsDashboard() {
       setupCount:     totalSetupCount,
       enquiryPlanned: src.reduce((s, r) => s + r.enquiryPlanned, 0),
       enquiryActual:  totalEnqAct,
-      // ── FIX: sum each dealer row's own Per Canopy / Conv% value,
+      // ── Sum each dealer row's own Per Canopy / Conv% value,
       // not a single ratio recomputed from combined totals. ──
       perCanopy:      src.reduce((s, r) => s + (r.perCanopy||0), 0),
       hot:            src.reduce((s, r) => s + r.hot, 0),
@@ -492,6 +519,7 @@ export default function AnalyticsDashboard() {
       convPct:        src.reduce((s, r) => s + (r.convPct||0), 0),
     };
   }, [liveDailySummary]);
+
   // ── RSM-wise aggregation ─────────────────────────────────────────────────────
   const rsmRows = useMemo(() => {
     const map: Record<string,{ rsm:string; proposals:number; budget:number; approved:number; lead:number; }> = {};
@@ -537,32 +565,6 @@ export default function AnalyticsDashboard() {
   }), [liveDailySummary, dailySearch, dailyStateFilter, dailyActivityTypeFilter]);
 
   const maxDealerBudget = Math.max(...dealerRows.map(r => r.budget), 1);
-
-interface DailySummaryRow {
-  sr: number; dealer: string; location: string; state: string;
-  zone: string; bgMember: string; canopy: number; setupCount: number,
-  enquiryPlanned: number; enquiryActual: number; perCanopy: number; hot: number;
-  trPlanned: number; trActual: number; trPerCanopy: number;
-  bookToday: number; bookInHand: number;
-  retailToday: number; retailMtdAct: number; retailMtd: number; retailRatePerCanopy: number;
-  activityDay: number; closingStock: number;
-  leads: number; punched: number; gap: number; convPct: number;
-  proposalId: string; activityId: string; activityType: string;
-  dailyEntries: DailyEntry[]; media: ProofMedia[];
-}
-
-interface LeadReportRow {
-  state: string; expectedLeads: number;
-  walkinTarget: number; walkinMtdT: number; walkinMtdA: number;
-  btlTarget: number; btlMtdT: number; btlMtdA: number;
-  referralTarget: number; referralMtdT: number; referralMtdA: number;
-  atlTarget: number; atlMtdT: number; atlMtdA: number;
-  digitalTarget: number; digitalMtdT: number; digitalMtdA: number;
-  totalReceived: number; variance: number; achPct: number;
-  jul26RetailTarget: number; mtdRetailTarget: number; mtdRetailAch: number;
-  mtdRetailAchPct: number; retailEnqPct: number;
-}
-
 
   if (loading) return (
     <div className="an-loading">
@@ -642,7 +644,6 @@ interface LeadReportRow {
           ["overview",      "📊 Overview"],
           ["region",        "🗺 Region"],
           ["activity",      "🎯 Activities"],
-          // ["daily",         "📅 Daily Data"],
           ["budget",        "💰 Budget"],
           ["daily-activity","📅 Daily Activity Report"],
           ["lead-report",   "🎯 Lead Report"],
@@ -665,8 +666,8 @@ interface LeadReportRow {
             <KPI label="Lead Target"         value={String(totalLead)}          color="#7c3aed" sub={`Retail: ${totalRetail}`} spark={monthSparkLead} active={activeKpi==="lead"} onClick={()=>toggleKpi("lead",()=>setActiveTab("activity"),()=>setActiveTab("overview"))}/>
             <KPI label="Avg CAC"             value={inrL(avgCac)}               color="#f59e0b" sub="per retail" active={activeKpi==="cac"} onClick={()=>toggleKpi("cac",()=>setActiveTab("budget"),()=>setActiveTab("overview"))}/>
             <KPI label="Pending"             value={String(pending.length)}     color="#f59e0b" sub={inrL(pending.reduce((s,p)=>s+p.totalBudget,0))} active={activeKpi==="pending"} onClick={()=>toggleKpi("pending",()=>setStatusFilter("Pending"),()=>setStatusFilter("All"))}/>
-            <KPI label="Enquiries (Actual)"  value={String(dailyTotals.enquiryActual)}  color="#0891b2" sub="from post-activity" active={activeKpi==="enq_ov"} onClick={()=>toggleKpi("enq_ov",()=>setActiveTab("daily"),()=>setActiveTab("overview"))}/>
-            <KPI label="LMS Leads Punched"   value={String(dailyTotals.leadsPunched)}   color="#6366f1" sub="from post-activity" active={activeKpi==="lms_ov"} onClick={()=>toggleKpi("lms_ov",()=>setActiveTab("daily"),()=>setActiveTab("overview"))}/>
+            <KPI label="Enquiries (Actual)"  value={String(dailyTotals.enquiryActual)}  color="#0891b2" sub="from post-activity" active={activeKpi==="enq_ov"} onClick={()=>toggleKpi("enq_ov",()=>setActiveTab("daily-activity"),()=>setActiveTab("overview"))}/>
+            <KPI label="LMS Leads Punched"   value={String(dailyTotals.leadsPunched)}   color="#6366f1" sub="from post-activity" active={activeKpi==="lms_ov"} onClick={()=>toggleKpi("lms_ov",()=>setActiveTab("daily-activity"),()=>setActiveTab("overview"))}/>
           </div>
 
           {/* Status donut + month trend side by side */}
@@ -883,7 +884,6 @@ interface LeadReportRow {
               const btlBudget = btl.reduce((s,a) => s+(a.budget||0),0);
               return [
                 <KPI key="tot" label="Total Activities"  value={String(allActs.length)} color="#0a2540" sub={`${activityRows.length} types`} active={activeKpi==="act_tot"} onClick={()=>toggleKpi("act_tot",()=>setActFilter(null),()=>setActFilter(null))}/>,
-                // <KPI key="tot" label="Total Activities"  value={String(allActs.length)} color="#0a2540" sub={`${activityRows.length} types`} active={activeKpi==="act_tot"} onClick={()=>toggleKpi("act_tot",()=>{},()=>{})}/>,
                 <KPI key="atl" label="ATL Activities" value={String(atl.length)} color="#1e40af" sub={inrL(atlBudget)} active={activeKpi==="atl"} onClick={()=>toggleKpi("atl",()=>setActFilter("ATL_FILTER"),()=>setActFilter(null))}/>,
                 <KPI key="btl" label="BTL Activities" value={String(btl.length)} color="#166534" sub={inrL(btlBudget)} active={activeKpi==="btl"} onClick={()=>toggleKpi("btl",()=>setActFilter("BTL_FILTER"),()=>setActFilter(null))}/>,
                 <KPI key="cac" label="Overall CAC"       value={inrL(avgCac)}          color="#f59e0b" sub="avg per retail" active={activeKpi==="cac_act"} onClick={()=>toggleKpi("cac_act",()=>setActiveTab("budget"),()=>setActiveTab("activity"))}/>,
@@ -957,100 +957,6 @@ interface LeadReportRow {
               );})}
             </div>
           </Section>
-        </>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════════════
-          DAILY DATA TAB
-      ════════════════════════════════════════════════════════════════════════ */}
-      {activeTab === "daily" && (
-        <>
-          {/* Daily totals KPIs */}
-          <div className="an-kpi-grid" style={{ gridTemplateColumns:"repeat(5,1fr)" }}>
-            <KPI label="Enquiries (Actual)"  value={String(dailyTotals.enquiryActual)}  color="#0891b2" sub="from post-activity entries" active={activeKpi==="d_enq"} onClick={()=>toggleKpi("d_enq",()=>{},()=>{})}/>
-            <KPI label="Test Drives (Actual)" value={String(dailyTotals.testDriveActual)} color="#7c3aed" sub="from post-activity entries" active={activeKpi==="d_td"} onClick={()=>toggleKpi("d_td",()=>{},()=>{})}/>
-            <KPI label="Bookings"            value={String(dailyTotals.bookingActual)}  color="#f59e0b" sub="total booked" active={activeKpi==="d_book"} onClick={()=>toggleKpi("d_book",()=>{},()=>{})}/>
-            <KPI label="Retail (Actual)"     value={String(dailyTotals.retailActual)}   color="#16a34a" sub={`vs target: ${totalRetail} (${pct(dailyTotals.retailActual,totalRetail)}%)`} active={activeKpi==="d_retail"} onClick={()=>toggleKpi("d_retail",()=>{},()=>{})}/>
-            <KPI label="LMS Leads Punched"   value={String(dailyTotals.leadsPunched)}   color="#6366f1" sub={`vs target: ${totalLead} (${pct(dailyTotals.leadsPunched,totalLead)}%)`} active={activeKpi==="d_lms"} onClick={()=>toggleKpi("d_lms",()=>{},()=>{})}/>
-          </div>
-
-          {dailyAgg.length === 0 ? (
-            <Section title="Daily Activity Data" subtitle="Post-activity entries from approved proposals">
-              <div style={{ textAlign:"center",padding:"60px 24px",color:"#9ca3af" }}>
-                <div style={{ fontSize:40,marginBottom:12 }}>📅</div>
-                <div style={{ fontWeight:700,fontSize:15,color:"#0a2540",marginBottom:6 }}>No post-activity data yet</div>
-                <div style={{ fontSize:13 }}>
-                  Once RSMs fill post-activity data in approved proposals, daily metrics will appear here.
-                </div>
-              </div>
-            </Section>
-          ) : (
-            <Section title={`Daily Activity Log — ${dailyAgg.length} days`}
-              subtitle="Aggregated from all approved proposals' post-activity entries">
-              <div className="an-table-wrap">
-                <table className="an-table an-table-full">
-                  <thead>
-                    <tr style={{ background:"#0a2540" }}>
-                      <th style={{ color:"#e2e8f0",textAlign:"left" }}>Date</th>
-                      <th style={{ color:"#93fdd3",textAlign:"center"}}> Setup Count</th>
-                      <th style={{ color:"#93c5fd",textAlign:"center" }}>Enq Plan</th>
-                      <th style={{ color:"#6ee7b7",textAlign:"center" }}>Enq Actual</th>
-                      <th style={{ color:"#93c5fd",textAlign:"center" }}>TD Plan</th>
-                      <th style={{ color:"#6ee7b7",textAlign:"center" }}>TD Actual</th>
-                      <th style={{ color:"#c4b5fd",textAlign:"center" }}>Booking</th>
-                      <th style={{ color:"#fbbf24",textAlign:"center" }}>Retail</th>
-                      <th style={{ color:"#a5b4fc",textAlign:"center" }}>LMS Punched</th>
-                      <th style={{ color:"#e2e8f0",textAlign:"center" }}>Enq Conv%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dailyAgg.map((d,i) => {
-                      const enqConv = pct(d.enquiryActual, d.enquiryPlanned);
-                      const isDayActive = highlightDay===d.date;
-                      const hasData = d.enquiryActual>0||d.testDriveActual>0||d.bookingActual>0||d.retailActual>0;
-                      return (
-                        <tr key={d.date} className="an-tr-click" onClick={()=>setHighlightDay(isDayActive?null:d.date)} style={{ background:isDayActive?"#eff6ff":i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.5, outline:isDayActive?"2px solid #0891b2":"none", cursor:"pointer" }}>
-                          <td style={{ padding:"6px 12px",fontWeight:600,fontSize:12,color:"#374151",whiteSpace:"nowrap" }}>{d.date}</td>
-                          <td className="an-td-center" style={{ fontSize:12 }}>{d.setupCount||"—"}</td>
-                          <td className="an-td-center" style={{ fontSize:12 }}>{d.enquiryPlanned||"—"}</td>
-                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.enquiryActual>0?700:400,color:d.enquiryActual>0?"#0891b2":"#94a3b8" }}>{d.enquiryActual||"—"}</td>
-                          <td className="an-td-center" style={{ fontSize:12 }}>{d.testDrivePlanned||"—"}</td>
-                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.testDriveActual>0?700:400,color:d.testDriveActual>0?"#7c3aed":"#94a3b8" }}>{d.testDriveActual||"—"}</td>
-                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.bookingActual>0?700:400,color:d.bookingActual>0?"#f59e0b":"#94a3b8" }}>{d.bookingActual||"—"}</td>
-                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.retailActual>0?700:400,color:d.retailActual>0?"#16a34a":"#94a3b8" }}>{d.retailActual||"—"}</td>
-                          <td className="an-td-center" style={{ fontSize:12,fontWeight:d.leadsPunched>0?700:400,color:d.leadsPunched>0?"#6366f1":"#94a3b8" }}>{d.leadsPunched||"—"}</td>
-                          <td className="an-td-center">
-                            {d.enquiryPlanned > 0 ? (
-                              <span style={{ fontSize:11,fontWeight:700,
-                                color:enqConv>=90?"#16a34a":enqConv>=60?"#f59e0b":"#dc2626" }}>
-                                {enqConv}%
-                              </span>
-                            ) : "—"}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot>
-                    <tr style={{ background:"#0a2540" }}>
-                      <td style={{ padding:"8px 12px",fontWeight:800,color:"#fbbf24" }}>TOTAL</td>
-                      <td className="an-td-center" style={{ color:"#fde68a",fontWeight:700 }}>{dailyTotals.setupCount}</td>
-                      <td className="an-td-center" style={{ color:"#93c5fd",fontWeight:700 }}>{dailyAgg.reduce((s,d)=>s+d.enquiryPlanned,0)}</td>
-                      <td className="an-td-center" style={{ color:"#6ee7b7",fontWeight:700 }}>{dailyTotals.enquiryActual}</td>
-                      <td className="an-td-center" style={{ color:"#93c5fd",fontWeight:700 }}>{dailyAgg.reduce((s,d)=>s+d.testDrivePlanned,0)}</td>
-                      <td className="an-td-center" style={{ color:"#6ee7b7",fontWeight:700 }}>{dailyTotals.testDriveActual}</td>
-                      <td className="an-td-center" style={{ color:"#c4b5fd",fontWeight:700 }}>{dailyTotals.bookingActual}</td>
-                      <td className="an-td-center" style={{ color:"#fbbf24",fontWeight:700 }}>{dailyTotals.retailActual}</td>
-                      <td className="an-td-center" style={{ color:"#a5b4fc",fontWeight:700 }}>{dailyTotals.leadsPunched}</td>
-                      <td className="an-td-center" style={{ color:"#e2e8f0",fontWeight:700 }}>
-                        {pct(dailyTotals.enquiryActual, dailyAgg.reduce((s,d)=>s+d.enquiryPlanned,0))}%
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </Section>
-          )}
         </>
       )}
 
@@ -1192,7 +1098,7 @@ interface LeadReportRow {
           ) : (
             <>
               {/* Summary KPIs */}
-              <div style={{ display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:10,marginBottom:16 }}>
+              <div style={{ display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:10,marginBottom:16 }}>
                 {[
                   {label:"Total Canopy",  value:String(dsTotals.canopy),      color:"#0a2540"},
                   {label:"Setup Count",   value:String(dsTotals.setupCount),  color:"#92400e"},
@@ -1200,6 +1106,11 @@ interface LeadReportRow {
                   {label:"Hot",           value:String(dsTotals.hot),         color:"#dc2626"},
                   {label:"TD Actual",     value:String(dsTotals.trActual),      color:"#7c3aed"},
                   {label:"Retail MTD",    value:String(dsTotals.retailMtd),        color:"#f59e0b"},
+                  // ── NEW: Retail Rate/Canopy = Σ Retail (daily) ÷ Σ Setup Count (Canopy)
+                  // e.g. Canopy total 33, Retail total 27 → 27/33 = 0.818 → 0.8
+                  {label:"Retail Rate/Canopy", value: dsTotals.setupCount>0
+                    ? (Math.round((dsTotals.retailToday/dsTotals.setupCount)*10)/10).toFixed(1)
+                    : "0.0", color:"#c2410c"},
                 ].map(k=>(
                   <div key={k.label} className="an-kpi" style={{ borderTop:`3px solid ${k.color}` }}>
                     <div className="an-kpi-label">{k.label}</div>
@@ -1348,7 +1259,7 @@ interface LeadReportRow {
         </Section>
         </>
         ) : (
-      // ── NEW: dealer detail view, shown when reportSubTab === "dealer-daily" ──
+      // ── dealer detail view, shown when reportSubTab === "dealer-daily" ──
       selectedDealerDaily && (
         <>
           {anMediaViewer && (
@@ -1379,142 +1290,75 @@ interface LeadReportRow {
                 filename={`${selectedDealerDaily.dealer.replace(/[^a-z0-9]/gi,"_")}_Daily_Activity`}
                 title={`${selectedDealerDaily.dealer}, ${selectedDealerDaily.location} — Daily Activity`}
                 columns={dealerDailyExportColumns}
-                rows={selectedDealerDaily.dailyEntries.map((entry, i) => {
-                  const setupCount = (entry as any).setupCount || 0;
-                  const enqPerCanopy = setupCount>0 ? Math.round(entry.enquiryActual/setupCount) : 0;
-                  const tdPerCanopy = setupCount>0 ? Math.round(entry.testDriveActual/setupCount) : 0;
-                  const lmsLeadsDay = (entry as any).lmsLeads || 0;
-                  const lmsGap = lmsLeadsDay - (entry.leadsPunched||0);
-                  const mtdAct = (entry as any).retailMtdActivity || 0;
-                  const retailConvPct = lmsLeadsDay>0 ? Math.round((mtdAct/lmsLeadsDay)*100) : 0;
-                  return {
-                    date: entry.date,
-                    setupCount,
-                    enquiryPlanned: entry.enquiryPlanned || 0,
-                    enquiryActual: entry.enquiryActual || 0,
-                    enqPerCanopy,
-                    enquiryHot: (entry as any).enquiryHot || 0,
-                    testDrivePlanned: entry.testDrivePlanned || 0,
-                    testDriveActual: entry.testDriveActual || 0,
-                    tdPerCanopy,
-                    bookingActual: entry.bookingActual || 0,
-                    bookingInHand: (entry as any).bookingInHand || 0,
-                    retailActual: entry.retailActual || 0,
-                    retailMtdActivity: mtdAct,
-                    retailMtd: (entry as any).retailMtd || 0,
-                    retailRatePerCanopy: (entry as any).retailRatePerCanopy || 0,
-                    activityDay: i+1,
-                    closingStock: (entry as any).closingStock || 0,
-                    lmsLeads: lmsLeadsDay,
-                    leadsPunched: entry.leadsPunched || 0,
-                    lmsGap,
-                    retailConvPct: `${retailConvPct}%`,
-                  };
-                })}
+                rows={selectedDealerDaily.dailyEntries.map((entry) => ({
+                  date: entry.date,
+                  openingStock: entry.openingStock || 0,
+                  setupCount: entry.setupCount || 0,
+                  enquiryPlanned: entry.enquiryPlanned || 0,
+                  enquiryActual: entry.enquiryActual || 0,
+                  walkIn: entry.walkIn || 0,
+                  inLms: entry.inLms || 0,
+                  enquiryGap: entry.enquiryGap || 0,
+                  enquiryHot: entry.enquiryHot || 0,
+                  revisedHot: entry.revisedHot || 0,
+                  testDrivePlanned: entry.testDrivePlanned || 0,
+                  testDriveActual: entry.testDriveActual || 0,
+                  bookingActual: entry.bookingActual || 0,
+                  bookingInHand: entry.bookingInHand || 0,
+                  retailMtdActivity: entry.retailMtdActivity || 0,
+                  retailMtd: entry.retailMtd || 0,
+                }))}
               />
             </div>
           </div>
-          
 
-          {/* ── Green title banner (matches Excel "Daily Summary Sheet") ── */}
-          <div style={{
-            background:"#0a2540", borderRadius:8,
-            padding:"14px 28px", textAlign:"center", marginBottom:16,
-            boxShadow:"0 4px 10px rgba(22,163,74,0.25)"
-          }}>
-            <span style={{ color:"#fff", fontWeight:800, fontSize:20, letterSpacing:"0.02em" }}>
-              {selectedDealerDaily.dealer}, {selectedDealerDaily.location}
-            </span>
-          </div>
-
-          {/* ── KPI summary cards (kept from before) ── */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
-            {[
-              { label:"Canopy", value: selectedDealerDaily.canopy },
-              { label:"Setup Count", value: selectedDealerDaily.setupCount },
-              { label:"Enq Actual (MTD)", value: selectedDealerDaily.enquiryActual },
-              { label:"Hot", value: selectedDealerDaily.hot },
-              { label:"TD Actual (MTD)", value: selectedDealerDaily.trActual },
-              { label:"Booking In Hand", value: selectedDealerDaily.bookInHand },
-              { label:"Retail MTD", value: selectedDealerDaily.retailMtd },
-              { label:"Retail Rate/Canopy", value: selectedDealerDaily.retailRatePerCanopy },
-              { label:"Activity Day", value: selectedDealerDaily.activityDay },
-              { label:"Closing Stock", value: selectedDealerDaily.closingStock },
-              { label:"Leads (Target)", value: selectedDealerDaily.leads },
-              { label:"Leads Punched", value: selectedDealerDaily.punched },
-              { label:"Gap", value: selectedDealerDaily.gap },
-              // { label:"Conv %", value: `${selectedDealerDaily.convPct}%` },
-            ].map((f) => (
-              <div key={f.label} style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 12px" }}>
-                <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>{f.label}</div>
-                <div style={{ fontSize:18, fontWeight:700, color:"#0a2540", marginTop:4 }}>{f.value}</div>
-              </div>
-            ))}
-          </div>
-
-          {selectedDealerDaily.dailyEntries.length === 0 ? (
-            <div className="an-card" style={{ textAlign:"center",padding:"40px 20px",color:"#9ca3af" }}>
-              <div style={{ fontSize:32,marginBottom:10 }}>📋</div>
-              <div style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>No daily entries yet for this activity</div>
-            </div>
-          ) : (() => {
+          {/* ── Everything below (banner, KPI cards, table) is computed from
+              ONE shared `totals` object so the KPI cards, the Total row, and
+              the Avg row can never drift apart from each other again. ── */}
+          {(() => {
             const entries = selectedDealerDaily.dailyEntries;
-            const activeEntries = entries.filter(e =>
-              (e.enquiryPlanned||0) > 0 || (e.enquiryActual||0) > 0 || ((e as any).setupCount||0) > 0
-            );
-            const activeCount = activeEntries.length || 1;
+            const dayCount = entries.length || 1;
             const sum = (fn: (e: DailyEntry) => number) => entries.reduce((s,e)=>s+(fn(e)||0),0);
-
-            const totals = {
-              canopy:        sum(e => (e as any).setupCount || 0),
-              planned:       sum(e => e.enquiryPlanned),
-              actual:        sum(e => e.enquiryActual),
-              gap:           sum(e => (e.enquiryActual||0) - (e.enquiryPlanned||0)),
-              hot:           sum(e => (e as any).enquiryHot || 0),
-              tdPlanned:     sum(e => e.testDrivePlanned),
-              tdActual:      sum(e => e.testDriveActual),
-              bookToday:     sum(e => e.bookingActual),
-              bookInHand:    sum(e => (e as any).bookingInHand || 0),
-              retail:        sum(e => e.retailActual),
-              leadsPunched:  sum(e => e.leadsPunched),
+            const lastNonZero = (fn: (e: DailyEntry) => number) => {
+              const found = [...entries].reverse().find(e => (fn(e)||0) > 0);
+              return found ? fn(found) : 0;
             };
 
-            // ── Per Canopy & Retail Conv% totals = SUM of each day's own
-            // individual ratio, not a total÷total recalculation. Matches
-            // ApproverDashboard's per-day columns exactly. ──
-            const sumEnqPerCanopy = entries.reduce((s,e) => {
-              const sc = (e as any).setupCount || 0;
-              return s + (sc>0 ? Math.round((e.enquiryActual||0)/sc) : 0);
-            }, 0);
-            const sumTdPerCanopy = entries.reduce((s,e) => {
-              const sc = (e as any).setupCount || 0;
-              return s + (sc>0 ? Math.round((e.testDriveActual||0)/sc) : 0);
-            }, 0);
-            const sumRetailConvPct = entries.reduce((s,e) => {
-              const leads = (e as any).lmsLeads || 0;
-              const mtdAct = (e as any).retailMtdActivity || 0;
-              return s + (leads>0 ? Math.round((mtdAct/leads)*100) : 0);
-            }, 0);
+            // ── Same field set + same totals logic as ApproverDashboard's
+            // Post-Activity History table. ──
+            const totals = {
+              openingStock: lastNonZero(e => e.openingStock || 0),
+              canopy:       sum(e => e.setupCount || 0),
+              planned:      sum(e => e.enquiryPlanned),
+              actual:       sum(e => e.enquiryActual),
+              walkIn:       sum(e => e.walkIn || 0),
+              inLms:        sum(e => e.inLms || 0),
+              gap:          sum(e => e.enquiryGap || 0),
+              hot:          sum(e => e.enquiryHot || 0),
+              revisedHot:   sum(e => e.revisedHot || 0),
+              tdPlanned:    sum(e => e.testDrivePlanned),
+              tdActual:     sum(e => e.testDriveActual),
+              bookToday:    sum(e => e.bookingActual),
+              bookInHand:   sum(e => e.bookingInHand || 0),
+              retail:       sum(e => e.retailMtdActivity || 0),
+              retailMtd:    sum(e => e.retailMtd || 0),
+            };
 
-            // const avgRow = {
-            //   planned:    Math.round(totals.planned / activeCount),
-            //   actual:     Math.round(totals.actual / activeCount),
-            //   hot:        Math.round(totals.hot / activeCount),
-            //   tdPlanned:  Math.round(totals.tdPlanned / activeCount),
-            //   tdActual:   Math.round(totals.tdActual / activeCount),
-            //   booking:    Math.round((totals.bookToday / activeCount) * 10) / 10,
-            //   retail:     Math.round((totals.retail / activeCount) * 10) / 10,
-            // };
             const avgRow = {
-              planned:    Math.round(totals.planned / activeCount),
-              actual:     Math.round(totals.actual / activeCount),
-              perCanopy:  totals.canopy>0?Math.round(totals.actual/totals.canopy):0,
-              hot:        Math.round(totals.hot / activeCount),
-              tdPlanned:  Math.round(totals.tdPlanned / activeCount),
-              tdActual:   Math.round(totals.tdActual / activeCount),
-              tdPerCanopy: totals.canopy>0?Math.round(totals.tdActual/totals.canopy):0,
-              booking:    Math.round((totals.bookToday / activeCount) * 10) / 10,
-              retail:     Math.round((totals.retail / activeCount) * 10) / 10,
+              canopy:     Math.round((totals.canopy / dayCount) * 10) / 10,
+              planned:    Math.round(totals.planned / dayCount),
+              actual:     Math.round(totals.actual / dayCount),
+              walkIn:     Math.round((totals.walkIn / dayCount) * 10) / 10,
+              inLms:      Math.round((totals.inLms / dayCount) * 10) / 10,
+              gap:        Math.round((totals.gap / dayCount) * 10) / 10,
+              hot:        Math.round((totals.hot / dayCount) * 10) / 10,
+              revisedHot: Math.round((totals.revisedHot / dayCount) * 10) / 10,
+              tdPlanned:  Math.round(totals.tdPlanned / dayCount),
+              tdActual:   Math.round(totals.tdActual / dayCount),
+              bookToday:  Math.round((totals.bookToday / dayCount) * 10) / 10,
+              bookInHand: Math.round((totals.bookInHand / dayCount) * 10) / 10,
+              retail:     Math.round((totals.retail / dayCount) * 10) / 10,
+              retailMtd:  Math.round((totals.retailMtd / dayCount) * 10) / 10,
             };
 
             const th = (label:React.ReactNode, extra:React.CSSProperties = {}) => (
@@ -1527,8 +1371,53 @@ interface LeadReportRow {
             );
 
             return (
+              <>
+                {/* ── Title banner ── */}
+                <div style={{
+                  background:"#0a2540", borderRadius:8,
+                  padding:"14px 28px", textAlign:"center", marginBottom:16,
+                  boxShadow:"0 4px 10px rgba(22,163,74,0.25)"
+                }}>
+                  <span style={{ color:"#fff", fontWeight:800, fontSize:20, letterSpacing:"0.02em" }}>
+                    {selectedDealerDaily.dealer}, {selectedDealerDaily.location}
+                  </span>
+                </div>
+
+                {/* ── KPI summary cards — same fields as ApproverDashboard's post-activity totals ── */}
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
+                  {[
+                    { label:"Canopy", value: totals.canopy },
+                    { label:"Opening Stock", value: totals.openingStock },
+                    { label:"Enq Actual", value: totals.actual },
+                    { label:"Walk In", value: totals.walkIn },
+                    { label:"In LMS", value: totals.inLms },
+                    { label:"Gap", value: totals.gap },
+                    { label:"Hot", value: totals.hot },
+                    { label:"Revised Hot", value: totals.revisedHot },
+                    { label:"TD Actual", value: totals.tdActual },
+                    { label:"Booking In Hand", value: totals.bookInHand },
+                    { label:"Retail", value: totals.retail },
+                    { label:"MTD Retail", value: totals.retailMtd },
+                    { label:"Retail Rate/Canopy", value: totals.canopy > 0
+                          ? (Math.round((totals.retail / totals.canopy) * 10) / 10).toFixed(1)
+                          : "0.0" },
+                    { label:"Activity Days", value: entries.length },
+                  ].map((f) => (
+                    <div key={f.label} style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 12px" }}>
+                      <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>{f.label}</div>
+                      <div style={{ fontSize:18, fontWeight:700, color:"#0a2540", marginTop:4 }}>{f.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {entries.length === 0 ? (
+                  <div className="an-card" style={{ textAlign:"center",padding:"40px 20px",color:"#9ca3af" }}>
+                    <div style={{ fontSize:32,marginBottom:10 }}>📋</div>
+                    <div style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>No daily entries yet for this activity</div>
+                  </div>
+                ) : (
               <div className="an-table-wrap">
-                <table style={{ width:"100%", borderCollapse:"collapse", minWidth:1900, background:"#fff" }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", minWidth:1700, background:"#fff" }}>
                   <thead>
                     {/* Row 0 — dealer / BG member strip */}
                     <tr>
@@ -1536,42 +1425,34 @@ interface LeadReportRow {
                         fontSize:13, textAlign:"left", border:"1px solid #cbd5e1" }}>
                         {selectedDealerDaily.dealer}, {selectedDealerDaily.location}
                       </th>
-                      <th colSpan={16} style={{ background:"#e5e7eb", border:"1px solid #cbd5e1" }}/>
+                      <th colSpan={13} style={{ background:"#e5e7eb", border:"1px solid #cbd5e1" }}/>
                       <th colSpan={2} style={{ background:"#e5e7eb", padding:"6px 8px", fontWeight:700,
                         fontSize:13, textAlign:"center", border:"1px solid #cbd5e1" }}>
                         BG- {selectedDealerDaily.bgMember || "—"}
                       </th>
-                      <th style={{ background:"#e5e7eb", border:"1px solid #cbd5e1" }}/>
                     </tr>
                     {/* Row 1 — grouped bands */}
                     <tr>
                       <th rowSpan={2} style={{ background:"#93c5fd", padding:"6px 8px", fontSize:11,
                         fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Date</th>
-                      <th colSpan={5} style={{ background:"#93c5fd", padding:"5px 8px", fontSize:12,
+                      <th rowSpan={2} style={{ background:"#e2e8f0", padding:"6px 8px", fontSize:11,
+                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Opening<br/>Stock</th>
+                      <th colSpan={8} style={{ background:"#93c5fd", padding:"5px 8px", fontSize:12,
                         fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Enquiry</th>
-                      <th colSpan={3} style={{ background:"#fbbf24", padding:"5px 8px", fontSize:12,
+                      <th colSpan={2} style={{ background:"#fbbf24", padding:"5px 8px", fontSize:12,
                         fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Test Drive</th>
                       <th colSpan={2} style={{ background:"#93c5fd", padding:"5px 8px", fontSize:12,
                         fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Booking</th>
-                      <th colSpan={4} style={{ background:"#fbbf24", padding:"5px 8px", fontSize:12,
+                      <th colSpan={2} style={{ background:"#fbbf24", padding:"5px 8px", fontSize:12,
                         fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Retail</th>
-                      <th rowSpan={2} style={{ background:"#94a3b8", padding:"6px 8px", fontSize:11,
-                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Activity<br/>Day</th>
-                      <th rowSpan={2} style={{ background:"#e2e8f0", padding:"6px 8px", fontSize:11,
-                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Closing<br/>Stock</th>
-                      <th colSpan={3} style={{ background:"#a5b4fc", padding:"5px 8px", fontSize:12,
-                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>LMS</th>
-                      <th rowSpan={2} style={{ background:"#67e8f9", padding:"6px 8px", fontSize:11,
-                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Retail<br/>Conv%</th>
                       <th rowSpan={2} style={{ background:"#c4b5fd", padding:"6px 8px", fontSize:11,
                         fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Media</th>
                     </tr>
                     <tr>
-                      {th("Setup Count")}{th("Planned")}{th("Actual")}{th("Per\u00A0Canopy")}{th("Hot")}
-                      {th("Planned")}{th("Actual")}{th("Per Canopy")}
+                      {th("Canopy")}{th("Planned")}{th("Actual")}{th("Walk in")}{th("In LMS")}{th("Gap")}{th("Hot")}{th("Revised Hot")}
+                      {th("Planned")}{th("Actual")}
                       {th("Today")}{th("In hand")}
-                      {th("Today")}{th("MTD(Act.)")}{th("MTD")}{th("Rate/Canopy")}
-                      {th("Leads")}{th("Punched")}{th("Gap")}
+                      {th("Retail")}{th("MTD Retail")}
                     </tr>
                   </thead>
                   <tbody>
@@ -1580,46 +1461,26 @@ interface LeadReportRow {
                         m.capturedAt.startsWith(entry.date) && (isImageType(m.fileType) || isVideoType(m.fileType)));
                       const invoicesOnDay = selectedDealerDaily.media.filter(m =>
                         m.capturedAt.startsWith(entry.date) && !isImageType(m.fileType) && !isVideoType(m.fileType));
-                      const hasCanopy = ((entry as any).setupCount||0) > 0 || (entry.enquiryPlanned||0) > 0;
-                      const hasData = entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
-                      const setupCount=(entry as any).setupCount||0;
-                      const enqPerCanopy=setupCount>0?Math.round(entry.enquiryActual/setupCount):0;
-                      const tdPerCanopy=setupCount>0?Math.round(entry.testDriveActual/setupCount):0;
-                      // const retailMtdRunning=entries.slice(0,i+1).reduce((s,e)=>s+(e.retailActual||0),0);
-                      // const retailRatePerCanopy=setupCount>0?Math.round((entry.retailActual/setupCount)*10)/10:0;
-                      // ── FIX: read manual retailMtd/retailRatePerCanopy fields directly
-                      // instead of computing from retailActual — matches ApproverDashboard,
-                      // where these are open manual inputs, not derived values.
-                      const retailMtdRunning=(entry as any).retailMtd || 0;
-                      const retailRatePerCanopy=(entry as any).retailRatePerCanopy || 0;
-                      const activityDay=i+1;
-                      const lmsLeadsDay=(entry as any).lmsLeads||0;
-                      const lmsGapDay=lmsLeadsDay-(entry.leadsPunched||0);
-                      const retailMtdActivityDay=(entry as any).retailMtdActivity||0;
-                      const retailConvPctDay=lmsLeadsDay>0?Math.round((retailMtdActivityDay/lmsLeadsDay)*100):0;
+                      const hasData = entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||(entry.retailMtdActivity||0)>0||photosOnDay.length>0||invoicesOnDay.length>0;
+                      const gapColor = (entry.enquiryGap||0) < 0 ? "#dc2626" : (entry.enquiryGap||0) > 0 ? "#16a34a" : "#64748b";
                       return (
                         <tr key={entry.date} style={{ background:i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.6 }}>
                           {td(entry.date, { textAlign:"left", fontWeight:600, color:"#374151" })}
-                          {td(hasCanopy ? (setupCount||"") : "")}
+                          {td(entry.openingStock || "", { color:"#374151" })}
+                          {td(entry.setupCount || "", { fontWeight:700, background:"#fefce8" })}
                           {td(entry.enquiryPlanned || 0)}
-                          {td(entry.enquiryActual || "")}
-                          {td(enqPerCanopy||"—", { color:"#059669", fontWeight:600 })}
-                          {td((entry as any).enquiryHot || "", { color:(entry as any).enquiryHot>0?"#b91c1c":undefined, fontWeight:(entry as any).enquiryHot>0?700:400 })}
+                          {td(entry.enquiryActual || "", { fontWeight:700 })}
+                          {td(entry.walkIn || "", { color:"#166534" })}
+                          {td(entry.inLms || "", { color:"#166534", fontWeight:700 })}
+                          {td(entry.enquiryGap ?? 0, { color:gapColor, fontWeight:700 })}
+                          {td(entry.enquiryHot || "", { color:(entry.enquiryHot||0)>0?"#b91c1c":undefined, fontWeight:(entry.enquiryHot||0)>0?700:400 })}
+                          {td(entry.revisedHot || "", { color:(entry.revisedHot||0)>0?"#b91c1c":undefined, fontWeight:(entry.revisedHot||0)>0?700:400 })}
                           {td(entry.testDrivePlanned || 0)}
-                          {td(entry.testDriveActual || "")}
-                          {td(tdPerCanopy||"—", { color:"#7c3aed", fontWeight:600 })}
-                          {td(entry.bookingActual || "")}
-                          {td((entry as any).bookingInHand || "")}
-                          {td(entry.retailActual || "")}
-                          {td(retailMtdActivityDay || "")}
-                          {td(retailMtdRunning||"—", { color:"#92400e", fontWeight:700 })}
-                          {td(retailRatePerCanopy||"0.0", { color:"#c2410c", fontWeight:600 })}
-                          {td(<span title="Auto-locked">{activityDay} 🔒</span>, { color:"#64748b" })}
-                          {td((entry as any).closingStock || "")}
-                          {td(lmsLeadsDay||"", { color: lmsLeadsDay>0?"#3730a3":undefined, fontWeight: lmsLeadsDay>0?700:400 })}
-                          {td(entry.leadsPunched || "", { color: entry.leadsPunched>0?"#4338ca":undefined, fontWeight: entry.leadsPunched>0?700:400 })}
-                          {td(lmsGapDay, { color: lmsGapDay>0?"#b91c1c":lmsGapDay<0?"#166534":"#64748b", fontWeight:700 })}
-                          {td(`${retailConvPctDay}%`, { color:retailConvPctDay>=10?"#166534":retailConvPctDay>0?"#854d0e":"#94a3b8", fontWeight:700, background:retailConvPctDay>=10?"#f0fdf4":retailConvPctDay>0?"#fefce8":"transparent" })}
+                          {td(entry.testDriveActual || "", { fontWeight:700 })}
+                          {td(entry.bookingActual || "", { color:"#1d4ed8", fontWeight:(entry.bookingActual||0)>0?700:400 })}
+                          {td(entry.bookingInHand || "", { color:"#7c3aed", fontWeight:700 })}
+                          {td(entry.retailMtdActivity || "", { color:"#c2410c", fontWeight:700 })}
+                          {td(entry.retailMtd || "", { color:"#92400e", fontWeight:700 })}
                           {td(
                             <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
                               {photosOnDay.slice(0,3).map(m => {
@@ -1645,58 +1506,49 @@ interface LeadReportRow {
                     {/* ── Total row ── */}
                     <tr style={{ background:"#93c5fd", fontWeight:800 }}>
                       {td("Total", { textAlign:"left", background:"#93c5fd" })}
+                      {td(totals.openingStock, { background:"#93c5fd" })}
                       {td(totals.canopy, { background:"#93c5fd" })}
                       {td(totals.planned, { background:"#93c5fd" })}
                       {td(totals.actual, { background:"#93c5fd" })}
-                      {td(sumEnqPerCanopy||"—", { background:"#93c5fd" })}
+                      {td(totals.walkIn, { background:"#93c5fd" })}
+                      {td(totals.inLms, { background:"#93c5fd" })}
+                      {td(totals.gap, { background:"#93c5fd" })}
                       {td(totals.hot, { background:"#93c5fd" })}
+                      {td(totals.revisedHot, { background:"#93c5fd" })}
                       {td(totals.tdPlanned, { background:"#93c5fd" })}
                       {td(totals.tdActual, { background:"#93c5fd" })}
-                      {td(sumTdPerCanopy||"—", { background:"#93c5fd" })}
                       {td(totals.bookToday, { background:"#93c5fd" })}
                       {td(totals.bookInHand, { background:"#93c5fd" })}
                       {td(totals.retail, { background:"#93c5fd" })}
-                      {/* {td(sum(e=>(e as any).retailMtdActivity||0), { background:"#93c5fd" })}
-                      {td(totals.retail, { background:"#93c5fd" })}
-                      {td("avg", { background:"#93c5fd", fontSize:9 })} */}
-                      {td(sum(e=>(e as any).retailMtdActivity||0), { background:"#93c5fd" })}
-                      {td((()=>{ const last=[...entries].reverse().find(e=>((e as any).retailMtd||0)>0) as any; return last?.retailMtd ?? 0; })(), { background:"#93c5fd" })}
-                      {td((()=>{ const last=[...entries].reverse().find(e=>((e as any).retailRatePerCanopy||0)>0) as any; return last?.retailRatePerCanopy ?? "0.0"; })(), { background:"#93c5fd" })}
-                      {td(`${entries.length}d 🔒`, { background:"#93c5fd", fontSize:10 })}
-                      {td(sum(e=>(e as any).closingStock||0)?[...entries].reverse().find(e=>((e as any).closingStock||0)>0) ? (([...entries].reverse().find(e=>((e as any).closingStock||0)>0) as any).closingStock) : "" : "", { background:"#93c5fd" })}
-                      {td(sum(e=>(e as any).lmsLeads||0), { background:"#93c5fd" })}
-                      {td(totals.leadsPunched, { background:"#93c5fd" })}
-                      {td(sum(e=>(e as any).lmsLeads||0) - totals.leadsPunched, { background:"#93c5fd" })}
-                      {/* {td((()=>{ const tl=sum(e=>(e as any).lmsLeads||0); const tm=sum(e=>(e as any).retailMtdActivity||0); return tl>0?Math.round((tm/tl)*100):0; })()+"%", { background:"#93c5fd" })} */}
-                      {td(sumRetailConvPct+"%", { background:"#93c5fd" })}
+                      {td(totals.retailMtd, { background:"#93c5fd" })}
                       {td("📸"+selectedDealerDaily.media.filter(m=>isImageType(m.fileType)||isVideoType(m.fileType)).length, { background:"#93c5fd", fontSize:10 })}
                     </tr>
 
-                    {/* ── Avg Per Canopy row ── */}
-                    {/* ── Avg Per Canopy row ── */}
+                    {/* ── Average row ── */}
                     <tr style={{ fontWeight:700 }}>
-                      {td("Avg Per Canopy", { textAlign:"left" })}
-                      {td("")}
+                      {td("Average", { textAlign:"left" })}
+                      {td("—", { fontSize:10, color:"#94a3b8" })}
+                      {td(avgRow.canopy, { background:"#fef9c3" })}
                       {td(avgRow.planned, { background:"#fef9c3" })}
                       {td(avgRow.actual, { background:"#fef9c3" })}
-                      {td(avgRow.perCanopy, { background:"#fef9c3" })}
-                      {td(avgRow.hot)}
+                      {td(avgRow.walkIn, { background:"#fef9c3" })}
+                      {td(avgRow.inLms, { background:"#fef9c3" })}
+                      {td(avgRow.gap, { background:"#fef9c3" })}
+                      {td(avgRow.hot, { background:"#fef9c3" })}
+                      {td(avgRow.revisedHot, { background:"#fef9c3" })}
                       {td(avgRow.tdPlanned, { background:"#fef9c3" })}
                       {td(avgRow.tdActual, { background:"#fef9c3" })}
-                      {td(avgRow.tdPerCanopy, { background:"#fef9c3" })}
-                      {td(avgRow.booking, { background:"#fef9c3" })}
-                      {td("")}
+                      {td(avgRow.bookToday, { background:"#fef9c3" })}
+                      {td(avgRow.bookInHand, { background:"#fef9c3" })}
                       {td(avgRow.retail, { background:"#fef9c3" })}
-                      {td("")}
-                      {td(avgRow.retail, { background:"#fef9c3" })}
-                      {td("")}
-                      {td("")}
-                      {td("")}
-                      {td("")}{td("")}{td("")}{td("")}
+                      {td(avgRow.retailMtd, { background:"#fef9c3" })}
+                      {td("—", { fontSize:10, color:"#94a3b8" })}
                     </tr>
                   </tbody>
                 </table>
               </div>
+                )}
+              </>
             );
           })()}
         </>
@@ -1715,59 +1567,212 @@ interface LeadReportRow {
               <thead>
                 <tr style={{ background:"#0a2540" }}>
                   <th rowSpan={2} style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"left",verticalAlign:"middle" }}>State</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Expected Leads</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#fde68a",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Leads Month<br/>Target</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#fde68a",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Leads MTD<br/>Target</th>
                   <th colSpan={3} style={{ padding:"6px 8px",color:"#93c5fd",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Walk-in</th>
                   <th colSpan={3} style={{ padding:"6px 8px",color:"#6ee7b7",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>BTL</th>
                   <th colSpan={3} style={{ padding:"6px 8px",color:"#c4b5fd",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Referral</th>
+                  <th colSpan={3} style={{ padding:"6px 8px",color:"#f472b6",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>ATL</th>
                   <th colSpan={3} style={{ padding:"6px 8px",color:"#fbbf24",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Digital</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Total Actual</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Conv%</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Total Leads<br/>Received</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Leads<br/>Variance</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#67e8f9",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Leads<br/>Ach%</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#67e8f9",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Leads<br/>Ach% MTD</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#fca5a5",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Retail<br/>Target</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>MTD Retail<br/>Target</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>MTD Retail<br/>Achieved</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#86efac",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>MTD Retail<br/>Ach%</th>
+                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#86efac",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Retails/<br/>Enquiries%</th>
                 </tr>
                 <tr style={{ background:"#0f172a" }}>
-                  {["Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A"].map((h,i)=>(
+                  {["Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A"].map((h,i)=>(
                     <th key={i} style={{ padding:"5px 6px",fontSize:9,textAlign:"center",color:"#94a3b8" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {(()=>{
-                const leadRows = stateRows.map(sr => ({
-                  state: sr.state,
-                  expectedLeads: sr.lead,
-                  walkinTarget: 0, walkinMtdT: 0, walkinMtdA: 0,
-                  btlTarget: sr.lead, btlMtdT: sr.lead,
-                  btlMtdA: dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) > 0
-                    ? Math.round(dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) * (sr.lead / Math.max(totalLead,1)))
-                    : 0,
-                  referralTarget: 0, referralMtdT: 0, referralMtdA: 0,
-                  digitalTarget: 0, digitalMtdT: 0, digitalMtdA: 0,
-                }));
-                return (<>{leadRows.map((r, i: number)=>{
-                  const totalActual=r.walkinMtdA+r.btlMtdA+r.referralMtdA+r.digitalMtdA;
-                  const conv=r.expectedLeads>0?Math.round(totalActual/r.expectedLeads*100):0;
-                  return (
-                    <tr key={r.state} style={{ background:i%2===0?"#fff":"#f8fafc" }}>
-                      <td className="an-td-bold">{r.state}</td>
-                      <td className="an-td-center">{r.expectedLeads}</td>
-                      <td className="an-td-center" style={{ fontSize:11 }}>{r.walkinTarget}</td>
-                      <td className="an-td-center" style={{ fontSize:11 }}>{r.walkinMtdT}</td>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#2563eb" }}>{r.walkinMtdA}</td>
-                      <td className="an-td-center" style={{ fontSize:11 }}>{r.btlTarget}</td>
-                      <td className="an-td-center" style={{ fontSize:11 }}>{r.btlMtdT}</td>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{r.btlMtdA}</td>
-                      <td className="an-td-center" style={{ fontSize:11 }}>{r.referralTarget}</td>
-                      <td className="an-td-center" style={{ fontSize:11 }}>{r.referralMtdT}</td>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#7c3aed" }}>{r.referralMtdA}</td>
-                      <td className="an-td-center" style={{ fontSize:11 }}>{r.digitalTarget}</td>
-                      <td className="an-td-center" style={{ fontSize:11 }}>{r.digitalMtdT}</td>
-                      <td className="an-td-center" style={{ fontWeight:700,color:"#f59e0b" }}>{r.digitalMtdA}</td>
-                      <td className="an-td-center" style={{ fontWeight:800,color:"#0a2540" }}>{totalActual}</td>
-                      <td className="an-td-center" style={{ fontWeight:700,color:conv>=80?"#16a34a":conv>=50?"#f59e0b":"#dc2626" }}>{conv}%</td>
+                  const now = new Date();
+                  const daysElapsed = now.getDate();
+                  const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+                  const monthFrac = daysElapsed / daysInMonth;
+
+                  // ── State-wise actual retail achieved from approved proposals' daily data ──
+                  const stateRetailAchieved: Record<string, number> = {};
+                  for (const p of approved) {
+                    const st = p.state || "Unknown";
+                    for (const a of p.activities) {
+                      const raw = (a as any).dailyData;
+                      if (!raw) continue;
+                      try {
+                        const entries: DailyEntry[] = JSON.parse(raw);
+                        const sum = entries.reduce((s,e)=>s+(e.retailActual||0),0);
+                        stateRetailAchieved[st] = (stateRetailAchieved[st]||0) + sum;
+                      } catch {}
+                    }
+                  }
+
+                  const leadRows: LeadReportRow[] = stateRows.map(sr => {
+                    // NOTE: per-channel Walkin/BTL/Referral/ATL/Digital data will come from
+                    // the LMS API once integrated. Until then, these default to 0/placeholder
+                    // and only BTL-sourced totals (from dailyAgg) populate the BTL channel.
+                    const walkinTarget=0, walkinMtdT=0, walkinMtdA=0;
+                    const btlTarget = sr.lead;
+                    const btlMtdT   = Math.round(sr.lead * monthFrac);
+                    const btlMtdA   = dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) > 0
+                      ? Math.round(dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) * (sr.lead / Math.max(totalLead,1)))
+                      : 0;
+                    const referralTarget=0, referralMtdT=0, referralMtdA=0;
+                    const atlTarget=0, atlMtdT=0, atlMtdA=0;
+                    const digitalTarget=0, digitalMtdT=0, digitalMtdA=0;
+
+                    // 1. Leads Month Target = sum of all 5 channel Targets
+                    const leadsMonthTarget = walkinTarget+btlTarget+referralTarget+atlTarget+digitalTarget;
+                    // Leads MTD Target = sum of all 5 channel MTD Targets
+                    const leadsMtdTarget = walkinMtdT+btlMtdT+referralMtdT+atlMtdT+digitalMtdT;
+                    // 2. Total Leads Received = sum of all 5 channel MTD Achieved
+                    const totalReceived = walkinMtdA+btlMtdA+referralMtdA+atlMtdA+digitalMtdA;
+                    // 3. Variance = Received - Month Target (negative = shortfall, positive = over-target)
+                    const variance = totalReceived - leadsMonthTarget;
+                    // 4/5. Achievement %
+                    const achPct    = leadsMonthTarget>0 ? Math.round((totalReceived/leadsMonthTarget)*100) : 0;
+                    const achPctMtd = leadsMtdTarget>0   ? Math.round((totalReceived/leadsMtdTarget)*100)   : 0;
+
+                    // 6. Retail Target — manual open field
+                    const retailTarget = parseFloat(manualRetailTargets[sr.state] ?? "0") || 0;
+                    // 7. MTD Retail Target — pro-rated to elapsed days in month
+                    const mtdRetailTarget = Math.round(retailTarget * monthFrac);
+                    // 8. MTD Retail Achieved — actual achieved-to-date from BTL data
+                    const mtdRetailAchieved = stateRetailAchieved[sr.state] || 0;
+                    // 9. MTD Retail Achievement %
+                    const mtdRetailAchPct = mtdRetailTarget>0 ? Math.round((mtdRetailAchieved/mtdRetailTarget)*100) : 0;
+                    // 10. Retails/Enquiries %
+                    const retailEnqPct = totalReceived>0 ? Math.round((mtdRetailAchieved/totalReceived)*100) : 0;
+
+                    return {
+                      state: sr.state,
+                      walkinTarget, walkinMtdT, walkinMtdA,
+                      btlTarget, btlMtdT, btlMtdA,
+                      referralTarget, referralMtdT, referralMtdA,
+                      atlTarget, atlMtdT, atlMtdA,
+                      digitalTarget, digitalMtdT, digitalMtdA,
+                      leadsMonthTarget, leadsMtdTarget, totalReceived, variance, achPct, achPctMtd,
+                      retailTarget, mtdRetailTarget, mtdRetailAchieved, mtdRetailAchPct, retailEnqPct,
+                    };
+                  });
+
+                  const totals = {
+                    leadsMonthTarget: leadRows.reduce((s,r)=>s+r.leadsMonthTarget,0),
+                    leadsMtdTarget:   leadRows.reduce((s,r)=>s+r.leadsMtdTarget,0),
+                    walkinTarget: leadRows.reduce((s,r)=>s+r.walkinTarget,0),
+                    walkinMtdT:   leadRows.reduce((s,r)=>s+r.walkinMtdT,0),
+                    walkinMtdA:   leadRows.reduce((s,r)=>s+r.walkinMtdA,0),
+                    btlTarget: leadRows.reduce((s,r)=>s+r.btlTarget,0),
+                    btlMtdT:   leadRows.reduce((s,r)=>s+r.btlMtdT,0),
+                    btlMtdA:   leadRows.reduce((s,r)=>s+r.btlMtdA,0),
+                    referralTarget: leadRows.reduce((s,r)=>s+r.referralTarget,0),
+                    referralMtdT:   leadRows.reduce((s,r)=>s+r.referralMtdT,0),
+                    referralMtdA:   leadRows.reduce((s,r)=>s+r.referralMtdA,0),
+                    atlTarget: leadRows.reduce((s,r)=>s+r.atlTarget,0),
+                    atlMtdT:   leadRows.reduce((s,r)=>s+r.atlMtdT,0),
+                    atlMtdA:   leadRows.reduce((s,r)=>s+r.atlMtdA,0),
+                    digitalTarget: leadRows.reduce((s,r)=>s+r.digitalTarget,0),
+                    digitalMtdT:   leadRows.reduce((s,r)=>s+r.digitalMtdT,0),
+                    digitalMtdA:   leadRows.reduce((s,r)=>s+r.digitalMtdA,0),
+                    totalReceived: leadRows.reduce((s,r)=>s+r.totalReceived,0),
+                    retailTarget: leadRows.reduce((s,r)=>s+r.retailTarget,0),
+                    mtdRetailTarget: leadRows.reduce((s,r)=>s+r.mtdRetailTarget,0),
+                    mtdRetailAchieved: leadRows.reduce((s,r)=>s+r.mtdRetailAchieved,0),
+                  };
+                  const totalVariance   = totals.totalReceived - totals.leadsMonthTarget;
+                  const totalAchPct     = totals.leadsMonthTarget>0 ? Math.round((totals.totalReceived/totals.leadsMonthTarget)*100) : 0;
+                  const totalAchPctMtd  = totals.leadsMtdTarget>0   ? Math.round((totals.totalReceived/totals.leadsMtdTarget)*100)   : 0;
+                  const totalRetailAchPct = totals.mtdRetailTarget>0 ? Math.round((totals.mtdRetailAchieved/totals.mtdRetailTarget)*100) : 0;
+                  const totalRetailEnqPct = totals.totalReceived>0   ? Math.round((totals.mtdRetailAchieved/totals.totalReceived)*100)   : 0;
+                  // Row-average versions (for an "Avg" row, matching per-row % averages rather than portfolio ratios)
+                  const rowCount = leadRows.length || 1;
+                  const avgAchPct       = Math.round(leadRows.reduce((s,r)=>s+r.achPct,0)/rowCount);
+                  const avgAchPctMtd    = Math.round(leadRows.reduce((s,r)=>s+r.achPctMtd,0)/rowCount);
+                  const avgRetailAchPct = Math.round(leadRows.reduce((s,r)=>s+r.mtdRetailAchPct,0)/rowCount);
+                  const avgRetailEnqPct = Math.round(leadRows.reduce((s,r)=>s+r.retailEnqPct,0)/rowCount);
+
+                  return (<>{leadRows.map((r, i: number)=>(
+                      <tr key={r.state} style={{ background:i%2===0?"#fff":"#f8fafc" }}>
+                        <td className="an-td-bold">{r.state}</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:"#92400e" }}>{r.leadsMonthTarget}</td>
+                        <td className="an-td-center" style={{ fontSize:11,color:"#92400e" }}>{r.leadsMtdTarget}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.walkinTarget}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.walkinMtdT}</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:"#2563eb" }}>{r.walkinMtdA}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.btlTarget}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.btlMtdT}</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{r.btlMtdA}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.referralTarget}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.referralMtdT}</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:"#7c3aed" }}>{r.referralMtdA}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.atlTarget}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.atlMtdT}</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:"#db2777" }}>{r.atlMtdA}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.digitalTarget}</td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.digitalMtdT}</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:"#f59e0b" }}>{r.digitalMtdA}</td>
+                        <td className="an-td-center" style={{ fontWeight:800,color:"#0a2540" }}>{r.totalReceived}</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:r.variance<0?"#dc2626":"#16a34a" }}>{r.variance<0?r.variance:`+${r.variance}`}</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:r.achPct>=80?"#16a34a":r.achPct>=50?"#f59e0b":"#dc2626" }}>{r.achPct}%</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:r.achPctMtd>=80?"#16a34a":r.achPctMtd>=50?"#f59e0b":"#dc2626" }}>{r.achPctMtd}%</td>
+                        <td className="an-td-center">
+                          <input type="number" min={0} value={manualRetailTargets[r.state] ?? ""} placeholder="0"
+                            style={{ width:60,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fef2f2" }}
+                            onChange={(e)=>setManualRetailTargets(prev=>({...prev,[r.state]:e.target.value}))}/>
+                        </td>
+                        <td className="an-td-center" style={{ fontSize:11 }}>{r.mtdRetailTarget}</td>
+                        <td className="an-td-center" style={{ fontWeight:700 }}>{r.mtdRetailAchieved}</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:r.mtdRetailAchPct>=80?"#16a34a":r.mtdRetailAchPct>=50?"#f59e0b":"#dc2626" }}>{r.mtdRetailAchPct}%</td>
+                        <td className="an-td-center" style={{ fontWeight:700,color:r.retailEnqPct>=10?"#16a34a":r.retailEnqPct>=5?"#f59e0b":"#dc2626" }}>{r.retailEnqPct}%</td>
+                      </tr>
+                    ))}
+                    <tr style={{ background:"#0a2540", fontWeight:800 }}>
+                      <td style={{ padding:"8px 10px",color:"#fbbf24" }}>Grand Total</td>
+                      <td className="an-td-center" style={{ color:"#fde68a" }}>{totals.leadsMonthTarget}</td>
+                      <td className="an-td-center" style={{ color:"#fde68a" }}>{totals.leadsMtdTarget}</td>
+                      <td className="an-td-center" style={{ color:"#93c5fd" }}>{totals.walkinTarget}</td>
+                      <td className="an-td-center" style={{ color:"#93c5fd" }}>{totals.walkinMtdT}</td>
+                      <td className="an-td-center" style={{ color:"#93c5fd" }}>{totals.walkinMtdA}</td>
+                      <td className="an-td-center" style={{ color:"#6ee7b7" }}>{totals.btlTarget}</td>
+                      <td className="an-td-center" style={{ color:"#6ee7b7" }}>{totals.btlMtdT}</td>
+                      <td className="an-td-center" style={{ color:"#6ee7b7" }}>{totals.btlMtdA}</td>
+                      <td className="an-td-center" style={{ color:"#c4b5fd" }}>{totals.referralTarget}</td>
+                      <td className="an-td-center" style={{ color:"#c4b5fd" }}>{totals.referralMtdT}</td>
+                      <td className="an-td-center" style={{ color:"#c4b5fd" }}>{totals.referralMtdA}</td>
+                      <td className="an-td-center" style={{ color:"#f472b6" }}>{totals.atlTarget}</td>
+                      <td className="an-td-center" style={{ color:"#f472b6" }}>{totals.atlMtdT}</td>
+                      <td className="an-td-center" style={{ color:"#f472b6" }}>{totals.atlMtdA}</td>
+                      <td className="an-td-center" style={{ color:"#fbbf24" }}>{totals.digitalTarget}</td>
+                      <td className="an-td-center" style={{ color:"#fbbf24" }}>{totals.digitalMtdT}</td>
+                      <td className="an-td-center" style={{ color:"#fbbf24" }}>{totals.digitalMtdA}</td>
+                      <td className="an-td-center" style={{ color:"#e2e8f0" }}>{totals.totalReceived}</td>
+                      <td className="an-td-center" style={{ color:totalVariance<0?"#fca5a5":"#86efac" }}>{totalVariance<0?totalVariance:`+${totalVariance}`}</td>
+                      <td className="an-td-center" style={{ color:"#67e8f9" }}>{totalAchPct}%</td>
+                      <td className="an-td-center" style={{ color:"#67e8f9" }}>{totalAchPctMtd}%</td>
+                      <td className="an-td-center" style={{ color:"#fca5a5" }}>{totals.retailTarget}</td>
+                      <td className="an-td-center" style={{ color:"#e2e8f0" }}>{totals.mtdRetailTarget}</td>
+                      <td className="an-td-center" style={{ color:"#e2e8f0" }}>{totals.mtdRetailAchieved}</td>
+                      <td className="an-td-center" style={{ color:"#86efac" }}>{totalRetailAchPct}%</td>
+                      <td className="an-td-center" style={{ color:"#86efac" }}>{totalRetailEnqPct}%</td>
                     </tr>
-                        );
-                    })}
-                  </>
-                );
+                    <tr style={{ background:"#1e293b", fontWeight:700 }}>
+                      <td style={{ padding:"7px 10px",color:"#94a3b8" }}>Avg</td>
+                      <td colSpan={18}/>
+                      <td/>
+                      <td className="an-td-center" style={{ color:"#67e8f9",fontSize:11 }}>{avgAchPct}%</td>
+                      <td className="an-td-center" style={{ color:"#67e8f9",fontSize:11 }}>{avgAchPctMtd}%</td>
+                      <td colSpan={2}/>
+                      <td/>
+                      <td className="an-td-center" style={{ color:"#86efac",fontSize:11 }}>{avgRetailAchPct}%</td>
+                      <td className="an-td-center" style={{ color:"#86efac",fontSize:11 }}>{avgRetailEnqPct}%</td>
+                    </tr>
+                    </>
+                  );
                 })()}
               </tbody>
             </table>
