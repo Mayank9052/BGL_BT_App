@@ -6,6 +6,7 @@ import { fetchProposals, type ProposalResponse } from "../services/proposalServi
 import { useAuthStore } from "../store/authStore";
 import DownloadReportButton from "../components/DownloadReportButton";
 import type { ExportColumn } from "../utils/exportReport";
+import { fetchLeadReport, type LeadReportApiRow } from "../services/leadReportService";
 import "./AnalyticsDashboard.css";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -78,6 +79,37 @@ const dealerDailyExportColumns: ExportColumn[] = [
   { header: "Retail", key: "retailMtdActivity" },
   { header: "MTD Retail", key: "retailMtd" },
 ];
+
+const leadReportExportColumns: ExportColumn[] = [
+  { header: "State", key: "state" },
+  { header: "Leads Month Target", key: "leadsMonthTarget" },
+  { header: "Leads MTD Target", key: "leadsMtdTarget" },
+  { header: "Walkin Target", key: "walkinTarget" },
+  { header: "Walkin MTD Target", key: "walkinMtdT" },
+  { header: "Walkin MTD Ach", key: "walkinMtdA" },
+  { header: "BTL Target", key: "btlTarget" },
+  { header: "BTL MTD Target", key: "btlMtdT" },
+  { header: "BTL MTD Ach", key: "btlMtdA" },
+  { header: "Referral Target", key: "referralTarget" },
+  { header: "Referral MTD Target", key: "referralMtdT" },
+  { header: "Referral MTD Ach", key: "referralMtdA" },
+  { header: "ATL Target", key: "atlTarget" },
+  { header: "ATL MTD Target", key: "atlMtdT" },
+  { header: "ATL MTD Ach", key: "atlMtdA" },
+  { header: "Digital Target", key: "digitalTarget" },
+  { header: "Digital MTD Target", key: "digitalMtdT" },
+  { header: "Digital MTD Ach", key: "digitalMtdA" },
+  { header: "Total Leads Received", key: "totalReceived" },
+  { header: "Leads Variance", key: "variance" },
+  { header: "Leads Ach%", key: "achPct" },
+  { header: "Leads Ach% MTD", key: "achPctMtd" },
+  { header: "Retail Target", key: "retailTarget" },
+  { header: "MTD Retail Target", key: "mtdRetailTarget" },
+  { header: "MTD Retail Achieved", key: "mtdRetailAchieved" },
+  { header: "MTD Retail Ach%", key: "mtdRetailAchPct" },
+  { header: "Retails/Enquiries%", key: "retailEnqPct" },
+];
+
 // ─── Mini sparkline ────────────────────────────────────────────────────────────
 const Sparkline = ({ data, color }: { data: number[]; color: string }) => {
   if (!data.length) return null;
@@ -248,7 +280,9 @@ export default function AnalyticsDashboard() {
   // in the same order). That caused "Rendered more hooks than during the previous
   // render" once loading flipped from true → false. ──
   const [manualRetailTargets, setManualRetailTargets] = useState<Record<string,string>>({});
-
+  const [lmsLeadReport,        setLmsLeadReport]        = useState<LeadReportApiRow[]|null>(null);
+  const [lmsLeadReportLoading, setLmsLeadReportLoading] = useState(false);
+  const [lmsLeadReportError,   setLmsLeadReportError]   = useState<string|null>(null);
   const toggleKpi = (key: string, filter: () => void, reset: () => void) => {
     if (activeKpi === key) { setActiveKpi(null); reset(); }
     else { setActiveKpi(key); filter(); }
@@ -274,6 +308,19 @@ export default function AnalyticsDashboard() {
       .catch(e => setError(e instanceof Error ? e.message : "Failed to load"))
       .finally(() => setLoading(false));
   }, [instance]);
+
+  useEffect(() => {
+    const now = new Date();
+    const monthIdx = monthFilter === "All" ? now.getMonth() : MONTHS.indexOf(monthFilter);
+    const year = yearFilter === "All" ? now.getFullYear() : parseInt(yearFilter) || now.getFullYear();
+
+    setLmsLeadReportLoading(true);
+    setLmsLeadReportError(null);
+    fetchLeadReport(instance, { month: monthIdx + 1, year })
+      .then(res => setLmsLeadReport(res.rows))
+      .catch(e => setLmsLeadReportError(e instanceof Error ? e.message : "Failed to load LMS lead data"))
+      .finally(() => setLmsLeadReportLoading(false));
+  }, [instance, monthFilter, yearFilter]);
 
   // ── Filtered proposals ──────────────────────────────────────────────────────
   const filtered = useMemo(() => proposals.filter(p => {
@@ -565,6 +612,63 @@ export default function AnalyticsDashboard() {
   }), [liveDailySummary, dailySearch, dailyStateFilter, dailyActivityTypeFilter]);
 
   const maxDealerBudget = Math.max(...dealerRows.map(r => r.budget), 1);
+
+  const leadReportExportRows = useMemo((): LeadReportRow[] => {
+    const now = new Date();
+    const daysElapsed = now.getDate();
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+    const monthFrac = daysElapsed / daysInMonth;
+    const stateRetailAchieved: Record<string, number> = {};
+    for (const p of approved) {
+      const st = p.state || "Unknown";
+      for (const a of p.activities) {
+        const raw = (a as any).dailyData;
+        if (!raw) continue;
+        try {
+          const entries: DailyEntry[] = JSON.parse(raw);
+          const sum = entries.reduce((s,e)=>s+(e.retailActual||0),0);
+          stateRetailAchieved[st] = (stateRetailAchieved[st]||0) + sum;
+        } catch {}
+      }
+    }
+    return stateRows.map(sr => {
+      const lmsRow = lmsLeadReport?.find(r => r.state === sr.state);
+      const walkinTarget = lmsRow?.walkinTarget ?? 0;
+      const walkinMtdT   = lmsRow?.walkinMtdTarget ?? 0;
+      const walkinMtdA   = lmsRow?.walkinMtdAch ?? 0;
+      const btlTarget = lmsRow?.btlTarget ?? sr.lead;
+      const btlMtdT   = lmsRow?.btlMtdTarget ?? Math.round(sr.lead * monthFrac);
+      const btlMtdA   = lmsRow?.btlMtdAch ?? 0;
+      const referralTarget = lmsRow?.referralTarget ?? 0;
+      const referralMtdT   = lmsRow?.referralMtdTarget ?? 0;
+      const referralMtdA   = lmsRow?.referralMtdAch ?? 0;
+      const atlTarget = lmsRow?.atlTarget ?? 0;
+      const atlMtdT   = lmsRow?.atlMtdTarget ?? 0;
+      const atlMtdA   = lmsRow?.atlMtdAch ?? 0;
+      const digitalTarget = lmsRow?.digitalTarget ?? 0;
+      const digitalMtdT   = lmsRow?.digitalMtdTarget ?? 0;
+      const digitalMtdA   = lmsRow?.digitalMtdAch ?? 0;
+      const leadsMonthTarget = walkinTarget+btlTarget+referralTarget+atlTarget+digitalTarget;
+      const leadsMtdTarget = walkinMtdT+btlMtdT+referralMtdT+atlMtdT+digitalMtdT;
+      const totalReceived = walkinMtdA+btlMtdA+referralMtdA+atlMtdA+digitalMtdA;
+      const variance = totalReceived - leadsMonthTarget;
+      const achPct    = leadsMonthTarget>0 ? Math.round((totalReceived/leadsMonthTarget)*100) : 0;
+      const achPctMtd = leadsMtdTarget>0   ? Math.round((totalReceived/leadsMtdTarget)*100)   : 0;
+      const retailTarget = parseFloat(manualRetailTargets[sr.state] ?? "0") || 0;
+      const mtdRetailTarget = Math.round(retailTarget * monthFrac);
+      const mtdRetailAchieved = stateRetailAchieved[sr.state] || 0;
+      const mtdRetailAchPct = mtdRetailTarget>0 ? Math.round((mtdRetailAchieved/mtdRetailTarget)*100) : 0;
+      const retailEnqPct = totalReceived>0 ? Math.round((mtdRetailAchieved/totalReceived)*100) : 0;
+      return {
+        state: sr.state,
+        walkinTarget, walkinMtdT, walkinMtdA, btlTarget, btlMtdT, btlMtdA,
+        referralTarget, referralMtdT, referralMtdA, atlTarget, atlMtdT, atlMtdA,
+        digitalTarget, digitalMtdT, digitalMtdA,
+        leadsMonthTarget, leadsMtdTarget, totalReceived, variance, achPct, achPctMtd,
+        retailTarget, mtdRetailTarget, mtdRetailAchieved, mtdRetailAchPct, retailEnqPct,
+      };
+    });
+  }, [stateRows, lmsLeadReport, approved, manualRetailTargets]);
 
   if (loading) return (
     <div className="an-loading">
@@ -1561,7 +1665,25 @@ export default function AnalyticsDashboard() {
           LEAD REPORT TAB
       ════════════════════════════════════════════════════════════════════════ */}
       {activeTab === "lead-report" && (
-        <Section title="Lead Report — State-wise" subtitle="Planned vs Actual leads by source">
+        <Section title="Lead Report — State-wise"
+          subtitle="Planned vs Actual leads by source"
+          action={
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              {lmsLeadReportLoading && <span style={{ fontSize:11, color:"#64748b" }}>⏳ Syncing LMS data…</span>}
+              {lmsLeadReportError && <span style={{ fontSize:11, color:"#dc2626" }} title={lmsLeadReportError}>⚠ LMS sync failed — showing local estimate</span>}
+              {!lmsLeadReportLoading && !lmsLeadReportError && lmsLeadReport && (
+                <span style={{ fontSize:11, background:"#dcfce7", color:"#166534", padding:"3px 10px", borderRadius:20, fontWeight:700 }}>
+                  🟢 Live from LMS
+                </span>
+              )}
+              <DownloadReportButton
+                filename="Lead_Report_Statewise"
+                title="Lead Report — State-wise"
+                columns={leadReportExportColumns}
+                rows={leadReportExportRows}
+              />
+            </div>
+          }>
           <div className="an-table-wrap">
             <table className="an-table an-table-full">
               <thead>
@@ -1613,18 +1735,35 @@ export default function AnalyticsDashboard() {
                   }
 
                   const leadRows: LeadReportRow[] = stateRows.map(sr => {
-                    // NOTE: per-channel Walkin/BTL/Referral/ATL/Digital data will come from
-                    // the LMS API once integrated. Until then, these default to 0/placeholder
-                    // and only BTL-sourced totals (from dailyAgg) populate the BTL channel.
-                    const walkinTarget=0, walkinMtdT=0, walkinMtdA=0;
-                    const btlTarget = sr.lead;
-                    const btlMtdT   = Math.round(sr.lead * monthFrac);
-                    const btlMtdA   = dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) > 0
-                      ? Math.round(dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) * (sr.lead / Math.max(totalLead,1)))
-                      : 0;
-                    const referralTarget=0, referralMtdT=0, referralMtdA=0;
-                    const atlTarget=0, atlMtdT=0, atlMtdA=0;
-                    const digitalTarget=0, digitalMtdT=0, digitalMtdA=0;
+                    // ── LIVE data from LMS, bucketed server-side by Source/SubSource
+                    // via LeadChannelMappings (Walkin/BTL/Referral/ATL/Digital).
+                    // Falls back to the old BTL-only-from-proposals estimate if the
+                    // LMS API hasn't loaded yet or errored out, so the tab never goes blank. ──
+                    const lmsRow = lmsLeadReport?.find(r => r.state === sr.state);
+
+                    const walkinTarget   = lmsRow?.walkinTarget   ?? 0;
+                    const walkinMtdT     = lmsRow?.walkinMtdTarget ?? 0;
+                    const walkinMtdA     = lmsRow?.walkinMtdAch   ?? 0;
+
+                    const btlTarget = lmsRow?.btlTarget ?? sr.lead;
+                    const btlMtdT   = lmsRow?.btlMtdTarget ?? Math.round(sr.lead * monthFrac);
+                    const btlMtdA   = lmsRow?.btlMtdAch ?? (
+                      dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) > 0
+                        ? Math.round(dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) * (sr.lead / Math.max(totalLead,1)))
+                        : 0
+                    );
+
+                    const referralTarget = lmsRow?.referralTarget   ?? 0;
+                    const referralMtdT   = lmsRow?.referralMtdTarget ?? 0;
+                    const referralMtdA   = lmsRow?.referralMtdAch   ?? 0;
+
+                    const atlTarget = lmsRow?.atlTarget   ?? 0;
+                    const atlMtdT   = lmsRow?.atlMtdTarget ?? 0;
+                    const atlMtdA   = lmsRow?.atlMtdAch   ?? 0;
+
+                    const digitalTarget = lmsRow?.digitalTarget   ?? 0;
+                    const digitalMtdT   = lmsRow?.digitalMtdTarget ?? 0;
+                    const digitalMtdA   = lmsRow?.digitalMtdAch   ?? 0;
 
                     // 1. Leads Month Target = sum of all 5 channel Targets
                     const leadsMonthTarget = walkinTarget+btlTarget+referralTarget+atlTarget+digitalTarget;

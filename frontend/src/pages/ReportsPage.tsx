@@ -6,6 +6,7 @@ import {
   type ReportFilters,
 } from "../services/reportService";
 import { useAuthStore } from "../store/authStore";
+import { fetchLeadFunnelSummary, type LeadFunnelSummaryResponse } from "../services/leadReportService";
 import "./ReportsPage.css";
 
 const MONTHS = [
@@ -32,10 +33,15 @@ export default function ReportsPage() {
   const [dealerFilter, setDealerFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [monthFilter,  setMonthFilter]  = useState("");
+  const [leadGroupBy,  setLeadGroupBy]  = useState<"rsm"|"dealer">("rsm");
+  const [leadSummary,  setLeadSummary]  = useState<LeadFunnelSummaryResponse|null>(null);
+  const [leadLoading,  setLeadLoading]  = useState(false);
+  const [leadError,    setLeadError]    = useState<string|null>(null);
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [preview,     setPreview]     = useState<any>(null);
-  const [activeTab,   setActiveTab]   = useState<"summary"|"dealer"|"activity">("summary");
+  //const [activeTab,   setActiveTab]   = useState<"summary"|"dealer"|"activity">("summary");
+  const [activeTab,   setActiveTab]   = useState<"summary"|"dealer"|"activity"|"leads">("summary");
   const [loading,     setLoading]     = useState(false);
   const [downloading, setDownloading] = useState<"excel"|"pdf"|null>(null);
   const [error,       setError]       = useState<string|null>(null);
@@ -59,6 +65,22 @@ export default function ReportsPage() {
       setError(e instanceof Error ? e.message : "Failed to load report.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleLoadLeadSummary = async (groupBy: "rsm"|"dealer" = leadGroupBy) => {
+    setLeadLoading(true); setLeadError(null);
+    try {
+      const data = await fetchLeadFunnelSummary(instance, {
+        groupBy,
+        state: stateFilter || undefined,   // reuses the same State filter you already have
+      });
+      setLeadSummary(data);
+      setLeadGroupBy(groupBy);
+    } catch (e) {
+      setLeadError(e instanceof Error ? e.message : "Failed to load LMS lead summary.");
+    } finally {
+      setLeadLoading(false);
     }
   };
 
@@ -253,10 +275,14 @@ export default function ReportsPage() {
               ["summary",  `State-wise (${filteredState.length})`],
               ["dealer",   `Dealer-wise (${filteredDealer.length})`],
               ["activity", `Activity Detail (${filteredRows.length})`],
+              ["leads",    `Leads (LMS)${leadSummary ? ` (${leadSummary.rows.length})` : ""}`],
             ] as const).map(([tab, label]) => (
               <button key={tab}
                 className={`rp-tab${activeTab===tab?" rp-tab--active":""}`}
-                onClick={() => setActiveTab(tab)}>
+                onClick={() => {
+                  setActiveTab(tab);
+                  if (tab === "leads" && !leadSummary) handleLoadLeadSummary();
+                }}>
                 {label}
               </button>
             ))}
@@ -433,6 +459,108 @@ export default function ReportsPage() {
               {downloading === "pdf" ? "Generating…" : "⬇ Download PDF"}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ── Leads (LMS) tab ── */}
+      {activeTab === "leads" && (
+        <div>
+          <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:12, flexWrap:"wrap" }}>
+            <span style={{ fontSize:12, fontWeight:600, color:"#64748b" }}>Group by:</span>
+            {(["rsm","dealer"] as const).map(g => (
+              <button key={g}
+                onClick={() => handleLoadLeadSummary(g)}
+                disabled={leadLoading}
+                style={{
+                  padding:"6px 14px", borderRadius:7, fontSize:12, fontWeight:600, cursor:"pointer",
+                  border: leadGroupBy===g ? "1.5px solid #2563eb" : "1.5px solid #e2e8f0",
+                  background: leadGroupBy===g ? "#eff6ff" : "#fff",
+                  color: leadGroupBy===g ? "#1e40af" : "#374151",
+                }}>
+                {g === "rsm" ? "RSM-wise" : "Dealer-wise"}
+              </button>
+            ))}
+            {stateFilter && (
+              <span style={{ fontSize:11, color:"#64748b" }}>
+                Filtered to state: <strong>{stateFilter}</strong> (uses the State field above)
+              </span>
+            )}
+            <button onClick={() => handleLoadLeadSummary()} disabled={leadLoading}
+              style={{ marginLeft:"auto", padding:"6px 14px", borderRadius:7, fontSize:12,
+                fontWeight:600, cursor:"pointer", border:"1.5px solid #e2e8f0", background:"#fff", color:"#374151" }}>
+              {leadLoading ? "Loading…" : "↻ Refresh"}
+            </button>
+          </div>
+
+          {leadError && (
+            <div className="rp-error" style={{ marginBottom:12 }}>
+              <span>⚠</span><span>{leadError}</span>
+              <button onClick={() => setLeadError(null)}>✕</button>
+            </div>
+          )}
+
+          {leadLoading && !leadSummary && (
+            <div style={{ textAlign:"center", padding:"40px 20px", color:"#9ca3af" }}>
+              <div style={{ fontSize:32, marginBottom:10 }}>⏳</div>
+              Loading LMS lead data…
+            </div>
+          )}
+
+          {leadSummary && (
+            <div className="rp-table-scroll">
+              <table className="rp-table" style={{ minWidth: leadGroupBy==="dealer" ? "1100px" : "900px" }}>
+                <thead>
+                  <tr>
+                    <th>{leadGroupBy === "rsm" ? "RSM" : "Dealer"}</th>
+                    {leadGroupBy === "dealer" && (<><th>City</th><th>State</th></>)}
+                    <th className="rp-num">Total Leads</th>
+                    <th className="rp-num">Not Called</th>
+                    <th className="rp-num">Follow-Up</th>
+                    <th className="rp-num">Closed</th>
+                    <th className="rp-num" style={{background:"#eef2ff",color:"#3730a3"}}>Qualified</th>
+                    <th className="rp-num" style={{background:"#fef2f2",color:"#b91c1c"}}>Hot</th>
+                    <th className="rp-num" style={{background:"#fffbeb",color:"#92400e"}}>Warm</th>
+                    <th className="rp-num">Normal</th>
+                    <th className="rp-num" style={{background:"#f0fdf4",color:"#166534"}}>Booked</th>
+                    <th className="rp-num" style={{background:"#fef2f2",color:"#991b1b"}}>Lost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leadSummary.rows.map((r, i) => (
+                    <tr key={r.dealerCode ?? r.name} className={i%2===0?"rp-row-even":"rp-row-odd"}>
+                      <td className="rp-bold">{r.dealerName ?? r.name}</td>
+                      {leadGroupBy === "dealer" && (<><td className="rp-sm">{r.city ?? "—"}</td><td><span className="rp-state-tag">{r.state ?? "—"}</span></td></>)}
+                      <td className="rp-num rp-bold">{r.totalLeads}</td>
+                      <td className="rp-num">{r.notCalled}</td>
+                      <td className="rp-num">{r.followUp}</td>
+                      <td className="rp-num">{r.closed}</td>
+                      <td className="rp-num rp-bold">{r.qualified.total}</td>
+                      <td className="rp-num" style={{color:"#b91c1c",fontWeight:700}}>{r.qualified.hot}</td>
+                      <td className="rp-num" style={{color:"#92400e"}}>{r.qualified.warm}</td>
+                      <td className="rp-num">{r.qualified.normal}</td>
+                      <td className="rp-num" style={{color:"#166534",fontWeight:700}}>{r.booked}</td>
+                      <td className="rp-num" style={{color:"#991b1b"}}>{r.lost}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ background:"#0a2540" }}>
+                    <td colSpan={leadGroupBy==="dealer" ? 3 : 1} style={{ padding:"8px 12px", fontWeight:800, color:"#fbbf24" }}>Total</td>
+                    <td className="rp-num" style={{ color:"#fff", fontWeight:800 }}>{leadSummary.total.totalLeads}</td>
+                    <td className="rp-num" style={{ color:"#e2e8f0" }}>{leadSummary.total.notCalled}</td>
+                    <td className="rp-num" style={{ color:"#e2e8f0" }}>{leadSummary.total.followUp}</td>
+                    <td className="rp-num" style={{ color:"#e2e8f0" }}>{leadSummary.total.closed}</td>
+                    <td className="rp-num" style={{ color:"#a5b4fc", fontWeight:700 }}>{leadSummary.total.qualified.total}</td>
+                    <td className="rp-num" style={{ color:"#fca5a5" }}>{leadSummary.total.qualified.hot}</td>
+                    <td className="rp-num" style={{ color:"#fde68a" }}>{leadSummary.total.qualified.warm}</td>
+                    <td className="rp-num" style={{ color:"#e2e8f0" }}>{leadSummary.total.qualified.normal}</td>
+                    <td className="rp-num" style={{ color:"#86efac", fontWeight:700 }}>{leadSummary.total.booked}</td>
+                    <td className="rp-num" style={{ color:"#fca5a5" }}>{leadSummary.total.lost}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
