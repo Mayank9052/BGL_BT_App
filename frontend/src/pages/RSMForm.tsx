@@ -8,6 +8,12 @@
 //   6. YEARS = current + next only (no previous year)
 //   7. monthOptions = no past months for current year
 //   8. activityDateRange = dates constrained to selected month+year
+//   9. FIX: date-to-string conversion now uses toLocalISODate() (local date parts)
+//      instead of .toISOString() (UTC) — fixes 31-day-month / leap-year Feb 29
+//      end dates silently showing as the 30th / 28th for users in IST (UTC+5:30)
+//  10. NEW: ProposalHeader carries dealerEmail/rsmEmail/commandoEmail, auto-filled
+//      from dealerTeamMap.ts on dealer select and sent in the submit payload, so
+//      the backend can send "activity sheet updated" notifications after submit
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
@@ -44,7 +50,21 @@ const CURRENT_MONTH = MONTHS[new Date().getMonth()];
 const CURRENT_YEAR  = new Date().getFullYear();
 // ── FIX: only current year + next year (no previous year) ────────────────────
 const YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
-const isoDate = (d: Date) => d.toISOString().split("T")[0];
+// ── toLocalISODate: format a Date as YYYY-MM-DD using LOCAL date parts ──────
+// Never use .toISOString() here: it converts to UTC first, and for any
+// timezone ahead of UTC (IST is UTC+5:30) local midnight rolls back to the
+// previous day once converted — so the last day of a 31-day month (or 29 Feb
+// in a leap year) was silently coming back as the 30th / 28th. Reading
+// getFullYear/getMonth/getDate keeps everything in the browser's own
+// calendar, so 31-day months, 30-day months, and leap years are all correct
+// automatically — Date's month-overflow arithmetic already handles them.
+function toLocalISODate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+const isoDate = toLocalISODate;
 const TODAY_ISO = isoDate(new Date());
 const DEFAULT_END_ISO = isoDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
 const MIN_ACTIVITY_DATE = TODAY_ISO;
@@ -64,6 +84,8 @@ interface ProposalHeader {
   state: string; stateId: number | null; location: string; type: string;
   rsmName: string; tsmName: string; commandoName: string; month: string; year: string;
   eligibility: string; remarks: string;
+  // ── notification recipients, auto-filled from dealerTeamMap.ts on dealer select ──
+  dealerEmail: string; rsmEmail: string; commandoEmail: string;
 }
 interface FieldErrors {
   dealerName?: string; state?: string; location?: string; type?: string;
@@ -111,6 +133,7 @@ const emptyHeader = (): ProposalHeader => ({
   state: "", stateId: null, location: "", type: "",
   rsmName: "", tsmName: "", commandoName: "", month: CURRENT_MONTH, year: String(CURRENT_YEAR),
   eligibility: "", remarks: "",
+  dealerEmail: "", rsmEmail: "", commandoEmail: "",
 });
 
 function validateDetails(h: ProposalHeader): FieldErrors {
@@ -258,6 +281,11 @@ export default function RSMProposalForm() {
           month: p.month,
           year: (p as any).year ? String((p as any).year) : String(CURRENT_YEAR),
           eligibility: p.eligibility, remarks: p.remarks ?? "",
+          // ── notification recipients — backend DTO may not carry these yet, so
+          // fall back to "" until ProposalResponseDto exposes them (see backend scaffold) ──
+          dealerEmail: (p as any).dealerEmail ?? "",
+          rsmEmail: (p as any).rsmEmail ?? "",
+          commandoEmail: (p as any).commandoEmail ?? "",
         });
         setActivities(p.activities.map((a) => ({
           id: crypto.randomUUID(), activityType: a.activityType, category: a.category ?? "",
@@ -351,8 +379,8 @@ export default function RSMProposalForm() {
     const todayDate = new Date();
     const minDate   = firstDay > todayDate ? firstDay : todayDate;
     return {
-      min: minDate.toISOString().split("T")[0],
-      max: lastDay.toISOString().split("T")[0],
+      min: toLocalISODate(minDate),
+      max: toLocalISODate(lastDay),
     };
   }, [header.month, header.year]);
 
@@ -378,6 +406,10 @@ export default function RSMProposalForm() {
         rsmName:       titleCase(csvTeam?.rsm || dealer.rsmName || dealer.rsmCode || ""),
         tsmName:       titleCase(csvTeam?.tsm || dealer.tsmName || dealer.tsmCode || ""),
         commandoName:  titleCase(csvTeam?.commando || dealer.commandoName || ""),
+        // ── notification recipients — silent fields, no UI, used after submit ──
+        dealerEmail:   csvTeam?.dealerEmail ?? "",
+        rsmEmail:      csvTeam?.rsmEmail ?? "",
+        commandoEmail: csvTeam?.commandoEmail ?? "",
         month:         h.month || CURRENT_MONTH,
         year:          h.year || String(CURRENT_YEAR),
         vendorId:      h.vendorId,
@@ -401,7 +433,7 @@ export default function RSMProposalForm() {
         .then(setDealerHistory).catch(() => {}).finally(() => setLoadingDealerHistory(false));
     } else {
       setDealerAutoFilled(false);
-      setHeader((h) => ({ ...h, dealerId:"", dealerName:"", state:"", stateId:null, location:"", rsmName:"", tsmName:"", commandoName:"", type:"", eligibility:"" }));
+      setHeader((h) => ({ ...h, dealerId:"", dealerName:"", state:"", stateId:null, location:"", rsmName:"", tsmName:"", commandoName:"", type:"", eligibility:"", dealerEmail:"", rsmEmail:"", commandoEmail:"" }));
     }
   };
 
@@ -549,7 +581,7 @@ export default function RSMProposalForm() {
     if (dmyMatch) { const [,d,m,y] = dmyMatch; return `${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`; }
     const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (isoMatch) return str.substring(0, 10);
-    const native = new Date(str); if (!isNaN(native.getTime())) return native.toISOString().split("T")[0];
+    const native = new Date(str); if (!isNaN(native.getTime())) return toLocalISODate(native);
     return "";
   };
   const isSkippableRow = (rawType: string) => {
@@ -867,6 +899,8 @@ export default function RSMProposalForm() {
         vendorId: header.vendorId ? Number(header.vendorId) : null, vendorName: header.vendorName || null,
         rsmName: header.rsmName, tsmName: header.tsmName, commandoName: header.commandoName || null,
         month: header.month, year: header.year, eligibility: header.eligibility, remarks: header.remarks,
+        // ── notification recipients — sent so the backend can email "activity sheet updated" ──
+        dealerEmail: header.dealerEmail || null, rsmEmail: header.rsmEmail || null, commandoEmail: header.commandoEmail || null,
         submittedBy: account?.username ?? null, docNumber: generateDocNumber(),
         activities: activityPayload,
         totalBudget, totalLeadTarget: Math.round(totalLeadTarget),
