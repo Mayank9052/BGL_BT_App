@@ -83,6 +83,14 @@ public class EmailService : IEmailService
         return Task.FromResult<(bool, string?)>((false, "SMTP not supported for dealer notification. Use Graph."));
     }
 
+    // Step 1b: Activity sheet submitted notification (Dealer/RSM/Commando) — SMTP not supported
+    public Task<(bool Sent, string? Error)> SendActivitySheetSubmittedMailAsync(
+        Proposal p, string? dealerEmail, string? rsmEmail, string? commandoEmail, string graphToken)
+    {
+        _logger.LogWarning("SendActivitySheetSubmittedMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
+        return Task.FromResult<(bool, string?)>((false, "SMTP not supported for activity-sheet notification. Use Graph."));
+    }
+
     // ── Core SMTP send with optional CC ──────────────────────────────────────
     private async Task<(bool Sent, string? Error)> SendAsync(
         string to, string? cc, string subject, string body)

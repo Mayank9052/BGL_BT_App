@@ -106,6 +106,35 @@ public class GraphEmailService : IEmailService
             subject: BuildSubject("Budget Add-On Request from Dealer", p),
             body:    BuildDealerSendBackBody(p, dealerEmail, requestNote));
 
+    // Step 1b: RSM submits → Dealer + RSM + Commando (CC Seema), separate from the Checker mail above
+    public Task<(bool Sent, string? Error)> SendActivitySheetSubmittedMailAsync(
+        Proposal p, string? dealerEmail, string? rsmEmail, string? commandoEmail, string graphToken)
+    {
+        var to = new[] { dealerEmail, rsmEmail, commandoEmail }
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var toJoined = string.Join(",", to);
+        if (string.IsNullOrWhiteSpace(toJoined))
+            return Task.FromResult<(bool, string?)>((false, "No dealer/RSM/commando email on file."));
+
+        return SendAsync(graphToken, toJoined, _settings.ApproverEmail,
+            BuildSubject("Activity Sheet Submitted", p), BuildActivitySheetSubmittedBody(p));
+    }
+
+    private string BuildActivitySheetSubmittedBody(Proposal p)
+    {
+        var sender = p.SubmittedByDisplayName ?? p.RsmName ?? p.SubmittedBy;
+        return Shell("#0a2540", "Your Activity Sheet Was Submitted", p.TokenNumber ?? "",
+            $"""
+            <p style="margin:0 0 12px;font-size:13px;">Hi,<br/>
+              The BTL activity sheet for <strong>{p.DealerName}</strong> ({p.Month} {p.Year})
+              has been submitted by {sender} and is now awaiting Checker review.</p>
+            {BuildProposalInfoTable(p)}
+            {BuildActivityTable(p)}
+            <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">— BGauss BTL · BGauss Auto Pvt. Ltd.</p>
+            """);
+    }
+
     // Step 6: Checker forwards → Final Approver
     // When Email:SuppressIndividualForwardMails = "true", this method is a NO-OP.
     // Instead, the Checker should use the bulk-forward panel which calls

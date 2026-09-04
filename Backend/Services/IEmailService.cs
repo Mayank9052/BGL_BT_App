@@ -13,4 +13,6 @@ public interface IEmailService
     Task<(bool Sent, string? Error)> SendDealerNotificationMailAsync(Proposal p, string dealerEmail, string graphToken);
     // NEW — dealer sends budget add-on request back to Mayank
     Task<(bool Sent, string? Error)> SendDealerSendBackMailAsync(Proposal p, string dealerEmail, string requestNote, string graphToken);
+    Task<(bool Sent, string? Error)> SendActivitySheetSubmittedMailAsync(
+    Proposal p, string? dealerEmail, string? rsmEmail, string? commandoEmail, string graphToken);
 }

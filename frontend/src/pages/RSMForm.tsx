@@ -67,7 +67,6 @@ function toLocalISODate(d: Date): string {
 const isoDate = toLocalISODate;
 const TODAY_ISO = isoDate(new Date());
 const DEFAULT_END_ISO = isoDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
-const MIN_ACTIVITY_DATE = TODAY_ISO;
 
 interface ActivityRow {
   id: string; activityType: string; category: string;
@@ -157,8 +156,11 @@ function validateActivities(rows: ActivityRow[]): ActivityErrors {
     if (!a.startDate)                                   rowErr.startDate    = "Required";
     if (!a.endDate)                                     rowErr.endDate      = "Required";
     if (a.startDate && a.endDate && a.endDate < a.startDate) rowErr.endDate = "End must be after start";
-    if (!rowErr.startDate && a.startDate < MIN_ACTIVITY_DATE) rowErr.startDate = "Cannot select a date in the past.";
-    if (!rowErr.endDate   && a.endDate   < MIN_ACTIVITY_DATE) rowErr.endDate   = "Cannot select a date in the past.";
+    // ── FIX: no longer rejects dates before "today" — a whole-month activity
+    // plan (e.g. imported from Excel) can legitimately start earlier in the
+    // month than the day it's uploaded/reviewed. Dates are still constrained
+    // to the selected month/year (see goToSummary + activityDateRange), and
+    // the month picker itself already excludes past months.
     if (!a.budget || num(a.budget) <= 0)               rowErr.budget       = "Required";
     if (Object.keys(rowErr).length) e[a.id] = rowErr;
   });
@@ -376,10 +378,14 @@ export default function RSMProposalForm() {
     }
     const firstDay  = new Date(year, monthIdx, 1);
     const lastDay   = new Date(year, monthIdx + 1, 0);
-    const todayDate = new Date();
-    const minDate   = firstDay > todayDate ? firstDay : todayDate;
+    // ── FIX: bound only by the selected month, never by "today" ──────────────
+    // Previously min was max(firstDay, today), which blocked legitimate whole-
+    // month activity plans (e.g. imported from Excel) whose Start Date fell
+    // earlier in the month than the day the sheet happens to be uploaded on.
+    // Month selection already excludes past months (see YEARS/monthOptions),
+    // so within an allowed month any day of that month is a valid activity date.
     return {
-      min: toLocalISODate(minDate),
+      min: toLocalISODate(firstDay),
       max: toLocalISODate(lastDay),
     };
   }, [header.month, header.year]);
@@ -405,7 +411,12 @@ export default function RSMProposalForm() {
         location:      titleCase(dealer.city ?? ""),
         rsmName:       titleCase(csvTeam?.rsm || dealer.rsmName || dealer.rsmCode || ""),
         tsmName:       titleCase(csvTeam?.tsm || dealer.tsmName || dealer.tsmCode || ""),
-        commandoName:  titleCase(csvTeam?.commando || dealer.commandoName || ""),
+        // ── FIX: Commando comes ONLY from the Excel team-map (dealerTeamMap.ts).
+        // Do NOT fall back to ERP's dealer.commandoName — most dealers have no
+        // Commando assigned yet in the Excel, and falling back to ERP was showing
+        // a Commando name (e.g. from a different/stale ERP field) for dealers that
+        // should show blank. If the Excel has nothing, this stays empty.
+        commandoName:  csvTeam?.commando ? titleCase(csvTeam.commando) : "",
         // ── notification recipients — silent fields, no UI, used after submit ──
         dealerEmail:   csvTeam?.dealerEmail ?? "",
         rsmEmail:      csvTeam?.rsmEmail ?? "",
@@ -541,7 +552,8 @@ export default function RSMProposalForm() {
       const dateErrors: ActivityErrors = {};
       activities.forEach((a) => {
         const rowErr: ActivityErrors[string] = {};
-        if (a.startDate && a.startDate < min) rowErr.startDate = "Start date cannot be before today.";
+        // min is now the 1st of the selected month (not "today") — see activityDateRange fix
+        if (a.startDate && a.startDate < min) rowErr.startDate = `Must be within ${header.month} ${header.year}.`;
         if (max && a.startDate && a.startDate > max) rowErr.startDate = `Must be within ${header.month} ${header.year}.`;
         if (max && a.endDate && a.endDate > max) rowErr.endDate = `Must be within ${header.month} ${header.year}.`;
         if (Object.keys(rowErr).length) { dateErrors[a.id] = { ...(errs[a.id] ?? {}), ...rowErr }; hasDateError = true; }

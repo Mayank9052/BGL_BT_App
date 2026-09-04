@@ -58,7 +58,7 @@ public class ProposalsController : ControllerBase
                            $"{string.Join(", ", duplicateTypes)}"
             });
 
-        var (datesOk, dateError) = ValidateActivityDates(dto.Activities);
+        var (datesOk, dateError) = ValidateActivityDates(dto.Activities, dto.Month, dto.Year);
         if (!datesOk) return BadRequest(new { message = dateError });
 
         var submittedBy = CurrentUserEmail();
@@ -312,7 +312,7 @@ public class ProposalsController : ControllerBase
         // Skip backdate validation for budget addition edits on Approved proposals
         if (!isBudgetAdditionEdit)
         {
-            var (datesOk, dateError) = ValidateActivityDates(dto.Activities);
+            var (datesOk, dateError) = ValidateActivityDates(dto.Activities, dto.Month, dto.Year);
             if (!datesOk) return BadRequest(new { message = dateError });
         }
 
@@ -829,10 +829,27 @@ public class ProposalsController : ControllerBase
     private static DateOnly? ParseDate(string? value) =>
         DateOnly.TryParse(value, out var date) ? date : null;
 
+        private static readonly string[] MonthNames = {
+        "January","February","March","April","May","June",
+        "July","August","September","October","November","December"
+    };
+
     private static (bool Ok, string? Error) ValidateActivityDates(
-        List<ActivityDto> activities)
+        List<ActivityDto> activities, string? month, string? year)
     {
-        var todayIst = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(5).AddMinutes(30));
+        // ── FIX: validate against the proposal's selected Month/Year, not "today".
+        // A whole-month activity plan (e.g. imported from Excel) can legitimately
+        // start earlier in the month than the day it's submitted — the old
+        // "start >= today" rule blocked exactly that case. Mirrors the same fix
+        // applied on the frontend (RSMForm.tsx's activityDateRange).
+        DateOnly? firstOfMonth = null;
+        DateOnly? lastOfMonth  = null;
+        var monthIdx = Array.IndexOf(MonthNames, month);
+        if (monthIdx >= 0 && int.TryParse(year, out var yearNum))
+        {
+            firstOfMonth = new DateOnly(yearNum, monthIdx + 1, 1);
+            lastOfMonth  = firstOfMonth.Value.AddMonths(1).AddDays(-1);
+        }
 
         for (int i = 0; i < activities.Count; i++)
         {
@@ -844,10 +861,13 @@ public class ProposalsController : ControllerBase
             if (start.HasValue && end.HasValue && end.Value < start.Value)
                 return (false, $"'{name}': end date cannot be before start date.");
 
-            if (start.HasValue && start.Value < todayIst)
-                return (false,
-                    $"'{name}': start date ({start.Value:dd-MMM-yyyy}) is in the past. " +
-                    $"Activities must start from today ({todayIst:dd-MMM-yyyy}) or later.");
+            if (firstOfMonth.HasValue && lastOfMonth.HasValue)
+            {
+                if (start.HasValue && (start.Value < firstOfMonth.Value || start.Value > lastOfMonth.Value))
+                    return (false, $"'{name}': start date ({start.Value:dd-MMM-yyyy}) must fall within {month} {year}.");
+                if (end.HasValue && (end.Value < firstOfMonth.Value || end.Value > lastOfMonth.Value))
+                    return (false, $"'{name}': end date ({end.Value:dd-MMM-yyyy}) must fall within {month} {year}.");
+            }
         }
 
         return (true, null);
