@@ -77,7 +77,7 @@ public class EmailService : IEmailService
 
     // ── Step 4: Dealer notification — SMTP not supported ─────────────────────
     public Task<(bool Sent, string? Error)> SendDealerNotificationMailAsync(
-        Proposal p, string dealerEmail, string graphToken)
+        Proposal p, string dealerEmail, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken)
     {
         _logger.LogWarning("SendDealerNotificationMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
         return Task.FromResult<(bool, string?)>((false, "SMTP not supported for dealer notification. Use Graph."));
@@ -89,6 +89,14 @@ public class EmailService : IEmailService
     {
         _logger.LogWarning("SendActivitySheetSubmittedMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
         return Task.FromResult<(bool, string?)>((false, "SMTP not supported for activity-sheet notification. Use Graph."));
+    }
+
+    // Step 4b: Team notification — SMTP not supported
+    public Task<(bool Sent, string? Error)> SendTeamNotificationMailAsync(
+        Proposal p, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken)
+    {
+        _logger.LogWarning("SendTeamNotificationMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
+        return Task.FromResult<(bool, string?)>((false, "SMTP not supported for team notification. Use Graph."));
     }
 
     // ── Core SMTP send with optional CC ──────────────────────────────────────

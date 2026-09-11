@@ -85,16 +85,24 @@ public class GraphEmailService : IEmailService
         SendAsync(graphToken, _settings.ApproverEmail, null,
             BuildSubject("Resubmitted for Review", p), BuildResubmissionBody(p));
 
-    // Step 4: Notify Dealer (after approval) → Dealer + CC Seema + RSM
+        // Step 4: Notify Dealer (after approval) → To: Dealer, Cc: Approver + RSM + TSM + Commando
+    // Sent via the Approver's own Graph token — same mailbox that already sends
+    // every other step in this pipeline (ApproverEmail).
     public Task<(bool Sent, string? Error)> SendDealerNotificationMailAsync(
-        Proposal p, string dealerEmail, string graphToken)
+        Proposal p, string dealerEmail, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken)
     {
         if (string.IsNullOrWhiteSpace(dealerEmail))
             return Task.FromResult<(bool, string?)>((false, "No dealer email provided."));
-        return SendAsync(graphToken, dealerEmail,
-            $"{_settings.ApproverEmail},{p.SubmittedBy}",
+
+        var cc = new[] { _settings.ApproverEmail, p.SubmittedBy, rsmEmail, tsmEmail, commandoEmail }
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return SendAsync(graphToken, dealerEmail, string.Join(",", cc),
             BuildSubject("Activity Proposal Approved — Your Action Required", p),
-            BuildDealerNotificationBody(p));
+            BuildDealerNotificationBody(p, rsmEmail, tsmEmail, commandoEmail));
     }
 
     // Step 5: Dealer requests budget addition → Checker (Seema) + CC RSM
@@ -119,6 +127,25 @@ public class GraphEmailService : IEmailService
 
         return SendAsync(graphToken, toJoined, _settings.ApproverEmail,
             BuildSubject("Activity Sheet Submitted", p), BuildActivitySheetSubmittedBody(p));
+    }
+
+    // Step 4b: Notify RSM/TSM/Commando (after approval) — sends dealer portal login
+    public Task<(bool Sent, string? Error)> SendTeamNotificationMailAsync(
+        Proposal p, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken)
+    {
+        var to = new[] { rsmEmail, tsmEmail, commandoEmail }
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var toJoined = string.Join(",", to);
+        if (string.IsNullOrWhiteSpace(toJoined))
+            return Task.FromResult<(bool, string?)>((false, "No RSM/TSM/Commando email provided."));
+
+        return SendAsync(graphToken, toJoined, _settings.ApproverEmail,
+            BuildSubject("Dealer Portal Access — Team Notification", p),
+            BuildTeamNotificationBody(p));
     }
 
     private string BuildActivitySheetSubmittedBody(Proposal p)
@@ -641,10 +668,21 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // 4. Dealer notification (cross-tab) → Dealer + CC Seema + RSM
-    private string BuildDealerNotificationBody(Proposal p)
+        // 4. Dealer notification (cross-tab) → To: Dealer, Cc: Approver + RSM + TSM + Commando
+    private string BuildDealerNotificationBody(Proposal p, string? rsmEmail, string? tsmEmail, string? commandoEmail)
     {
         var approver = _settings.ApproverFirstName;
+
+        var ccNames = new[]
+        {
+            !string.IsNullOrWhiteSpace(rsmEmail)       ? $"RSM ({p.RsmName})"       : null,
+            !string.IsNullOrWhiteSpace(tsmEmail)       ? $"TSM ({p.TsmName})"       : null,
+            !string.IsNullOrWhiteSpace(commandoEmail)  ? $"Commando ({p.CommandoName})" : null,
+        }.Where(n => n != null);
+        var ccLine = string.Join(", ", ccNames);
+        var ccNote = string.IsNullOrWhiteSpace(ccLine) ? "" :
+            $"<p style=\"margin:0 0 10px;font-size:11px;color:#6b7280;\">Also cc'd: {ccLine}</p>";
+
         return Shell("#0a2540", "Approved BTL Activity Plan — Action Required", p.TokenNumber ?? "",
             $"""
             <p style="margin:0 0 10px;font-size:13px;">Dear <strong>{p.DealerName}</strong> Team,<br/>
@@ -653,6 +691,7 @@ public class GraphEmailService : IEmailService
               <li style="margin-bottom:4px;"><strong>Approve</strong> — reply "Approved" to confirm alignment.</li>
               <li><strong>Request budget addition</strong> — reply with your request &amp; justification.</li>
             </ul>
+            {ccNote}
             {BuildProposalInfoTable(p)}
             {BuildCrossTabActivityTable(p)}
             <div style="background:#eff6ff;border-left:3px solid #3b82f6;border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:12px;color:#1e40af;">
@@ -661,6 +700,43 @@ public class GraphEmailService : IEmailService
             <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">
               Thanks &amp; Regards · <strong>{approver}</strong> · BGauss Auto Pvt. Ltd.<br/>
               <span style="color:#9ca3af;">RSM contact: {p.RsmName} ({p.SubmittedBy})</span></p>
+            """);
+    }
+
+    // 4b. RSM/TSM/Commando notification → dealer portal login details
+    private string BuildTeamNotificationBody(Proposal p)
+    {
+        var approver     = _settings.ApproverFirstName;
+        var portalUrl    = _settings.PortalBaseUrl;
+        var dealerEmail  = string.IsNullOrWhiteSpace(p.DealerEmail)
+            ? "(dealer email not on file — contact admin)"
+            : p.DealerEmail;
+        const string dealerPassword = "Dealer@123";
+
+        return Shell("#7c3aed", "Dealer Portal Access — Team Notification", p.TokenNumber ?? "",
+            $"""
+            <p style="margin:0 0 12px;font-size:13px;">Hi Team,<br/>
+              The BTL activity proposal for <strong>{p.DealerName}</strong> ({p.Location}, {p.State})
+              has been <strong>Approved</strong>. The dealer has portal access to view activity details
+              and submit post-activity updates.</p>
+            {BuildProposalInfoTable(p)}
+            <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-left:3px solid #7c3aed;
+                        border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:13px;">
+              <strong style="color:#5b21b6;">Dealer Portal Login</strong>
+              <table cellpadding="0" cellspacing="0" style="margin-top:6px;font-size:12px;">
+                <tr><td style="padding:2px 10px 2px 0;color:#6b7280;">Portal</td>
+                    <td style="font-weight:600;"><a href="{portalUrl}" style="color:#5b21b6;">{portalUrl}</a></td></tr>
+                <tr><td style="padding:2px 10px 2px 0;color:#6b7280;">Login Email</td>
+                    <td style="font-weight:600;color:#0a2540;">{dealerEmail}</td></tr>
+                <tr><td style="padding:2px 10px 2px 0;color:#6b7280;">Password</td>
+                    <td style="font-weight:600;color:#0a2540;font-family:monospace;">{dealerPassword}</td></tr>
+              </table>
+            </div>
+            <p style="margin:0 0 10px;font-size:12px;color:#374151;">
+              Please coordinate with the dealer for activity execution and make sure post-activity
+              data (photos, daily entries) is kept updated in the portal.</p>
+            {LinkBtn(portalUrl, "🔗 Open Portal", "#7c3aed")}
+            <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">Regards · <strong>{approver}</strong> · BGauss Auto Pvt. Ltd.</p>
             """);
     }
 

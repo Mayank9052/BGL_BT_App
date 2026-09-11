@@ -151,6 +151,32 @@ public class ProposalsController : ControllerBase
         return CreatedAtAction(nameof(GetById), new { id = proposal.Id }, ToResponse(proposal));
     }
 
+    [HttpPost("{id:guid}/notify-team")]
+    public async Task<ActionResult<ProposalResponseDto>> NotifyTeam(
+        Guid id, [FromBody] NotifyTeamDto dto)
+    {
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+        if (proposal.Status != "Approved")
+            return Conflict(new { message = "Only approved proposals can have their team notified." });
+
+        var (sent, error) = await _emailService.SendTeamNotificationMailAsync(
+            proposal, dto.RsmEmail, dto.TsmEmail, dto.CommandoEmail, GraphToken());
+
+        if (!sent)
+            return BadRequest(new { error = error ?? "Failed to send team notification." });
+
+        proposal.TeamNotified   = true;
+        proposal.TeamNotifiedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync();
+
+        return Ok(ToResponse(proposal));
+    }
+
     // ── GET /api/proposals/{id}/ai-review ─────────────────────────────────────
     [HttpGet("{id:guid}/ai-review")]
     public async Task<ActionResult<ProposalAiReviewDto>> GetAiReview(Guid id)
@@ -772,7 +798,7 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(proposal));
     }
 
-    // ── POST /api/proposals/{id}/notify-dealer ────────────────────────────────
+        // ── POST /api/proposals/{id}/notify-dealer ────────────────────────────────
     [HttpPost("{id:guid}/notify-dealer")]
     public async Task<ActionResult<ProposalResponseDto>> NotifyDealer(
         Guid id, [FromBody] NotifyDealerDto dto)
@@ -805,8 +831,7 @@ public class ProposalsController : ControllerBase
         });
 
         var (sent, error) = await _emailService.SendDealerNotificationMailAsync(
-            proposal, dto.DealerEmail, GraphToken());
-
+                proposal, dto.DealerEmail, dto.RsmEmail, dto.TsmEmail, dto.CommandoEmail, GraphToken());
         if (!sent)
             _logger.LogWarning("Dealer notification failed for {Id}: {Error}", proposal.Id, error);
 
@@ -936,7 +961,8 @@ public class ProposalsController : ControllerBase
         p.TokenNumber, p.AllowedCac, p.CacWarning,
         p.CheckedByEmail, p.CheckedAt, p.DealerNotified, p.DealerEmail,
         p.DealerSendBackNote, p.DealerSentBack, p.DealerSentBackAt,
-        p.CheckerRemarks,                              // ← FIX: was missing → CS7036
+        p.CheckerRemarks,
+        p.TeamNotified, p.TeamNotifiedAt,   // ← NEW
         p.Activities.Select(a => new ActivityResponseDto(
             a.Id, a.ActivityType, a.Category,
             a.Subcategory, a.Qty, a.SalesPercent,

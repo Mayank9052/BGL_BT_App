@@ -1,8 +1,26 @@
 // src/data/dealerTeamMap.ts
 // AUTO-GENERATED from Excel dealer list — DO NOT EDIT MANUALLY
-// Source: BGauss dealer team mapping spreadsheet, merged with Breakup.xlsx (Sept 2026 BTL plan)
-// Updated: added 44 dealers found in Breakup.xlsx with no match in the original 195-dealer
-// list, and added dealerEmail/rsmEmail/commandoEmail wherever Breakup.xlsx had them.
+// Source: BGauss dealer team mapping spreadsheet, merged with Breakup.xlsx (Sept 2026 BTL plan),
+// then re-merged with an updated Breakup.xlsx that filled in ~40 previously-blank TSM names
+// (e.g. Javed Hussain Usta, Gorakhnath Gupta, Pushkaraj Shinde, Asit Panda) and a few commando
+// names/emails. No new dealers were found in this pass — all 204 dealers in the updated sheet
+// already existed in the map from the prior merge.
+//
+// NOTE on conflicting TSM values: a handful of dealers (e.g. ECO SARTHI MOTORS, SETH BROTHERS,
+// PATEL E MOTORS, H.B. ENTERPRISES, SHREE ACHYUTAM ENTERPRISES, PATIDAR AUTOMOBILE,
+// TARA MULTIVENTURES LLP) already had a TSM value on file ("Darpan Maheshwari" / "Ravi Kant
+// Mahawar") that DISAGREES with this new sheet's value ("Triloki Nath Jha"). The existing value
+// was kept rather than silently overwritten — if the new sheet is the source of truth, these
+// need a manual decision, not an automatic overwrite.
+//
+// FIXED (per Seema's correction on Shri Guru Motors, applied to all affected dealers):
+// ASHISH MOTORS, SHRI GURU MOTORS, K. M. AUTO SALES & SERVICE, M/S KRISHNAMANI E V MOTORS,
+// and RAJ DEVI AUTOMOBILES all had rsm: "Deepak Makkar" while rsmEmail already pointed to
+// saurabh.jauhari@bgauss.com — the display name was stale from an earlier RSM reassignment
+// that only updated the email, not the name. rsm is now "Saurabh Jauhari" on all five to match
+// the email. Also added tsmEmail: "gorakhnath.gupta@bgauss.com" for every dealer with TSM
+// "Gorakhnath Gupta" — he had no email on file, so he was never actually cc'd on Notify Dealer
+// emails despite being listed as the TSM.
 //
 // Usage:
 //   import { findDealerTeam } from "../data/dealerTeamMap";
@@ -18,6 +36,7 @@ export interface DealerTeam {
   commando: string;
   dealerEmail?: string;
   rsmEmail?: string;
+  tsmEmail?: string;
   commandoEmail?: string;
 }
 
@@ -47,12 +66,12 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "E-Trends Automotive", city: "Anand", state: "Gujarat", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "Bhavesh Luni", dealerEmail: "bgauss.anand@gmail.com", commandoEmail: "bhavesh.luni@bgauss.com" },
   { dealerName: "SRI RAM ELECTRO MOTORS", city: "Salem", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Balamanikandan B", commando: "Satheesh", dealerEmail: "bgauss.salem@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "STAR EV MOTORS", city: "Namakkal", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Balamanikandan B", commando: "Satheesh", dealerEmail: "bgauss.namakkal@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
-  { dealerName: "B&K TRADEMART LLP", city: "Sambalpur", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "", commando: "Santanu", dealerEmail: "Bgauss.sambalpur@gmail.com", commandoEmail: "santanu.parida@bgauss.com" },
+  { dealerName: "B&K TRADEMART LLP", city: "Sambalpur", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "Asit Panda", commando: "Santanu", dealerEmail: "Bgauss.sambalpur@gmail.com", commandoEmail: "santanu.parida@bgauss.com" },
   { dealerName: "CHARGIFY AUTO PRIVATE LIMITED", city: "Bilaspur", state: "Chhattisgarh", rsm: "Victor Sirohi", tsm: "Prakhar Futan", commando: "Santosh Kumar", dealerEmail: "bgauss.vyaparvihar@gmail.com", commandoEmail: "Santosh.r@bgauss.com" },
-  { dealerName: "RAJLAXMI MOTORS", city: "Jalgaon", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "", commando: "Muzammil", dealerEmail: "bgauss.jalgaon1@gmail.com", rsmEmail: "shashank.c@bgauss.com", commandoEmail: "muzammil.shah@bgauss.com" },
+  { dealerName: "RAJLAXMI MOTORS", city: "Jalgaon", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Amol Sanap", commando: "Muzammil", dealerEmail: "bgauss.jalgaon1@gmail.com", rsmEmail: "shashank.c@bgauss.com", commandoEmail: "muzammil.shah@bgauss.com" },
   { dealerName: "GREEN RIDEZ MOBILITY PRIVATE LIMITED", city: "Electronic City", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "Anand Chavan", commando: "Likhit S V", dealerEmail: "bgauss.electroniccity@gmail.com", rsmEmail: "karthigai.r@bgauss.com", commandoEmail: "likith.sv@bgauss.com" },
-  { dealerName: "DEV MOTERS", city: "Saharanpur", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Kuldeep", dealerEmail: "bgauss.saharanpur@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "kuldeep.singh@bgauss.com" },
-  { dealerName: "EKDANTA ETEK ENTERPRISES", city: "Haldwani", state: "Uttarakhand", rsm: "Deepak Makkar", tsm: "", commando: "Manish", dealerEmail: "bgauss.haldwani@gmail.com", commandoEmail: "manish.singh@bgauss.com" },
+  { dealerName: "DEV MOTERS", city: "Saharanpur", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "Javed Hussain Usta", commando: "Kuldeep", dealerEmail: "bgauss.saharanpur@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "kuldeep.singh@bgauss.com" },
+  { dealerName: "EKDANTA ETEK ENTERPRISES", city: "Haldwani", state: "Uttarakhand", rsm: "Deepak Makkar", tsm: "Javed Hussain Usta", commando: "Manish", dealerEmail: "bgauss.haldwani@gmail.com", commandoEmail: "manish.singh@bgauss.com" },
   { dealerName: "KUMARAN MOTOR", city: "Arcot", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Vignesh P", commando: "Surender", dealerEmail: "bgauss.arcot@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "B M MOTORS", city: "Belagavi", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "Jagadeesh Tubachi", commando: "Sumant" },
   { dealerName: "RAJ ROYAL AUTOMOBILE PRIVATE LIMITED", city: "Udaipur", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Sundeep Ganchha", dealerEmail: "bgauss.udaipur@gmail.com", commandoEmail: "sundeep.ganchha@bgauss.com" },
@@ -63,21 +82,21 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "SHIRDI ECO WHEELS PRIVATE LIMITED", city: "Ajmer", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Dhanraj", dealerEmail: "bgauss.ajmer1@gmail.com", commandoEmail: "dhanraj.pal@bgauss.com" },
   { dealerName: "BACHHAN MOTORS PRIVATE LIMITED", city: "Sikar", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Dhanraj", dealerEmail: "bgauss.sikar1@gmail.com", commandoEmail: "dhanraj.pal@bgauss.com" },
   { dealerName: "RAAJHANS MOTORS", city: "Narsinghpur", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Triloki Nath Jha", commando: "Maniram", dealerEmail: "bgauss.narsinghpur@gmail.com", commandoEmail: "maniram.bhardwaj@bgauss.com" },
-  { dealerName: "ASHISH MOTORS", city: "Deoria", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Sheo Mangal Pathak", dealerEmail: "bgauss.deoria@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", commandoEmail: "sheo.pathak@bgauss.com" },
-  { dealerName: "CHAUDHARY ELECTRIC VEHICLES", city: "Hathras", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Kuldeep", dealerEmail: "bgauss.hathras@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "kuldeep.singh@bgauss.com" },
+  { dealerName: "ASHISH MOTORS", city: "Deoria", state: "Uttar Pradesh", rsm: "Saurabh Jauhari", tsm: "Gorakhnath Gupta", commando: "Sheo Mangal Pathak", dealerEmail: "bgauss.deoria@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", tsmEmail: "gorakhnath.gupta@bgauss.com", commandoEmail: "sheo.pathak@bgauss.com" },
+  { dealerName: "CHAUDHARY ELECTRIC VEHICLES", city: "Hathras", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "Javed Hussain Usta", commando: "Kuldeep", dealerEmail: "bgauss.hathras@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "kuldeep.singh@bgauss.com" },
   { dealerName: "JAYPEE EV", city: "Dwarka", state: "Delhi", rsm: "Victor Sirohi", tsm: "Triloki Nath Jha", commando: "Anuj Jha" },
   { dealerName: "RAJGURU ASSOCIATES", city: "Jodhpur", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Ritik", dealerEmail: "bgaussjodhpur2@gmail.com", commandoEmail: "ritik.gupta@bgauss.com" },
   { dealerName: "CHARGIFY AUTO PRIVATE LIMITED-CHAMPA", city: "Champa", state: "Chhattisgarh", rsm: "Victor Sirohi", tsm: "Prakhar Futan", commando: "Santosh Kumar", dealerEmail: "bgauss.janjgir@gmail.com", commandoEmail: "Santosh.r@bgauss.com" },
   { dealerName: "ECO SARTHI MOTORS", city: "Indore", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Darpan Maheshwari", commando: "Umesh", dealerEmail: "bgauss.indore@gmail.com", commandoEmail: "umeshkumar.patil@bgauss.com" },
   { dealerName: "NIDHI CREATIONS", city: "Rudrapur", state: "Uttarakhand", rsm: "Deepak Makkar", tsm: "", commando: "Awdhesh" },
-  { dealerName: "Devbhoomi Enterprises", city: "Haridwar", state: "Uttarakhand", rsm: "Deepak Makkar", tsm: "", commando: "Kuldeep", dealerEmail: "bgauss.haridwar@gmail.com", commandoEmail: "kuldeep.singh@bgauss.com" },
+  { dealerName: "Devbhoomi Enterprises", city: "Haridwar", state: "Uttarakhand", rsm: "Deepak Makkar", tsm: "Javed Hussain Usta", commando: "Kuldeep", dealerEmail: "bgauss.haridwar@gmail.com", commandoEmail: "kuldeep.singh@bgauss.com" },
   { dealerName: "JEEVAS COMMUNICATIONS", city: "Coimbatore", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Balamanikandan B", commando: "Prasanna C", commandoEmail: "prasanna.c@bgauss.com" },
-  { dealerName: "BANSAL MOTORS", city: "Meerut", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Sachin Mishra", dealerEmail: "bgauss.meerut@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "sachin.mishra@bgauss.com" },
+  { dealerName: "BANSAL MOTORS", city: "Meerut", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "Javed Hussain Usta", commando: "Sachin Mishra", dealerEmail: "bgauss.meerut@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "sachin.mishra@bgauss.com" },
   { dealerName: "DATTAWADE ENGINEERING ENTERPRISES LLP", city: "Kolhapur", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "Anuj Roy", dealerEmail: "bgauss.kolhapur2@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com", commandoEmail: "anuj.roy@bgauss.com" },
   { dealerName: "LPK MOTORS", city: "Tiruppur", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Balamanikandan B", commando: "Prasanna C" },
   { dealerName: "AARAV AGRO", city: "Jabalpur", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Triloki Nath Jha", commando: "Maniram", dealerEmail: "bgauss.jabalpur@gmail.com", commandoEmail: "maniram.bhardwaj@bgauss.com" },
   { dealerName: "C A MOTORS", city: "Bhilwara", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Sundeep Ganchha", dealerEmail: "Bgauss.bhilwara02@gmail.com" },
-  { dealerName: "GARG AGENCY", city: "Agra", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Sachin Mishra", dealerEmail: "Bgauss.agra1@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "sachin.mishra@bgauss.com" },
+  { dealerName: "GARG AGENCY", city: "Agra", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "Javed Hussain Usta", commando: "Sachin Mishra", dealerEmail: "Bgauss.agra1@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "sachin.mishra@bgauss.com" },
   { dealerName: "AMAN TRADING COMPANY", city: "Delhi", state: "Delhi", rsm: "Victor Sirohi", tsm: "Triloki Nath Jha", commando: "Kamal" },
   { dealerName: "DIMPAL E-BIKES", city: "Jhunjhunu", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Santosh Singh", dealerEmail: "bgauss.jhunjhunu@gmail.com", commandoEmail: "santosh.singh@bgauss.com" },
   { dealerName: "MAGNEMITE MOTO LLP-PUNE", city: "Pune", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "Bhaskar", dealerEmail: "bgauss.tilakroad2@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com", commandoEmail: "bhaskar.rao@bgauss.com" },
@@ -85,7 +104,7 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "RAJ SHREE MOTORS", city: "Didwana", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Rohit", dealerEmail: "bgauss.didwana@gmail.com", commandoEmail: "ramkishan.chhipa@bgauss.com" },
   { dealerName: "DIVINE DESTINY", city: "Nalloor", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Aravindraj K", commando: "Anand", dealerEmail: "Bgauss.marthandam@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com", commandoEmail: "anand.ga@bgauss.com" },
   { dealerName: "PATEL E VEHICLE", city: "Modasa", state: "Gujarat", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "Parth", dealerEmail: "bgauss.modasa@gmail.com", commandoEmail: "parth.joshi@bgauss.com" },
-  { dealerName: "A K ENTERPRISES", city: "Moradabad", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Manish", dealerEmail: "bgauss.moradabad@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "manish.singh@bgauss.com" },
+  { dealerName: "A K ENTERPRISES", city: "Moradabad", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "Javed Hussain Usta", commando: "Manish", dealerEmail: "bgauss.moradabad@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "manish.singh@bgauss.com" },
   { dealerName: "SETH BROTHERS", city: "Guna", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Darpan Maheshwari", commando: "Aditya", dealerEmail: "bgauss.guna@gmail.com", commandoEmail: "aditya.tomar@bgauss.com" },
   { dealerName: "EVANA MOBILITY", city: "Faridabad", state: "Haryana", rsm: "Victor Sirohi", tsm: "", commando: "Kamal" },
   { dealerName: "H.B. ENTERPRISES", city: "Biaora", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Darpan Maheshwari", commando: "Deetendra", dealerEmail: "bgauss.biaora@gmail.com", commandoEmail: "deetandra.mahale@bgauss.com" },
@@ -95,8 +114,8 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "BHAVANI MOTORS JAGTIAL", city: "Jagityal", state: "Telangana", rsm: "Ramarao Karanam", tsm: "", commando: "Aashiq", dealerEmail: "bgauss.jagitial@gmail.com", rsmEmail: "ramarao.karanam@bgauss.com" },
   { dealerName: "BATRA DISTRIBUTORS PRIVATE LIMITED", city: "Nagpur", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Sanket Ajabrao Jachak", commando: "Harish Kanoje", dealerEmail: "bgauss.wardhamannagar@gmail.com", rsmEmail: "shashank.c@bgauss.com", commandoEmail: "harish.kanoje@bgauss.com" },
   { dealerName: "SETH BROTHERS-ASHOKNAGAR", city: "Ashoknagar", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Darpan Maheshwari", commando: "Aditya", dealerEmail: "bgauss.ashoknagarguna@gmail.com", commandoEmail: "aditya.tomar@bgauss.com" },
-  { dealerName: "Das Motors", city: "Bijnor", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Awdhesh", dealerEmail: "bgauss.bijnor@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "awdhesh.singh@bgauss.com" },
-  { dealerName: "VEERA MOTORS", city: "Vaijapur", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "Akshay", dealerEmail: "bgauss.vaijapur@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com", commandoEmail: "akshay.lahamge@bgauss.com" },
+  { dealerName: "Das Motors", city: "Bijnor", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "Javed Hussain Usta", commando: "Awdhesh", dealerEmail: "bgauss.bijnor@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "awdhesh.singh@bgauss.com" },
+  { dealerName: "VEERA MOTORS", city: "Vaijapur", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "Pushkaraj Shinde", commando: "Akshay", dealerEmail: "bgauss.vaijapur@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com", commandoEmail: "akshay.lahamge@bgauss.com" },
   { dealerName: "ALLIED AUTO", city: "Korba", state: "Chhattisgarh", rsm: "Victor Sirohi", tsm: "Prakhar Futan", commando: "Vishwas Sharma", dealerEmail: "bgauss.korba@gmail.com", commandoEmail: "vishwas.sharma@bgauss.com" },
   { dealerName: "VIP E BIKE", city: "Mehsana", state: "Gujarat", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "Parth", dealerEmail: "bgauss.mehsana01@gmail.com", commandoEmail: "parth.joshi@bgauss.com" },
   { dealerName: "MARUDHAR SALES", city: "Jodhpur", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Jitendra", dealerEmail: "bgaussjodhpurev@gmail.com", commandoEmail: "jitendra.gargiya@bgauss.com" },
@@ -105,7 +124,7 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "YUG EV WORLD", city: "Himmatnagar", state: "Gujarat", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "Parth", dealerEmail: "bgauss.himatnagar@gmail.com", commandoEmail: "parth.joshi@bgauss.com" },
   { dealerName: "AMRIT MOTORS", city: "Bikaner", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Jogender", dealerEmail: "bgauss.bikaner3@gmail.com" },
   { dealerName: "SANSAAR EV", city: "Agra", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Sachin Mishra" },
-  { dealerName: "ATC GREEN ENERGY", city: "Aurangabad", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "Akshay", dealerEmail: "bgauss.csnaurangabad1@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com", commandoEmail: "akshay.lahamge@bgauss.com" },
+  { dealerName: "ATC GREEN ENERGY", city: "Aurangabad", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "Pushkaraj Shinde", commando: "Akshay", dealerEmail: "bgauss.csnaurangabad1@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com", commandoEmail: "akshay.lahamge@bgauss.com" },
   { dealerName: "KRISHNA AND COMPANY", city: "Chittorgarh", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Sundeep Ganchha", dealerEmail: "bgauss.Chittorgarh2@gmail.com" },
   { dealerName: "K.S AUTOMOBILES", city: "Bikaner", state: "Rajasthan", rsm: "Victor Sirohi", tsm: "Javed Hussain Usta", commando: "Jogender", dealerEmail: "Bgauss.bikaner2@gmail.com" },
   { dealerName: "Shree Shyam EV Motors", city: "Gurugram", state: "Haryana", rsm: "Victor Sirohi", tsm: "", commando: "Kamal", dealerEmail: "Bgauss.gurgaon@gmail.com", commandoEmail: "anuj.jha@bgauss.com" },
@@ -117,8 +136,8 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "BAJRANGBALI E AUTO CENTER", city: "Saraipali", state: "Chhattisgarh", rsm: "Victor Sirohi", tsm: "Prakhar Futan", commando: "Vishwas Sharma", dealerEmail: "bgauss.saraipali@gmail.com", commandoEmail: "vishwas.sharma@bgauss.com" },
   { dealerName: "SHRI SAI AUTO MOBILE", city: "Raigarh", state: "Chhattisgarh", rsm: "Victor Sirohi", tsm: "Prakhar Futan", commando: "Santosh Kumar", dealerEmail: "bgauss.raigarh@gmail.com", commandoEmail: "Santosh.r@bgauss.com" },
   { dealerName: "GREEN MOTORS", city: "Krishnagiri", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Vignesh P", commando: "Surender" },
-  { dealerName: "SHRI GURU MOTORS", city: "Kushinagar", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Sheo Mangal Pathak", dealerEmail: "bgauss.kushinagar@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", commandoEmail: "sheo.pathak@bgauss.com" },
-  { dealerName: "APARNNA AUTO MOBILE", city: "Balangir", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "", commando: "Santanu", dealerEmail: "bgauss.balangir@gmail.com" },
+  { dealerName: "SHRI GURU MOTORS", city: "Kushinagar", state: "Uttar Pradesh", rsm: "Saurabh Jauhari", tsm: "Gorakhnath Gupta", commando: "Sheo Mangal Pathak", dealerEmail: "bgauss.kushinagar@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", tsmEmail: "gorakhnath.gupta@bgauss.com", commandoEmail: "sheo.pathak@bgauss.com" },
+  { dealerName: "APARNNA AUTO MOBILE", city: "Balangir", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "Asit Panda", commando: "Santanu", dealerEmail: "bgauss.balangir@gmail.com" },
   { dealerName: "DPM AUTOMOBILES", city: "Hazaribag", state: "Jharkhand", rsm: "Shrivatsa Joshi", tsm: "", commando: "Himanshu", dealerEmail: "bgauss.hazaribagh01@gmail.com", commandoEmail: "Himanshu.kumar@bgauss.com" },
   { dealerName: "NICE MOTORS - BHOPAL", city: "Bhopal", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Triloki Nath Jha", commando: "Pranav", dealerEmail: "bgauss.bhopal1@gmail.com" },
   { dealerName: "MILESTONE MOTORS", city: "Dodballapur", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "Anand Chavan", commando: "Madhu Sudhan", dealerEmail: "bgauss.doddaballapura1@gmail.com", rsmEmail: "karthigai.r@bgauss.com", commandoEmail: "madhu.sudhana@bgauss.com" },
@@ -129,7 +148,7 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "SHREE KRISHNA TRADERS", city: "Dhanbad", state: "Jharkhand", rsm: "Shrivatsa Joshi", tsm: "", commando: "Himanshu", dealerEmail: "bgauss.dhanbad@gmail.com", commandoEmail: "Himanshu.kumar@bgauss.com" },
   { dealerName: "YAA ENTERPRISES", city: "Delhi", state: "Delhi", rsm: "Victor Sirohi", tsm: "Triloki Nath Jha", commando: "Anuj Jha", dealerEmail: "bgauss.najafgarh2@gmail.com", commandoEmail: "anuj.jha@bgauss.com" },
   { dealerName: "SHOURYA ENTERPRISES", city: "Raipur", state: "Chhattisgarh", rsm: "Victor Sirohi", tsm: "Prakhar Futan", commando: "Vishwas Sharma", dealerEmail: "bgauss.raipur04@gmail.com" },
-  { dealerName: "URBAN RIDERS", city: "Bareilly", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "Awdhesh", dealerEmail: "Bgauss.urbanriders@gmail.com,bgauss.bareilly02@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "awdhesh.singh@bgauss.com" },
+  { dealerName: "URBAN RIDERS", city: "Bareilly", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "Javed Hussain Usta", commando: "Awdhesh", dealerEmail: "Bgauss.urbanriders@gmail.com,bgauss.bareilly02@gmail.com", rsmEmail: "victor.sirohi@bgauss.com", commandoEmail: "awdhesh.singh@bgauss.com" },
   { dealerName: "OMASHVANI AUTOMOBILE", city: "Rewa", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Triloki Nath Jha", commando: "Sandeep Chaurasiya", dealerEmail: "bgauss.rewa@gmail.com", commandoEmail: "sandeep.chaurasia@bgauss.com" },
   { dealerName: "SHRI SANWARIYA EV", city: "Narmadapuram", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Triloki Nath Jha", commando: "Pranav", dealerEmail: "bgauss.narmadapuram@gmail.com", commandoEmail: "deetandra.mahale@bgauss.com" },
   { dealerName: "SHIV KRISHNA", city: "Morena", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Triloki Nath Jha", commando: "Aditya", dealerEmail: "bgauss.morena02@gmail.com", commandoEmail: "aditya.tomar@bgauss.com" },
@@ -154,14 +173,14 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "JPMR MOTORS PRIVATE LIMITED", city: "Puducherry", state: "Puducherry", rsm: "Balakrishnan K", tsm: "Vignesh P", commando: "", dealerEmail: "bgauss.puducherry@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "NJ BIKES INDIA PRIVATE LIMITED", city: "Coimbatore", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "", commando: "" },
   { dealerName: "SAHU EV SHOP", city: "Varanasi", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "" },
-  { dealerName: "SAROJINI MOTORS", city: "Puri", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "", commando: "", dealerEmail: "Bgauss.Puri@gmail.com" },
+  { dealerName: "SAROJINI MOTORS", city: "Puri", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "Asit Panda", commando: "", dealerEmail: "Bgauss.Puri@gmail.com" },
   { dealerName: "NJ BIKES INDIA PRIVATE LIMITED-ERODE", city: "Erode", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "BALAMANIKANDAN B", commando: "", dealerEmail: "bgauss.erode@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "SHRI SIDDHIVINAYAK E MOBILITY (OPC) PRIVATE LIMITED", city: "Sangli", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "", dealerEmail: "bgauss.sangli1@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
   { dealerName: "SRI SAI ECO", city: "Nellore", state: "Andhra Pradesh", rsm: "Ramarao Karanam", tsm: "", commando: "", dealerEmail: "bgauss.nellore@gmail.com", rsmEmail: "ramarao.karanam@bgauss.com" },
   { dealerName: "NANBAN MOTORS AND AGENCY LLP", city: "Karur", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Aravindraj K", commando: "", dealerEmail: "bgauss.karur@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "OK AUTOMOTIVES", city: "Mysuru", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "Anand Chavan", commando: "" },
   { dealerName: "SUSTAINABLE MOBILITY SOLUTIONS", city: "Thiruvananthapuram", state: "Kerala", rsm: "Mohammed KP", tsm: "", commando: "", dealerEmail: "bgauss.neeramankara@gmail.com", rsmEmail: "mohammed.kp@bgauss.com" },
-  { dealerName: "MHALASAI MOTORS (OPC) PRIVATE LIMITED", city: "Dhule", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Amol Sanap", commando: "", dealerEmail: "bgauss.dhule@gmail.com", rsmEmail: "shashank.c@bgauss.com", commandoEmail: "muzammil.shah@bgauss.com" },
+  { dealerName: "MHALASAI MOTORS (OPC) PRIVATE LIMITED", city: "Dhule", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Amol Sanap", commando: "Muzammil", dealerEmail: "bgauss.dhule@gmail.com", rsmEmail: "shashank.c@bgauss.com", commandoEmail: "muzammil.shah@bgauss.com" },
   { dealerName: "DSK MOTORS", city: "Dharmapuri", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "BALAMANIKANDAN B", commando: "", dealerEmail: "bgauss.dharmapuri@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "MILESTONE ELECTRIC SCOOTERS", city: "Nelamangala", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "Anand Chavan", commando: "", dealerEmail: "bgauss.nelamangala@gmail.com", rsmEmail: "karthigai.r@bgauss.com" },
   { dealerName: "ANURON ENTERPRISES PRIVATE LIMITED", city: "Ahmednagar", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Amol Sanap", commando: "" },
@@ -177,19 +196,19 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "HEMAKUMAR AUTOMOTIVE-TUMAKURU", city: "Tumakuru", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "Jagadeesh Tubachi", commando: "", dealerEmail: "bgauss.tumakuru21@gmail.com", rsmEmail: "karthigai.r@bgauss.com" },
   { dealerName: "ANDES MOBILITY", city: "Thiruvananthapuram", state: "Kerala", rsm: "Mohammed KP", tsm: "", commando: "", dealerEmail: "bgauss.kazhakoottam@gmail.com", rsmEmail: "mohammed.kp@bgauss.com" },
   { dealerName: "SAIRAJ ENTERPRISES", city: "Pune", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "", dealerEmail: "bgauss.wagholi@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
-  { dealerName: "K. M. AUTO SALES & SERVICE", city: "Lucknow", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "", dealerEmail: "bgauss.dubagga@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", commandoEmail: "aman.kumar@bgauss.com" },
+  { dealerName: "K. M. AUTO SALES & SERVICE", city: "Lucknow", state: "Uttar Pradesh", rsm: "Saurabh Jauhari", tsm: "Gorakhnath Gupta", commando: "Aman Kumar", dealerEmail: "bgauss.dubagga@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", tsmEmail: "gorakhnath.gupta@bgauss.com", commandoEmail: "aman.kumar@bgauss.com" },
   { dealerName: "SARADA MOTORS", city: "Tenkasi", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Aravindraj K", commando: "", dealerEmail: "bgauss.tenkasi@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "ANURON ENTERPRISES PRIVATE LIMITED-PCMC", city: "Pune", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "", commando: "" },
-  { dealerName: "M/S KRISHNAMANI E V MOTORS", city: "Etawah", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "", dealerEmail: "bgauss.etawah206001@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", commandoEmail: "aman.kumar@bgauss.com" },
+  { dealerName: "M/S KRISHNAMANI E V MOTORS", city: "Etawah", state: "Uttar Pradesh", rsm: "Saurabh Jauhari", tsm: "Gorakhnath Gupta", commando: "Aman Kumar", dealerEmail: "bgauss.etawah206001@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", tsmEmail: "gorakhnath.gupta@bgauss.com", commandoEmail: "aman.kumar@bgauss.com" },
   { dealerName: "DHARMACHAKRA AUTOLINK", city: "Navsari", state: "Gujarat", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "" },
   { dealerName: "VIJAYVARGIYA MOTORS", city: "Shivpuri", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Darpan Maheshwari", commando: "", dealerEmail: "bgauss.shivpuri@gmail.com" },
-  { dealerName: "METRO MOTORS", city: "Beed", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "", dealerEmail: "bgauss.beed@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
+  { dealerName: "METRO MOTORS", city: "Beed", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "Pushkaraj Shinde", commando: "", dealerEmail: "bgauss.beed@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
   { dealerName: "KULKARNI AUTOMOBILES", city: "Amravati", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Sanket Ajabrao Jachak", commando: "", dealerEmail: "bgauss.amravati@gmail.com", rsmEmail: "shashank.c@bgauss.com" },
-  { dealerName: "SHIV SHAKTI EV MOTORS-NERUL", city: "Nerul", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Amol Sanap", commando: "", dealerEmail: "bgauss.nerul1@gmail.com", rsmEmail: "shashank.c@bgauss.com", commandoEmail: "pradip.gaikwad@bgauss.com" },
+  { dealerName: "SHIV SHAKTI EV MOTORS-NERUL", city: "Nerul", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Amol Sanap", commando: "Pradip Gaikwad", dealerEmail: "bgauss.nerul1@gmail.com", rsmEmail: "shashank.c@bgauss.com", commandoEmail: "pradip.gaikwad@bgauss.com" },
   { dealerName: "A V MOTORS", city: "Madurai", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Aravindraj K", commando: "", dealerEmail: "bgauss.maduraiav@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "DAKSH AUTO", city: "Latur", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "", commando: "" },
   { dealerName: "VSK e Automotive", city: "Thane", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Amol Sanap", commando: "", dealerEmail: "Bgauss.airoli@gmail.com", rsmEmail: "shashank.c@bgauss.com" },
-  { dealerName: "BHALERAO MOTORS", city: "Parbhani", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "", dealerEmail: "bgauss.parbhani@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
+  { dealerName: "BHALERAO MOTORS", city: "Parbhani", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "Pushkaraj Shinde", commando: "", dealerEmail: "bgauss.parbhani@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
   { dealerName: "PANAMA MOTORS", city: "Kozhikode", state: "Kerala", rsm: "Mohammed KP", tsm: "", commando: "", dealerEmail: "bgauss.kozhikode@gmail.com", rsmEmail: "mohammed.kp@bgauss.com" },
   { dealerName: "H.P.B. AUTOMOBILE & SERVICE CENTRE", city: "Ramanagara", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "Anand Chavan", commando: "" },
   { dealerName: "VARMA TRACTORS", city: "Bhandara", state: "Maharashtra", rsm: "Shashank Chinnapurkar", tsm: "Sanket Ajabrao Jachak", commando: "" },
@@ -207,9 +226,9 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "ISHANVI ELECTRIC SCOOTERS", city: "Sira", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "Jagadeesh Tubachi", commando: "", dealerEmail: "bgauss.sira@gmail.com", rsmEmail: "karthigai.r@bgauss.com" },
   { dealerName: "ZOOMX AUTOHUB", city: "Chavakad", state: "Kerala", rsm: "Mohammed KP", tsm: "", commando: "", dealerEmail: "bgauss.chavakad@gmail.com", rsmEmail: "mohammed.kp@bgauss.com" },
   { dealerName: "V2 E BIKES", city: "Hanur", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "", commando: "" },
-  { dealerName: "RAJ DEVI AUTOMOBILES", city: "Ayodhya", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "", dealerEmail: "ayodhyacnf@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", commandoEmail: "aman.kumar@bgauss.com" },
+  { dealerName: "RAJ DEVI AUTOMOBILES", city: "Ayodhya", state: "Uttar Pradesh", rsm: "Saurabh Jauhari", tsm: "Gorakhnath Gupta", commando: "Aman Kumar", dealerEmail: "ayodhyacnf@gmail.com", rsmEmail: "saurabh.jauhari@bgauss.com", tsmEmail: "gorakhnath.gupta@bgauss.com", commandoEmail: "aman.kumar@bgauss.com" },
   { dealerName: "GAJANAND E VEHICLES", city: "Patan", state: "Gujarat", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "", dealerEmail: "bgauss.patan@gmail.com" },
-  { dealerName: "PREMCHAND ENERGY", city: "Baleswar", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "", commando: "", dealerEmail: "bgauss.balasore@gmail.com" },
+  { dealerName: "PREMCHAND ENERGY", city: "Baleswar", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "Asit Panda", commando: "", dealerEmail: "bgauss.balasore@gmail.com" },
   { dealerName: "SHASHWAT MOTORS", city: "Palanpur", state: "Gujarat", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "", dealerEmail: "bgauss.palanpur@gmail.com" },
   { dealerName: "BM ENTERPRISES-TIRUPATHUR", city: "Tirupathur", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Vignesh P", commando: "", dealerEmail: "bgauss.thirupattur1@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "HARIPRIYA AUTORIDERS", city: "Ambikapur", state: "Chhattisgarh", rsm: "Victor Sirohi", tsm: "Prakhar Futan", commando: "", dealerEmail: "Bgauss.ambikapur@gmail.com" },
@@ -217,14 +236,14 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "HARI EV MOTORS", city: "Kumbakonam", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Aravindraj K", commando: "", dealerEmail: "Bgauss.Kumbakonam1@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "DK MOTORS", city: "Srikakulam", state: "Andhra Pradesh", rsm: "Ramarao Karanam", tsm: "", commando: "", dealerEmail: "bgauss.srikakulam1@gmail.com", rsmEmail: "ramarao.karanam@bgauss.com" },
   { dealerName: "R.K. AUTOMOBILES", city: "Kanpur Nagar", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "" },
-  { dealerName: "OMM SHREE ENTERPRISE", city: "Baripada", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "", commando: "", dealerEmail: "bgauss.baripada@gmail.com" },
+  { dealerName: "OMM SHREE ENTERPRISE", city: "Baripada", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "Asit Panda", commando: "", dealerEmail: "bgauss.baripada@gmail.com" },
   { dealerName: "RP VENTURES", city: "Barabanki", state: "Uttar Pradesh", rsm: "Deepak Makkar", tsm: "", commando: "" },
   { dealerName: "CHIDHAMBARAYSWARAA AUTOMOBILES", city: "Ananthapur", state: "Andhra Pradesh", rsm: "Ramarao Karanam", tsm: "", commando: "", dealerEmail: "Bgauss.anantapur1@gmail.com", rsmEmail: "ramarao.karanam@bgauss.com" },
   { dealerName: "RATNAGIRI E - MOBILITY", city: "Ratnagiri", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "", dealerEmail: "bgauss.ratnagiri@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
   { dealerName: "RCS MOTORS", city: "Tiruvannamalai", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Vignesh P", commando: "", dealerEmail: "bgauss.tiruvannamalai@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
-  { dealerName: "POWER AUTOMOTIVE", city: "Jalna", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "", dealerEmail: "bgauss.jalna1@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
+  { dealerName: "POWER AUTOMOTIVE", city: "Jalna", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "Pushkaraj Shinde", commando: "", dealerEmail: "bgauss.jalna1@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
   { dealerName: "TECHNOSAVVY AUTOMATION", city: "Ahmedabad", state: "Gujarat", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "", dealerEmail: "bgauss.ellisbridge@gmail.com" },
-  { dealerName: "MEMO EXPRESS", city: "Kendrapara", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "", commando: "", dealerEmail: "bgauss.kendrapara@gmail.com" },
+  { dealerName: "MEMO EXPRESS", city: "Kendrapara", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "Asit Panda", commando: "", dealerEmail: "bgauss.kendrapara@gmail.com" },
   { dealerName: "ANVIK MOTORS", city: "Kanakapura", state: "Karnataka", rsm: "R Karthigaiselvan", tsm: "Jagadeesh Tubachi", commando: "", dealerEmail: "bgauss.kanakapura@gmail.com", rsmEmail: "karthigai.r@bgauss.com" },
   { dealerName: "SRI SHASTHA AUTOMOTIVE", city: "Tirupati", state: "Andhra Pradesh", rsm: "Ramarao Karanam", tsm: "", commando: "", dealerEmail: "bgauss.tirupathi@gmail.com", rsmEmail: "ramarao.karanam@bgauss.com" },
   { dealerName: "MANASVAM VENTURES LLP", city: "Pune", state: "Maharashtra", rsm: "Aniket Chintamani", tsm: "", commando: "", dealerEmail: "bgauss.balewadi@gmail.com", rsmEmail: "aniket.chintamani@bgauss.com" },
@@ -232,10 +251,6 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "TARA MULTIVENTURES LLP", city: "Dewas", state: "Madhya Pradesh", rsm: "Victor Sirohi", tsm: "Darpan Maheshwari", commando: "", dealerEmail: "bgauss.dewas@gmail.com" },
   { dealerName: "RAFZO MOTORS", city: "Kadapa", state: "Andhra Pradesh", rsm: "Ramarao Karanam", tsm: "", commando: "", dealerEmail: "bgauss.kadapa@gmail.com", rsmEmail: "ramarao.karanam@bgauss.com" },
   { dealerName: "ROUSHAN MAN POWER SOLUTION", city: "Purnia", state: "Bihar", rsm: "Shrivatsa Joshi", tsm: "", commando: "", dealerEmail: "bgauss.purnea@gmail.com" },
-
-  // ── NEW: dealers found in Breakup.xlsx (Sept 2026) with no match in the
-  // original list above. City is UNKNOWN — Breakup.xlsx has no City column —
-  // fill it in from ERP/dealer master before relying on it for anything city-specific.
   { dealerName: "A.J.MOTORS", city: "", state: "Gujarat", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "", dealerEmail: "bgauss.vapi02@gmail.com" },
   { dealerName: "AMRITA MOBILITY", city: "", state: "West Bengal", rsm: "Shrivatsa Joshi", tsm: "", commando: "", dealerEmail: "bgauss.purulia@gmail.com" },
   { dealerName: "ANAM ENTERPRISES", city: "", state: "Bihar", rsm: "Shrivatsa Joshi", tsm: "", commando: "", dealerEmail: "bgauss.muzaffarpur@gmail.com" },
@@ -279,8 +294,7 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "TEJAS MOBILITY", city: "", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "Asit Panda", commando: "Santanu", dealerEmail: "bgauss.bargarh1@gmail.com", commandoEmail: "santanu.parida@bgauss.com" },
   { dealerName: "VEVA E-BIKES", city: "", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Santhosh B", commando: "", dealerEmail: "bgauss.tiruppur02@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "VoltMart", city: "", state: "Delhi", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "", rsmEmail: "victor.sirohi@bgauss.com" },
-  { dealerName: "E TURN MOTORS LLP-KANCHEEPURAM", city: "", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Santhosh B", commando: "", dealerEmail: "bgauss.kanchipuram@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
-];
+  { dealerName: "E TURN MOTORS LLP-KANCHEEPURAM", city: "", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Santhosh B", commando: "", dealerEmail: "bgauss.kanchipuram@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },];
 
 // Build a normalized lookup map for fast matching
 const _normalizedMap = new Map<string, DealerTeam>(

@@ -500,7 +500,9 @@ public class DealerAuthController : ControllerBase
                             false,                                // 35 DealerSentBack bool
                             null,                                 // 36 DealerSentBackAt DateTimeOffset?
                             null,                                 // 37 CheckerRemarks string?
-                            new List<BGL_BT_App.Backend.DTOs.ActivityResponseDto>()), // 38 Activities
+                            false,                                // 38 TeamNotified   bool
+                            null,                                 // 39 TeamNotifiedAt DateTimeOffset?
+                            new List<BGL_BT_App.Backend.DTOs.ActivityResponseDto>()), // 40 Activities
                         $"Hi {user.DisplayName},\n\nClick this link to reset your BGauss BTL portal password (valid 1 hour):\n{resetLink}\n\nIf you didn't request this, ignore this email.",
                         user.Email);
                 else

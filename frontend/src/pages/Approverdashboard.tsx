@@ -3,9 +3,11 @@ import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/authStore";
+import { findDealerTeam } from "../data/dealerTeamMap";
 import {
   fetchProposals, fetchMyProposals, decideProposal, updateProposal,
   sendBackProposal, updateProposalActuals, uploadActivityMedia,
+  getGraphTokenForBulk,
   forwardProposalToApprover, forwardProposalsBulk, notifyDealer, addActivityMedia,
   type ActivityResponse, type ActivityMediaResponse, type ProposalResponse,
 } from "../services/proposalService";
@@ -46,8 +48,8 @@ const LOC_TYPES   = ["Old","New"];
 const BGAUSS_OPTS = ["100","70","50"];
 const CURRENT_YEAR = new Date().getFullYear();
 const YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
-// ── NEW: local-date ISO helper (matches RSMForm's fix — avoids the UTC
-// shift bug where toISOString() could roll a date back by one day) ──
+// ── local-date ISO helper (avoids the UTC shift bug where toISOString()
+// could roll a date back by one day) ──
 const isoDate = (d: Date) => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -84,6 +86,19 @@ function mediaIcon(t: string | null) {
   if (t.startsWith("video/")) return "🎬";
   return "📎";
 }
+
+// ── Looks up the RSM/TSM/Commando emails for a proposal's dealer, from the
+// static dealerTeamMap. Used to auto-fill the "cc" line whenever we notify
+// the dealer — no separate button or endpoint needed. ──
+function getTeamEmailsFor(p: ProposalResponse): { rsmEmail: string; tsmEmail: string; commandoEmail: string } {
+  const team = findDealerTeam((p as any).dealerCode ?? "", p.dealerName);
+  return {
+    rsmEmail: team?.rsmEmail ?? "",
+    tsmEmail: team?.tsmEmail ?? "",
+    commandoEmail: team?.commandoEmail ?? "",
+  };
+}
+
 function isImage(t: string | null) { return !!t?.startsWith("image/"); }
 function isVideo(t: string | null) { return !!t?.startsWith("video/"); }
 
@@ -179,14 +194,14 @@ const DEFAULT_ENQ_PLAN_PER_SETUP = 35; // Enquiry Plan = 35 × setupCount
 const DEFAULT_TD_PLAN_PER_SETUP  = 30; // Test Drive Plan = 30 × setupCount
 interface DailyEntry {
   date:string;
-  openingStock:number;        // ← NEW manual
+  openingStock:number;
   setupCount:number;          // "Canopy" column
   enquiryPlanned:number; enquiryActual:number;
-  walkIn:number;               // ← NEW manual
-  inLms:number;                // ← NEW manual
-  enquiryGap:number;           // ← NEW computed: inLms − enquiryActual
+  walkIn:number;
+  inLms:number;
+  enquiryGap:number;           // computed: inLms − enquiryActual
   enquiryHot:number;
-  revisedHot:number;           // ← NEW manual
+  revisedHot:number;
   testDrivePlanned:number; testDriveActual:number; testDrivePerCanopy:number;
   bookingActual:number; bookingInHand:number;
   retailActual:number; retailMtdActivity:number; closingStock:number;
@@ -198,15 +213,15 @@ interface ActualEntry {
   actualStartDate:string; actualEndDate:string;
   mediaFile:File|null; mediaFileUrl:string|null;
   mediaFileName:string|null; mediaFileType:string|null;
-  uploading:boolean;       // invoice upload spinner (legacy single)
-  proofUploading:boolean;  // photo proof upload spinner
-  invoiceUploading:boolean; // multi-invoice upload spinner
+  uploading:boolean;
+  proofUploading:boolean;
+  invoiceUploading:boolean;
   proofMedia:ProofMedia[];
-  invoiceMedia:ProofMedia[]; // multiple invoices/bills
+  invoiceMedia:ProofMedia[];
   dailyEntries:DailyEntry[];
 }
 
-// Gap = In LMS − Enquiry Actual (confirmed from screenshot: 89−91=-2, 83−82=1)
+// Gap = In LMS − Enquiry Actual
 function recalcEnquiryGap(entries: DailyEntry[]): DailyEntry[] {
   return entries.map((e) => ({ ...e, enquiryGap: (e.inLms || 0) - (e.enquiryActual || 0) }));
 }
@@ -224,10 +239,10 @@ function recalcRetailMtd(entries: DailyEntry[]): DailyEntry[] {
   let running = 0;
   return entries.map((e, i) => {
     if (i === 0) {
-      running = e.retailMtd || 0;   // 1st day stays manual — just seed the running total
+      running = e.retailMtd || 0;
       return e;
     }
-    running += (e.retailMtdActivity || 0);   // every later day = prev MTD + today's Retail
+    running += (e.retailMtdActivity || 0);
     return { ...e, retailMtd: running };
   });
 }
@@ -257,23 +272,6 @@ function toEditable(p: ProposalResponse): EditableProposal {
   };
 }
 
-// function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[] {
-//   if (!start||!end) return [];
-//   const entries:DailyEntry[]=[];
-//   const s=new Date(start), e=new Date(end), today=new Date();
-//   const cap=e<today?e:today;
-//   for (const d=new Date(s);d<=cap;d.setDate(d.getDate()+1)) {
-//     entries.push({ date:d.toISOString().split("T")[0],
-//       setupCount:0,enquiryPlanned:0,enquiryActual:0,enquiryHot:0,
-//       testDrivePlanned:0,testDriveActual:0,testDrivePerCanopy:0,
-//       bookingActual:0,bookingInHand:0,
-//       retailActual:0,retailMtdActivity:0,closingStock:0,
-//       retailMtd:0,retailRatePerCanopy:0,
-//       lmsLeads:0,leadsPunched:0 });
-//   }
-//   return entries;
-// }
-
 function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[] {
   if (!start||!end) return [];
   const entries:DailyEntry[]=[];
@@ -294,11 +292,10 @@ function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[]
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
-// ── Date range helper for post-activity: current + next month ──────────────
 function getActualDateRange() {
   const now = new Date();
-  const min = new Date(now.getFullYear(), now.getMonth(), 1);       // first day of current month
-  const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);   // last day of next month
+  const min = new Date(now.getFullYear(), now.getMonth(), 1);
+  const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);
   return { min: isoDate(min), max: isoDate(max) };
 }
 export default function ApproverDashboard() {
@@ -309,8 +306,7 @@ export default function ApproverDashboard() {
   const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
   const myEmail         = (account?.username ?? user?.email ?? "").toLowerCase();
   const FINAL_APPROVER  = "vijay.maurya@bgauss.com";
-  // Checker = ApproverEmail or ApproverEmail2 (both see Forward + Notify Dealer bulk actions)
-  const CHECKER_EMAILS  = ["mayank.maheshwari@bgauss.com", "oat@bgauss.com"];
+  const CHECKER_EMAILS  = ["seema.shakya@bgauss.com", "shivam.khandelwal@bgauss.com", "mayank.maheshwari@bgauss.com", "oat@bgauss.com"];
   const isFinalApprover = myEmail === FINAL_APPROVER;
   const isChecker       = isAdmin && CHECKER_EMAILS.includes(myEmail);
   const isForwardOnly   = isAdmin && !isFinalApprover;
@@ -356,7 +352,7 @@ export default function ApproverDashboard() {
   const [notifySelectedIds, setNotifySelectedIds] = useState<Set<string>>(new Set());
   const [bulkNotifying,     setBulkNotifying]     = useState(false);
   const [bulkForwarding,    setBulkForwarding]    = useState(false);
-  const [fwdDateFilter,     setFwdDateFilter]     = useState("");   // YYYY-MM-DD for date-wise filter
+  const [fwdDateFilter,     setFwdDateFilter]     = useState("");
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkNote,      setBulkNote]      = useState("");
   const [showBulkPanel, setShowBulkPanel] = useState(false);
@@ -374,17 +370,14 @@ export default function ApproverDashboard() {
   const loadProposals = useCallback(async () => {
     setLoading(true); setFetchError(null);
     try {
-      // Retry once on failure (handles transient DB connection timeouts)
       let data: ProposalResponse[];
       try {
         data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
       } catch (firstErr) {
-        // Wait 2s and retry once
         await new Promise(r => setTimeout(r, 2000));
         data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
       }
       setProposals(data);
-      // Final Approver: auto-select all forwarded (checkedByEmail set) pending proposals
       if (isFinalApprover) {
         const forwarded = data.filter(
           (p: ProposalResponse) => p.checkedByEmail && p.status === "Pending"
@@ -416,7 +409,6 @@ export default function ApproverDashboard() {
     if (validIds.length > 0) {
       setSelectedIds(new Set(validIds));
       setHighlightedFromEmail(new Set(validIds));
-      // Clean the URL so refresh doesn't re-trigger
       window.history.replaceState({}, "", window.location.pathname);
     }
   }
@@ -429,17 +421,16 @@ export default function ApproverDashboard() {
     if (filterStatus!=="All"&&p.status!==filterStatus) return false;
     if (filterMonth!=="All"&&p.month!==filterMonth) return false;
     if (filterYear!=="All"&&(p as any).year!==filterYear) return false;
-    // ── NEW: filter by the date the proposal was forwarded (checkedAt) ──
     if (fwdDateFilter) {
       if (!p.checkedAt) return false;
-      const checkedDate = isoDate(new Date(p.checkedAt)); // "YYYY-MM-DD" local
+      const checkedDate = isoDate(new Date(p.checkedAt));
       if (checkedDate !== fwdDateFilter) return false;
     }
     if (search){ const q=search.toLowerCase();
       return p.dealerName.toLowerCase().includes(q)||p.rsmName.toLowerCase().includes(q)||
             p.location.toLowerCase().includes(q)||(p.tokenNumber??"").toLowerCase().includes(q); }
     return true;
-  }),[proposals,filterStatus,filterMonth,filterYear,search,fwdDateFilter]); // ← add fwdDateFilter here
+  }),[proposals,filterStatus,filterMonth,filterYear,search,fwdDateFilter]);
   const pendingFiltered = useMemo(()=>filtered.filter((p)=>p.status==="Pending"),[filtered]);
   const stats = useMemo(()=>{
     const approved=proposals.filter((p)=>p.status==="Approved");
@@ -459,8 +450,6 @@ export default function ApproverDashboard() {
       cac:trt>0?tbg/trt:0,cpl:tlt>0?tbg/tlt:0,totalBgauss:tbg };
   },[editData]);
 
-  // ── NEW: activity dates in edit mode must fall within editData's
-  // Month + Year window — mirrors RSMForm's activityDateRange logic ──
   const editActivityDateRange = useMemo(() => {
     if (!editData) return { min: TODAY_ISO, max: "" };
     const monthIdx = MONTHS.indexOf(editData.month);
@@ -473,7 +462,6 @@ export default function ApproverDashboard() {
     return { min: isoDate(minDate), max: isoDate(lastDay) };
   }, [editData?.month, editData?.year]);
 
-  // ── initActuals ────────────────────────────────────────────────────────────
   const initActuals = useCallback((p:ProposalResponse)=>{
     const init:Record<string,ActualEntry>={};
     p.activities.forEach((a)=>{
@@ -485,7 +473,6 @@ export default function ApproverDashboard() {
         uploading:false,
         proofUploading:false,
         invoiceUploading:false,
-        // Load existing invoices from mediaFiles where fileType is pdf or non-image/video
         invoiceMedia:(a.mediaFiles??[])
           .filter((m)=>m.fileType?.includes("pdf")||
             (!m.fileType?.startsWith("image/")&&!m.fileType?.startsWith("video/")))
@@ -502,7 +489,6 @@ export default function ApproverDashboard() {
           latitude:m.latitude??null, longitude:m.longitude??null,
         })),
         dailyEntries:(()=>{
-          // Load saved daily data from server if available, else build blank entries
           const serverDaily = (a as any).dailyData;
           if (serverDaily) {
             try {
@@ -517,14 +503,12 @@ export default function ApproverDashboard() {
     setActualsData(init);
   },[]);
 
-  // ── initBudgetAdd ──────────────────────────────────────────────────────────
   const initBudgetAdd = useCallback((p:ProposalResponse)=>{
     const init:Record<string,string>={};
     p.activities.forEach((a)=>{ init[a.id]=String(a.additionalBudget??0); });
     setBudgetAddAmounts(init); setBudgetAddNote("");
   },[]);
 
-  // ── Daily entries helpers ──────────────────────────────────────────────────
   const setActualField=(id:string,key:"actualStartDate"|"actualEndDate",v:string)=>
     setActualsData((prev)=>({...prev,[id]:{...prev[id],[key]:v}}));
 
@@ -539,7 +523,7 @@ export default function ApproverDashboard() {
         entries=recalcEnquiryGap(entries);
       }
       if ((key as string)==="retailMtdActivity" || (key as string)==="retailMtd") {
-        entries=recalcRetailMtd(entries);   // ← recompute whole MTD chain
+        entries=recalcRetailMtd(entries);
       }
       return {...prev,[activityId]:{...acc,dailyEntries:entries}};
   });
@@ -554,76 +538,31 @@ export default function ApproverDashboard() {
     });
   };
 
-  // ── Proof upload with GPS ──────────────────────────────────────────────────
   const handleProofUpload=async(activityId:string,files:FileList)=>{
-    // ── DEBUG CHECKPOINT 1: function called ──────────────────────────────────
-    console.log("[PROOF-UPLOAD] ▶ handleProofUpload called", {
-      activityId,
-      fileCount: files.length,
-      fileNames: Array.from(files).map(f=>f.name),
-      selectedId: selected?.id ?? "NULL — selected is null!",
-    });
-
     const proposalId = selected?.id;
     if (!proposalId) {
-      console.error("[PROOF-UPLOAD] ✖ BLOCKED — selected?.id is null. Modal must be open with a proposal.");
       showToast("Error: No proposal selected. Please close and reopen.", false);
       return;
     }
-
-    // ── FIX: Copy FileList → plain Array IMMEDIATELY before any await ──────────
-    // FileList becomes empty after e.target.value="" clears the input.
-    // GPS capture takes 6-8s, by which time the FileList reference is stale.
     const fileArray = Array.from(files);
-    console.log("[PROOF-UPLOAD] 📋 Copied to array immediately:", fileArray.map(f=>f.name));
-
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],proofUploading:true}}));
-
     try {
-      // ── GPS captured AFTER copying files (so FileList invalidation doesn't matter) ──
-      console.log("[PROOF-UPLOAD] 📍 Capturing GPS…");
       const geo=await captureGeo();
       const capturedAt=new Date().toISOString();
-      console.log("[PROOF-UPLOAD] 📍 GPS result:", geo ?? "null (no GPS / denied)");
-
-      for (const file of fileArray){  // ← use fileArray, not Array.from(files)
-        // ── DEBUG CHECKPOINT 3: uploading file to storage ────────────────────
-        console.log("[PROOF-UPLOAD] ⬆ STEP 1 — uploading to /api/media/upload:", file.name, file.type, file.size, "bytes");
+      for (const file of fileArray){
         let uploaded: {url:string; fileName:string; fileType:string};
-        try {
-          uploaded = await uploadActivityMedia(file, instance);
-          console.log("[PROOF-UPLOAD] ✔ STEP 1 done — storage URL:", uploaded.url);
-        } catch(uploadErr) {
-          console.error("[PROOF-UPLOAD] ✖ STEP 1 FAILED — /api/media/upload error:", uploadErr);
-          throw uploadErr;
-        }
+        uploaded = await uploadActivityMedia(file, instance);
 
-        // ── DEBUG CHECKPOINT 4: saving to DB ────────────────────────────────
-        console.log("[PROOF-UPLOAD] 💾 STEP 2 — saving to DB via /api/proposals/.../media", {
-          proposalId, activityId,
+        let saved: import("../services/proposalService").ActivityMediaResponse;
+        saved = await addActivityMedia(proposalId, activityId, {
           fileUrl: uploaded.url,
+          fileName: uploaded.fileName,
+          fileType: uploaded.fileType,
           capturedAt,
           latitude: geo?.lat ?? null,
           longitude: geo?.lng ?? null,
-        });
-        let saved: import("../services/proposalService").ActivityMediaResponse;
-        try {
-          saved = await addActivityMedia(proposalId, activityId, {
-            fileUrl: uploaded.url,
-            fileName: uploaded.fileName,
-            fileType: uploaded.fileType,
-            capturedAt,
-            latitude: geo?.lat ?? null,
-            longitude: geo?.lng ?? null,
-          }, instance);
-          console.log("[PROOF-UPLOAD] ✔ STEP 2 done — saved to DB with id:", saved.id);
-        } catch(dbErr) {
-          console.error("[PROOF-UPLOAD] ✖ STEP 2 FAILED — addActivityMedia DB error:", dbErr);
-          throw dbErr;
-        }
+        }, instance);
 
-        // ── DEBUG CHECKPOINT 5: adding to UI state ───────────────────────────
-        // ── DEBUG CHECKPOINT 5: adding to UI state ───────────────────────────
         const proof:ProofMedia={
           id: saved.id,
           fileUrl: saved.fileUrl,
@@ -633,16 +572,9 @@ export default function ApproverDashboard() {
           latitude: saved.latitude ?? geo?.lat ?? null,
           longitude: saved.longitude ?? geo?.lng ?? null,
         };
-        console.log("[PROOF-UPLOAD] ✔ STEP 3 — added to UI state:", proof);
         setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
           proofMedia:[...prev[activityId].proofMedia,proof]}}));
 
-        // ── FIX: also sync the new media into `proposals` + `selected` so
-        // that closing and reopening this modal doesn't rebuild proofMedia
-        // from a stale `mediaFiles` list. Without this, initActuals(p) on
-        // reopen uses the OLD proposals-array snapshot (which never learns
-        // about media added mid-session) and the upload silently "disappears"
-        // even though it's fully saved in the DB. ──
         const mediaEntry: ActivityMediaResponse = {
           id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
           fileType: saved.fileType, capturedAt: saved.capturedAt ?? capturedAt,
@@ -659,14 +591,11 @@ export default function ApproverDashboard() {
           ? { ...prev, activities: prev.activities.map(syncMedia) } : prev);
       }
 
-      console.log("[PROOF-UPLOAD] ✅ All files uploaded successfully");
       showToast(geo?"Photo(s) saved with GPS 📍":"Photo(s) saved (no GPS)",true);
 
     } catch(err){
-      console.error("[PROOF-UPLOAD] ✖ CAUGHT ERROR:", err);
       showToast(err instanceof Error ? err.message : "Upload failed.", false);
     } finally {
-      console.log("[PROOF-UPLOAD] 🔚 finally — resetting proofUploading to false");
       setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],proofUploading:false}}));
     }
   };
@@ -675,7 +604,6 @@ export default function ApproverDashboard() {
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
       proofMedia:prev[activityId].proofMedia.filter((m)=>m.id!==id)}}));
 
-  // ── Multi-invoice upload ───────────────────────────────────────────────────
   const handleInvoiceUpload=async(activityId:string,files:FileList)=>{
     const proposalId=selected?.id;
     if(!proposalId) return;
@@ -695,8 +623,6 @@ export default function ApproverDashboard() {
         setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
           invoiceMedia:[...prev[activityId].invoiceMedia,inv]}}));
 
-        // ── FIX: same sync as photos — keep `proposals`/`selected` in sync
-        // so closing/reopening the modal doesn't lose this invoice. ──
         const mediaEntry: ActivityMediaResponse = {
           id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
           fileType: saved.fileType, capturedAt: saved.capturedAt ?? new Date().toISOString(),
@@ -753,7 +679,6 @@ export default function ApproverDashboard() {
     setEditData((d)=>d?{...d,activities:d.activities.map((a,i)=>
       i===idx?{...a,mediaFiles:a.mediaFiles.filter((m)=>m.id!==mediaId)}:a)}:d);
 
-  // ── Save actuals ───────────────────────────────────────────────────────────
   const saveActuals=async()=>{
     if (!selected) return;
     setActualsLoading(true);
@@ -772,19 +697,12 @@ export default function ApproverDashboard() {
       });
       const updated=await updateProposalActuals(selected.id,payload,instance);
       setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
-      // ── FIX: don't call initActuals(updated) here — it rebuilds proofMedia/
-      // invoiceMedia purely from `updated.activities[].mediaFiles`, and the
-      // /actuals PATCH endpoint's response doesn't eager-load that relation.
-      // That was wiping local media state to empty even though nothing was
-      // deleted in the DB. actualsData is already correct locally (it's what
-      // we just sent), so just refresh `selected` for display purposes.
       setSelected(updated);
       showToast("Actuals saved.",true);
     } catch(err){ showToast(err instanceof Error?err.message:"Failed.",false); }
     finally { setActualsLoading(false); }
   };
 
-  // ── Modal open/close ───────────────────────────────────────────────────────
   const openModal=(p:ProposalResponse)=>{
     setSelected(p); setEditData(toEditable(p)); setIsEditing(false); setShowSendBack(false);
     setNote(p.approverNote??""); setSendBackNote("");
@@ -799,14 +717,10 @@ export default function ApproverDashboard() {
     setShowBudgetAddPanel(false);
   };
 
-  // ── Edit helpers ───────────────────────────────────────────────────────────
   const setF=(key:keyof Omit<EditableProposal,"activities">,v:string)=>
     setEditData((d)=>{
       if (!d) return d;
       const next = { ...d, [key]: v };
-      // ── NEW: changing Month invalidates existing activity dates that may
-      // now fall outside the new Month+Year window — clear them so the
-      // Checker must re-pick dates within range, same as RSMForm.
       if (key === "month") {
         next.activities = next.activities.map((a) => ({ ...a, startDate: "", endDate: "" }));
       }
@@ -832,10 +746,8 @@ export default function ApproverDashboard() {
     setEditData((d)=>d?{...d,activities:d.activities.map((a,i)=>
       i===idx?{...a,subcategory,qty:"1"}:a)}:d);
 
-  // ── Save edits ─────────────────────────────────────────────────────────────
   const saveEdits=async()=>{
     if (!selected||!editData) return;
-    // ── Reject out-of-window dates before saving ──
     const { min, max } = editActivityDateRange;
     const outOfRange = editData.activities.find(a =>
       (a.startDate && a.startDate < min) ||
@@ -880,13 +792,11 @@ export default function ApproverDashboard() {
         })(),
       }));
       setEditData(editable); setIsEditing(false); showToast("Proposal updated.",true);
-      // Reload all proposals to ensure server state is in sync (prevents stale data)
       setTimeout(() => loadProposals(), 500);
     } catch(err){ showToast(err instanceof Error?err.message:"Save failed.",false); }
     finally { setSaveLoading(false); }
   };
 
-  // ── Decide / Send back / Forward / Notify ──────────────────────────────────
   const decide=async(action:"Approved"|"Rejected")=>{
     if (!selected) return; setActionLoading(true);
     try {
@@ -921,17 +831,24 @@ export default function ApproverDashboard() {
     finally { setForwardLoading(false); }
   };
 
+  // ── Notify Dealer — always resendable. Even after dealerNotified is true,
+  // clicking this again sends a fresh email with the dealer as "To" and
+  // whichever RSM/TSM/Commando emails are on file as "cc". This lets you
+  // notify the team even if the first send (before this feature existed, or
+  // before team emails were on file) only reached the dealer. ──
   const handleNotifyDealer=async()=>{
     if (!selected||!dealerEmailInput.trim()) return; setNotifyLoading(true);
     try {
-      const updated=await notifyDealer(selected.id,dealerEmailInput.trim(),instance);
+      const teamEmails = getTeamEmailsFor(selected);
+      const updated=await notifyDealer(selected.id,dealerEmailInput.trim(),instance,teamEmails);
       setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
-      setSelected(updated); setShowNotifyDealer(false); showToast("Dealer notified.",true);
+      setSelected(updated); setShowNotifyDealer(false);
+      const ccCount = [teamEmails.rsmEmail, teamEmails.tsmEmail, teamEmails.commandoEmail].filter(Boolean).length;
+      showToast(`Dealer notified${ccCount>0?` (cc'd ${ccCount} team member${ccCount>1?"s":""})`:""}.`,true);
     } catch(err){ showToast(err instanceof Error?err.message:"Notify failed.",false); }
     finally { setNotifyLoading(false); }
   };
 
-  // ── Budget Addition submit ─────────────────────────────────────────────────
   const handleBudgetAddSubmit=async()=>{
     if (!selected) return; setBudgetAddLoading(true);
     try {
@@ -977,10 +894,8 @@ export default function ApproverDashboard() {
     finally { setBudgetAddLoading(false); }
   };
 
-  // ── Bulk approve ───────────────────────────────────────────────────────────
   const toggleActuals=(activityId:string)=>
     setOpenActualsId((prev)=>prev===activityId?null:activityId);
-  // Only count un-forwarded pending proposals for select-all logic
   const forwardablePending  = pendingFiltered.filter(p=>!p.checkedByEmail);
   const allPendingSelected  = forwardablePending.length>0 && forwardablePending.every(p=>selectedIds.has(p.id));
   const somePendingSelected = forwardablePending.some(p=>selectedIds.has(p.id));
@@ -989,7 +904,6 @@ export default function ApproverDashboard() {
     else setSelectedIds(new Set(forwardablePending.map((p)=>p.id)));
   };
   const toggleOne=(id:string,isPending:boolean)=>{
-    // Don't allow selecting already-forwarded proposals
     const p = proposals.find(x=>x.id===id);
     if (p?.checkedByEmail) return;
     if (!isPending) return;
@@ -1020,7 +934,27 @@ export default function ApproverDashboard() {
     if (notifySelectedIds.size === 0) return;
     setBulkNotifying(true);
     let successCount = 0; let failCount = 0; let noEmailCount = 0;
-    // Pre-fetch dealer accounts once for proposals that need email lookup
+    const failedDetails: string[] = [];
+
+    // ── Acquire the Graph token ONCE for the whole batch. Re-acquiring per
+    // item triggers up to 200 separate calls to Azure AD's token endpoint,
+    // which routinely gets throttled — and getGraphToken() silently returns
+    // "" on any non-interaction-required failure, so those sends fail with
+    // an invisible "No Graph token" error instead of an obvious one. ──
+    let graphToken = "";
+    try {
+      graphToken = await getGraphTokenForBulk(instance);
+    } catch (err) {
+      showToast("Could not get Microsoft Graph token — sign-in may have expired. Please refresh and try again.", false);
+      setBulkNotifying(false);
+      return;
+    }
+    if (!graphToken) {
+      showToast("No Graph token available — grant mail permission and try again.", false);
+      setBulkNotifying(false);
+      return;
+    }
+
     let dealerAccounts: Awaited<ReturnType<typeof fetchDealerUsers>> = [];
     const needsFetch = Array.from(notifySelectedIds).some(id => {
       const p = proposals.find(x => x.id === id);
@@ -1029,10 +963,12 @@ export default function ApproverDashboard() {
     if (needsFetch) {
       try { dealerAccounts = await fetchDealerUsers(instance); } catch {}
     }
-    for (const id of Array.from(notifySelectedIds)) {
+
+    const ids = Array.from(notifySelectedIds);
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
       const p = proposals.find(x => x.id === id);
       if (!p) continue;
-      // Same email priority as modal: existing stored email → dealer account match
       let email = p.dealerEmail ?? "";
       if (!email) {
         const match = dealerAccounts.find(d =>
@@ -1043,11 +979,21 @@ export default function ApproverDashboard() {
       }
       if (!email) { noEmailCount++; continue; }
       try {
-        const updated = await notifyDealer(id, email, instance);
+        const teamEmails = getTeamEmailsFor(p);
+        const updated = await notifyDealer(id, email, instance, teamEmails, graphToken);
         setProposals(prev => prev.map(x => x.id === updated.id ? updated : x));
         successCount++;
-      } catch { failCount++; }
+      } catch (err) {
+        failCount++;
+        const msg = err instanceof Error ? err.message : String(err);
+        failedDetails.push(`${p.tokenNumber ?? id}: ${msg}`);
+        console.error(`[BULK-NOTIFY] Failed for ${p.tokenNumber ?? id}:`, err);
+      }
+      // Small gap between actual Graph sendMail calls to stay under Graph's
+      // own per-mailbox rate limit (separate from the AAD token throttle above).
+      if (i < ids.length - 1) await new Promise(r => setTimeout(r, 300));
     }
+
     setNotifySelectedIds(new Set());
     setBulkNotifying(false);
     const parts: string[] = [];
@@ -1055,6 +1001,9 @@ export default function ApproverDashboard() {
     if (failCount    > 0) parts.push(`${failCount} failed`);
     if (noEmailCount > 0) parts.push(`${noEmailCount} skipped (no email found)`);
     showToast(parts.join(" · "), failCount === 0 && noEmailCount === 0);
+    if (failedDetails.length > 0) {
+      console.warn("[BULK-NOTIFY] Failure details:\n" + failedDetails.join("\n"));
+    }
   };
 
   const dealerSentBack    =(p:ProposalResponse)=>(p as any).dealerSentBack;
@@ -1062,13 +1011,9 @@ export default function ApproverDashboard() {
   const calcBgAmt=(budget:number,add:number,share:number|null)=>
     Math.round((budget+add)*((share&&share>0?share:100)/100));
 
-  // Live additional budget for an activity:
-  // when Budget Addition panel is open → use what Mayank typed
-  // otherwise → use the saved server value
   const liveAdd = (activityId: string, savedAdd: number): number =>
     showBudgetAddPanel ? num(budgetAddAmounts[activityId] ?? String(savedAdd)) : savedAdd;
 
-  // Live totals for the footer/CAC banner that respond to Budget Addition panel
   const liveBudgetTotals = () => {
     const acts = selected?.activities ?? [];
     const tBudget = acts.reduce((s, a) => s + a.budget + liveAdd(a.id, a.additionalBudget), 0);
@@ -1100,7 +1045,6 @@ export default function ApproverDashboard() {
         {!loading&&fetchError&&(<div className="ap-error-state"><p className="ap-error-msg">⚠ {fetchError}</p><button className="ap-retry-btn" onClick={loadProposals}>Retry</button></div>)}
         {!loading&&!fetchError&&(
           <>
-            {/* Final Approver: forwarded proposals banner */}
             {isFinalApprover&&proposals.filter(p=>p.checkedByEmail&&p.status==="Pending").length>0&&(
               <div style={{ background:"#f0fdf4",border:"2px solid #bbf7d0",borderRadius:10,
                 padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",
@@ -1145,7 +1089,6 @@ export default function ApproverDashboard() {
                 {years.map((y)=><option key={y} value={y}>{y==="All"?"All years":y}</option>)}
               </select>
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
-              {/* Date-wise filter for forwarded proposals */}
               <div style={{ display:"flex",alignItems:"center",gap:6 }}>
                 <label style={{ fontSize:12,color:"#64748b",fontWeight:600 }}>Forward Date:</label>
                 <input type="date" value={fwdDateFilter}
@@ -1156,7 +1099,6 @@ export default function ApproverDashboard() {
                   style={{ background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:12 }}>✕</button>}
               </div>
             </div>
-            {/* Bulk Forward — for Checker (Manager) who is not the final approver */}
             {isAdmin&&!isFinalApprover&&selectedIds.size>0&&(
               <div style={{ background:"#1e3a5f",borderRadius:10,padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
                 <span style={{ color:"#e2e8f0",fontSize:13,fontWeight:600 }}>{selectedIds.size} proposal{selectedIds.size>1?"s":""} selected</span>
@@ -1184,7 +1126,6 @@ export default function ApproverDashboard() {
                 <button onClick={()=>setSelectedIds(new Set())} style={{ background:"rgba(255,255,255,0.1)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,0.2)",borderRadius:7,padding:"8px 16px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
               </div>
             )}
-            {/* Bulk Notify Dealer — for Checker when approved proposals are selected in 2nd row */}
             {isChecker&&notifySelectedIds.size>0&&(
               <div style={{ background:"#166534",borderRadius:10,padding:"12px 18px",marginBottom:12,
                 display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
@@ -1248,26 +1189,31 @@ export default function ApproverDashboard() {
                       </div>
                     </th>
                   )}
-                  {/* 2nd checkbox col: Notify Dealer — Checker only, between col1 and Action */}
-                  {isChecker&&(
+                                    {isChecker&&(
                     <th style={{ width:44,textAlign:"center",padding:"8px 6px" }}>
                       <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
                         <input type="checkbox"
                           checked={
-                            filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).length>0 &&
-                            filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).every(p=>notifySelectedIds.has(p.id))
+                            filtered.filter(p=>p.status==="Approved").length>0 &&
+                            filtered.filter(p=>p.status==="Approved").every(p=>notifySelectedIds.has(p.id))
                           }
                           onChange={()=>{
-                            const notifiable = filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified);
+                            // ── FIX: "notifiable" now covers ALL Approved proposals, not just
+                            // un-notified ones — matches the row checkboxes, which allow
+                            // re-selecting an already-notified proposal for a resend (e.g. to
+                            // also cc RSM/TSM/Commando). Previously this filtered out
+                            // dealerNotified rows, so once every approved proposal had been
+                            // notified at least once, "select all" had nothing left to select. ──
+                            const notifiable = filtered.filter(p=>p.status==="Approved");
                             const allSel = notifiable.length>0 && notifiable.every(p=>notifySelectedIds.has(p.id));
                             if(allSel) setNotifySelectedIds(new Set());
                             else setNotifySelectedIds(new Set(notifiable.map(p=>p.id)));
                           }}
                           style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
-                          title="Select all Approved (un-notified) for bulk dealer notification"/>
-                        {filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).length>0&&(
+                          title="Select all Approved proposals (includes already-notified, for resend)"/>
+                        {filtered.filter(p=>p.status==="Approved").length>0&&(
                           <span style={{ fontSize:9,color:"#64748b",whiteSpace:"nowrap" }}>
-                            {filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).length} appr.
+                            {filtered.filter(p=>p.status==="Approved").length} appr.
                           </span>
                         )}
                       </div>
@@ -1282,7 +1228,7 @@ export default function ApproverDashboard() {
                   <th>Status</th>
                 </tr></thead>
                 <tbody>
-                  {filtered.length===0&&(<tr><td colSpan={isAdmin?16:12} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
+                  {filtered.length===0&&(<tr><td colSpan={isAdmin?15:11} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
                   {filtered.map((p)=>{
                     const isPending=p.status==="Pending"; const isChecked=selectedIds.has(p.id);
                     return (
@@ -1313,23 +1259,21 @@ export default function ApproverDashboard() {
                             )}
                           </td>
                         )}
-                        {/* 2nd TD: Notify Dealer checkbox — Checker only, Approved only */}
+                        {/* Notify Dealer checkbox — Checker only, Approved only. Not disabled
+                            just because dealerNotified is true, so resending (with team cc)
+                            is always possible. */}
                         {isChecker&&(
                           <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>
                             {p.status==="Approved"?(
-                              p.dealerNotified?(
-                                <span title="Already notified — disabled" style={{ fontSize:11,color:"#16a34a",fontWeight:700,cursor:"not-allowed",opacity:0.5 }}>✓</span>
-                              ):(
-                                <input type="checkbox"
-                                  checked={notifySelectedIds.has(p.id)}
-                                  onChange={()=>setNotifySelectedIds(prev=>{
-                                    const next=new Set(prev);
-                                    next.has(p.id)?next.delete(p.id):next.add(p.id);
-                                    return next;
-                                  })}
-                                  style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
-                                  title="Select to bulk notify dealer"/>
-                              )
+                              <input type="checkbox"
+                                checked={notifySelectedIds.has(p.id)}
+                                onChange={()=>setNotifySelectedIds(prev=>{
+                                  const next=new Set(prev);
+                                  next.has(p.id)?next.delete(p.id):next.add(p.id);
+                                  return next;
+                                })}
+                                style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
+                                title={p.dealerNotified ? "Already notified — select to resend" : "Select to bulk notify dealer"}/>
                             ):(
                               <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>
                             )}
@@ -1421,9 +1365,6 @@ export default function ApproverDashboard() {
                   <div key={key} style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,padding:"10px 12px" }}>
                     <div style={{ fontSize:10,color:"#6b7280",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4 }}>{label}</div>
                     {isAdmin&&isEditing&&key==="year"?(
-                      // ── NEW: Year is locked in edit mode — it's fixed at
-                      // submission time and shouldn't be changed by the Checker,
-                      // since RSMForm already enforces year on the Maker side.
                       <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",
                         border:"1.5px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:13,
                         color:"#0a2540",minHeight:30 }}>
@@ -1612,7 +1553,6 @@ export default function ApproverDashboard() {
                           <tr key={`actuals-${a.id}`}>
                             <td colSpan={14} style={{ padding:0,background:"#f0fdf4",borderBottom:"2px solid #bbf7d0" }}>
                               <div style={{ padding:"14px 20px" }}>
-                                {/* Header row */}
                                 <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap" }}>
                                   <span style={{ background:"#16a34a",color:"#fff",borderRadius:4,padding:"2px 8px",fontSize:11,fontWeight:700 }}>📋 Post-Activity</span>
                                   <span style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>{a.activityType}</span>
@@ -1620,7 +1560,6 @@ export default function ApproverDashboard() {
                                   <span style={{ fontSize:11,color:"#6b7280",marginLeft:"auto" }}>Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
                                 </div>
 
-                                {/* ── LMS / Retail Conv% badges — computed live from daily entries ── */}
                                 {(()=>{
                                   const totalLmsLeads = d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
                                   const totalPunched = d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0);
@@ -1633,13 +1572,10 @@ export default function ApproverDashboard() {
                                       <span style={{ fontSize:11,background:"#eef2ff",color:"#4338ca",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Leads: {totalLmsLeads}</span>
                                       <span style={{ fontSize:11,background:"#eef2ff",color:"#4338ca",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Punched: {totalPunched}</span>
                                       <span style={{ fontSize:11,background:lmsGap>0?"#fef2f2":"#f0fdf4",color:lmsGap>0?"#b91c1c":"#166534",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Gap: {lmsGap}</span>
-                                      {/* <span style={{ fontSize:11,background:"#fffbeb",color:"#92400e",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>MTD Retail (Activity): {mtdRetailActivity}</span> */}
-                                      {/* <span style={{ fontSize:11,background:retailConvPct>=10?"#f0fdf4":"#fef9c3",color:retailConvPct>=10?"#166534":"#854d0e",padding:"3px 9px",borderRadius:5,fontWeight:700 }}>Retail Conv%: {retailConvPct}%</span> */}
                                     </div>
                                   );
                                 })()}
 
-                                {/* ── Actual Dates + compact action bar in one row ── */}
                                 <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
                                   <div>
                                     <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual Start</label>
@@ -1656,7 +1592,6 @@ export default function ApproverDashboard() {
                                     <div style={{ fontSize:11,color:"#166534",fontWeight:600 }}>✓ {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</div>
                                   )}
 
-                                  {/* ── Toggle buttons ── */}
                                   <div style={{ display:"flex",gap:7,marginLeft:"auto",flexWrap:"wrap",alignItems:"center" }}>
                                     <button onClick={()=>toggleActualsPanel(a.id,"photos")}
                                       style={{ display:"flex",alignItems:"center",gap:5,
@@ -1703,7 +1638,6 @@ export default function ApproverDashboard() {
                                   </div>
                                 </div>
 
-                                {/* ══ PHOTOS PANEL ══ */}
                                 {openActualsPanel[a.id]==="photos"&&(
                                   <div style={{ background:"#fff",border:"1px solid #bbf7d0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
                                     <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
@@ -1717,7 +1651,6 @@ export default function ApproverDashboard() {
                                         fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
                                         {d.proofUploading?"⏳ Uploading…":"＋ Add Photos"}
                                         <input type="file" multiple accept="image/*,video/*,.pdf" style={{ display:"none" }} disabled={d.proofUploading} onChange={(e)=>{
-                                          console.log("[PROOF-INPUT] onChange fired, files:", e.target.files?.length ?? 0, "activityId:", a.id);
                                           if(e.target.files&&e.target.files.length) handleProofUpload(a.id,e.target.files);
                                           e.target.value="";
                                         }}/>
@@ -1753,7 +1686,6 @@ export default function ApproverDashboard() {
                                   </div>
                                 )}
 
-                                {/* ══ INVOICES PANEL ══ */}
                                 {openActualsPanel[a.id]==="invoices"&&(
                                   <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
                                     <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
@@ -1795,7 +1727,6 @@ export default function ApproverDashboard() {
                                   </div>
                                 )}
 
-                                {/* ══ HISTORY PANEL — only when both dates selected ══ */}
                                 {openActualsPanel[a.id]==="history"&&d.actualStartDate&&d.actualEndDate&&(
                                   <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,overflow:"hidden",marginBottom:10 }}>
                                     <div style={{ background:"#0a2540",padding:"9px 14px",display:"flex",alignItems:"center",gap:10 }}>
@@ -1841,14 +1772,12 @@ export default function ApproverDashboard() {
                                                 <tr key={entry.date} style={{ background:ei%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",opacity:hasAnyData?1:0.5 }}>
                                                   <td style={{ padding:"5px 10px",fontWeight:600,color:"#374151",whiteSpace:"nowrap",fontSize:11 }}>{entry.date}</td>
 
-                                                  {/* Opening Stock — manual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }}
                                                       value={entry.openingStock||""} placeholder="0"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"openingStock",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* Canopy — auto-calcs Enquiry/TD Plan */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} max={20}
                                                       style={{ width:40,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"2px",fontSize:11,outline:"none",background:"#fefce8",fontWeight:700 }}
@@ -1862,75 +1791,64 @@ export default function ApproverDashboard() {
                                                       }}/>
                                                   </td>
 
-                                                  {/* Planned */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:setupCount>0?"#1e40af":"inherit",fontWeight:setupCount>0?700:400 }}
                                                       value={entry.enquiryPlanned||""} placeholder="0" readOnly={setupCount>0}
                                                       onChange={(e)=>!setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* Actual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",fontWeight:entry.enquiryActual>0?700:400 }}
                                                       value={entry.enquiryActual||""} placeholder="0"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* Walk in — manual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #a7f3d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.walkIn>0?"#ecfdf5":"#fff" }}
                                                       value={entry.walkIn||""} placeholder="0"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"walkIn",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* In LMS — manual, drives Gap */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #a7f3d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.inLms>0?"#ecfdf5":"#fff",fontWeight:entry.inLms>0?700:400 }}
                                                       value={entry.inLms||""} placeholder="0" title="Manual — drives Gap = In LMS − Actual"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"inLms",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* Gap — computed, read-only */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,fontWeight:700,color:gapColor }}>
                                                     {entry.enquiryGap ?? 0}
                                                   </td>
 
-                                                  {/* Hot — manual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.enquiryHot>0?"#fef2f2":"#fff",fontWeight:entry.enquiryHot>0?700:400,color:entry.enquiryHot>0?"#b91c1c":"inherit" }}
                                                       value={entry.enquiryHot||""} placeholder="0"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"enquiryHot",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* Revised Hot — manual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.revisedHot>0?"#fef2f2":"#fff",fontWeight:entry.revisedHot>0?700:400,color:entry.revisedHot>0?"#b91c1c":"inherit" }}
                                                       value={entry.revisedHot||""} placeholder="0"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"revisedHot",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* Test Drive Planned */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }}
                                                       value={entry.testDrivePlanned||""} placeholder="0"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* Test Drive Actual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",fontWeight:entry.testDriveActual>0?700:400 }}
                                                       value={entry.testDriveActual||""} placeholder="0"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* Booking Today — manual */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.bookingActual>0?"#fdf4ff":"#fff",fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#7c3aed":"inherit" }}
                                                       value={entry.bookingActual||""} placeholder="0"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"bookingActual",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* Booking In Hand — auto, running formula */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <div title="Auto: running (Booking Today − Retail), floored at 0"
                                                       style={{ width:48,margin:"0 auto",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,
@@ -1941,14 +1859,12 @@ export default function ApproverDashboard() {
                                                     </div>
                                                   </td>
 
-                                                  {/* Retail — this IS "MTD Retail Activity" per screenshot's orange Retail column */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #fcd34d",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb",fontWeight:entry.retailMtdActivity>0?700:400,color:entry.retailMtdActivity>0?"#92400e":"inherit" }}
                                                       value={entry.retailMtdActivity||""} placeholder="0" title="Manual — MTD Retail Activity"
                                                       onChange={(e)=>setDailyField(a.id,entry.date,"retailMtdActivity",parseInt(e.target.value)||0)}/>
                                                   </td>
 
-                                                  {/* MTD Retail — 1st day manual, every day after auto-sums prev MTD + today's Retail */}
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     {ei===0 ? (
                                                       <input type="number" min={0}
@@ -1966,7 +1882,6 @@ export default function ApproverDashboard() {
                                                     )}
                                                   </td>
 
-                                                  {/* Media */}
                                                   <td style={{ padding:"4px 8px",textAlign:"center" }}>
                                                     <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
                                                       {photosOnDay.slice(0,2).map(m=>{
@@ -2035,9 +1950,6 @@ export default function ApproverDashboard() {
                                                 {d.dailyEntries.length ? (d.dailyEntries[d.dailyEntries.length-1].bookingInHand ?? 0) : 0}
                                               </td>
                                               <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fbbf24" }}>{d.dailyEntries.reduce((s,e)=>s+(e.retailMtdActivity||0),0)}</td>
-                                              {/* <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fcd34d" }}>
-                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>(e.retailMtd||0)>0); return last?.retailMtd ?? 0; })()}
-                                              </td> */}
                                               <td></td>
                                               <td style={{ padding:"7px 8px",textAlign:"center" }}>
                                                 <span style={{ fontSize:10,color:"#94a3b8" }}>
@@ -2046,7 +1958,6 @@ export default function ApproverDashboard() {
                                               </td>
                                             </tr>
 
-                                            {/* ── Avg Per Canopy row — matches your Excel's "Avg Per Canopy" footer ── */}
                                             <tr style={{ background:"#fef9c3" }}>
                                               <td style={{ padding:"6px 10px",fontWeight:700,color:"#92400e",fontSize:11 }}>Avg Per Canopy</td>
                                               <td/><td/>
@@ -2271,19 +2182,17 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* Notify Dealer */}
+              {/* Notify Dealer — resendable even after dealerNotified is true */}
               {isAdmin&&selected.status==="Approved"&&(
                 <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"20px",marginBottom:20 }}>
                   <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:8 }}>Notify Dealer</p>
-                  {selected.dealerNotified&&<div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:12 }}>✓ Dealer notified{selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}</div>}
+                  {selected.dealerNotified&&<div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:12 }}>✓ Dealer notified{selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}<span style={{ color:"#6b7280",marginLeft:6 }}>— you can still resend below (e.g. to also cc RSM/TSM/Commando)</span></div>}
                   {!showNotifyDealer?(<button onClick={async()=>{
                     setShowNotifyDealer(true);
-                    // Priority: previously used email → look up by DealerName from dealer logins
                     if(selected.dealerEmail){
                       setDealerEmailMode("dealer"); setDealerEmailInput(selected.dealerEmail);
                     } else {
                       setDealerEmailMode("custom"); setDealerEmailInput("");
-                      // Auto-fetch from dealer accounts by matching DealerName
                       setDealerEmailFetching(true);
                       try {
                         const dealers = await fetchDealerUsers(instance);
@@ -2297,8 +2206,25 @@ export default function ApproverDashboard() {
                         }
                       } catch {} finally { setDealerEmailFetching(false); }
                     }
-                  }} style={{ background:selected.dealerNotified?"#6b7280":"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:selected.dealerNotified?"not-allowed":"pointer",opacity:selected.dealerNotified?0.6:1 }} disabled={selected.dealerNotified} title={selected.dealerNotified?"Dealer already notified — use table checkbox to resend":"Send activity details to dealer"}>{selected.dealerNotified?"✓ Notified":"📧 Notify Dealer"}</button>):(
+                  }} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }} title={selected.dealerNotified?"Resend — also cc RSM/TSM/Commando":"Send activity details to dealer"}>{selected.dealerNotified?"🔁 Notify Again":"📧 Notify Dealer"}</button>):(
                     <div style={{ background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:16 }}>
+                      {(() => {
+                        const team = getTeamEmailsFor(selected);
+                        const names = [
+                          team.rsmEmail && `RSM (${selected.rsmName})`,
+                          team.tsmEmail && `TSM (${(selected as any).tsmName})`,
+                          team.commandoEmail && `Commando (${selected.commandoName})`,
+                        ].filter(Boolean);
+                        return names.length > 0 ? (
+                          <div style={{ fontSize:11, color:"#6b7280", marginBottom:12, background:"#f5f3ff", border:"1px solid #ddd6fe", borderRadius:6, padding:"6px 10px" }}>
+                            Will also cc: {names.join(", ")}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize:11, color:"#92400e", marginBottom:12, background:"#fffbeb", border:"1px solid #fde68a", borderRadius:6, padding:"6px 10px" }}>
+                            No RSM/TSM/Commando email found in the dealer team map for this dealer — only the dealer will be notified.
+                          </div>
+                        );
+                      })()}
                       <div style={{ display:"flex",flexDirection:"column",gap:8,marginBottom:14 }}>
                         {selected.dealerEmail&&(<label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="dealer"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="dealer"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="dealer" checked={dealerEmailMode==="dealer"} onChange={()=>{setDealerEmailMode("dealer");setDealerEmailInput(selected.dealerEmail??"");}}/><div><span style={{ fontWeight:600,color:"#0a2540" }}>Dealer (previously used)</span> <span style={{ color:"#6b7280",fontSize:12 }}>{selected.dealerEmail}</span></div></label>)}
                         <label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="custom"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="custom"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="custom" checked={dealerEmailMode==="custom"} onChange={()=>{setDealerEmailMode("custom");setDealerEmailInput("");}}/><span style={{ fontWeight:600,color:"#0a2540" }}>Enter email manually</span></label>
@@ -2315,7 +2241,7 @@ export default function ApproverDashboard() {
                         </div>
                       )}
                       <div style={{ display:"flex",gap:10 }}>
-                        <button onClick={handleNotifyDealer} disabled={notifyLoading||!dealerEmailInput.trim()} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:notifyLoading||!dealerEmailInput.trim()?"not-allowed":"pointer",opacity:notifyLoading||!dealerEmailInput.trim()?0.6:1 }}>{notifyLoading?"Sending…":"📧 Send to Dealer"}</button>
+                        <button onClick={handleNotifyDealer} disabled={notifyLoading||!dealerEmailInput.trim()} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:notifyLoading||!dealerEmailInput.trim()?"not-allowed":"pointer",opacity:notifyLoading||!dealerEmailInput.trim()?0.6:1 }}>{notifyLoading?"Sending…":selected.dealerNotified?"📧 Resend":"📧 Send to Dealer"}</button>
                         <button onClick={()=>setShowNotifyDealer(false)} style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"10px 20px",borderRadius:8,fontWeight:500,fontSize:14,cursor:"pointer" }}>Cancel</button>
                       </div>
                     </div>
