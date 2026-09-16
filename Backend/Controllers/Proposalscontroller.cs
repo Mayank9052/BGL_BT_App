@@ -798,7 +798,44 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(proposal));
     }
 
-        // ── POST /api/proposals/{id}/notify-dealer ────────────────────────────────
+    // ── GET /api/proposals/my-team-proposals ──────────────────────────────────
+    // For RSM/TSM/Commando staff logins (DealerJwt scheme, role-differentiated).
+    [HttpGet("my-team-proposals")]
+    [Authorize(AuthenticationSchemes = "DealerJwt")]
+    public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMyTeamProposals()
+    {
+        var sub = User.FindFirstValue("sub");
+        if (string.IsNullOrWhiteSpace(sub) || !int.TryParse(sub, out var userId))
+            return Unauthorized();
+
+        var staffUser = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+        if (staffUser is null) return Unauthorized();
+
+        if (staffUser.Role == "Dealer")
+            return Forbid();
+
+        var nameLower = staffUser.DisplayName.Trim().ToLower();
+
+        IQueryable<Proposal> query = _db.Proposals
+            .Include(p => p.Activities).ThenInclude(a => a.MediaFiles);
+
+        query = staffUser.Role switch
+        {
+            "RSM"      => query.Where(p => p.RsmName.ToLower() == nameLower),
+            "TSM"      => query.Where(p => p.TsmName.ToLower() == nameLower),
+            "Commando" => query.Where(p => p.CommandoName != null && p.CommandoName.ToLower() == nameLower),
+            _          => query.Where(p => false),
+        };
+
+        var proposals = await query
+            .OrderByDescending(p => p.CreatedAt)
+            .AsNoTracking()
+            .ToListAsync();
+
+        return Ok(proposals.Select(ToResponse));
+    }
+
+    // ── POST /api/proposals/{id}/notify-dealer ────────────────────────────────
     [HttpPost("{id:guid}/notify-dealer")]
     public async Task<ActionResult<ProposalResponseDto>> NotifyDealer(
         Guid id, [FromBody] NotifyDealerDto dto)

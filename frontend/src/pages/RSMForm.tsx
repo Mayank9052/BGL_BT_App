@@ -14,6 +14,13 @@
 //  10. NEW: ProposalHeader carries dealerEmail/rsmEmail/commandoEmail, auto-filled
 //      from dealerTeamMap.ts on dealer select and sent in the submit payload, so
 //      the backend can send "activity sheet updated" notifications after submit
+//  11. TEMP (till Diwali): Eligibility criteria switched off via
+//      ELIGIBILITY_CHECK_ENABLED = false — the Eligibility field/badge is
+//      hidden, no longer required, and a "Not Eligible" dealer is no longer
+//      blocked from getting a proposal (both eligible and non-eligible
+//      dealers can be imported/submitted now). The CAC ₹/vehicle limit is a
+//      separate rule and is UNCHANGED — still fetched and still enforced.
+//      Flip ELIGIBILITY_CHECK_ENABLED back to true after Diwali to restore it.
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
@@ -41,6 +48,25 @@ import {
 
 const DEALER_TYPES         = ["Old", "New"];
 const ELIGIBILITY_OPTIONS  = ["Eligible", "Not Eligible", "Pending Approval"];
+// ── TEMP: Eligibility criteria switched off till Diwali ─────────────────────
+// While this is false: the Eligibility field/badge is hidden from the form,
+// it's no longer required to continue, and a dealer marked "Not Eligible" in
+// ERP is NOT blocked from having a proposal created for them (both eligible
+// and non-eligible dealers can be imported/submitted). The CAC ₹/vehicle
+// budget-cap check is a SEPARATE rule and is untouched by this flag — it
+// still fetches eligibility.baseCacPerVehicle in the background and still
+// blocks over-limit CAC as before.
+// To restore eligibility gating after Diwali, just flip this back to true —
+// nothing else needs to change.
+const ELIGIBILITY_CHECK_ENABLED = false;
+// ── TEMP: CAC ₹/vehicle budget-cap check switched off till Diwali ──────────
+// While this is false: exceeding the allowed CAC no longer disables
+// Continue/Submit. The warning banner still shows (so the over-limit amount
+// stays visible to the RSM and to reviewers), it just no longer blocks —
+// wording changes to make clear it's informational, not a hard stop.
+// To restore CAC blocking after Diwali, just flip this back to true —
+// nothing else needs to change.
+const CAC_LIMIT_CHECK_ENABLED = false;
 const BGAUSS_SHARE_OPTIONS = ["100", "70", "50"];
 const MONTHS = [
   "January","February","March","April","May","June",
@@ -143,7 +169,8 @@ function validateDetails(h: ProposalHeader): FieldErrors {
   if (!h.type.trim())        e.type        = "Location type is required.";
   if (!h.month.trim())       e.month       = "Month is required.";
   if (!h.year.trim())        e.year        = "Year is required.";
-  if (!h.eligibility.trim()) e.eligibility = "Eligibility is required.";
+  // ── TEMP: eligibility no longer required while ELIGIBILITY_CHECK_ENABLED is false ──
+  if (ELIGIBILITY_CHECK_ENABLED && !h.eligibility.trim()) e.eligibility = "Eligibility is required.";
   return e;
 }
 function validateActivities(rows: ActivityRow[]): ActivityErrors {
@@ -183,6 +210,18 @@ export default function RSMProposalForm() {
     } catch { return null; }
   })();
   const isDealerUser = !!(dealerUser?.role === "Dealer");
+  // ── NEW: Staff (RSM/TSM/Commando) local-login scoping ──────────────────────
+  // When a TSM/RSM/Commando is signed in (not Dealer, not Azure staff), the
+  // dealer list should only show dealers assigned to THEM in the team map —
+  // otherwise every TSM sees every dealer in the country. dealerTeamMap.ts
+  // only supports dealer→team lookups today (findDealerTeam), so below we do
+  // the reverse: for every dealer, look up its team row, then keep only the
+  // ones whose rsm/tsm/commando field matches the signed-in staff member's
+  // display name.
+  const staffRole = dealerUser?.role as string | undefined;
+  const staffScopedRoles = new Set(["RSM", "TSM", "Commando"]);
+  const isStaffScopedUser = !!staffRole && staffScopedRoles.has(staffRole);
+  const staffNameLower = (dealerUser?.displayName as string | undefined)?.toLowerCase().trim() ?? "";
   const xlsxRef = useRef<HTMLInputElement>(null);
 
   const editId   = searchParams.get("edit");
@@ -332,6 +371,16 @@ export default function RSMProposalForm() {
           `₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle — ` +
           `Special Approval budget applied (₹${totals.totalAdditional.toLocaleString("en-IN")}). ` +
           `Proposal will be submitted for deviation approval.`
+        );
+        setCacBlocking(false);
+      } else if (!CAC_LIMIT_CHECK_ENABLED) {
+        // ── TEMP: CAC cap no longer blocks till Diwali — see CAC_LIMIT_CHECK_ENABLED.
+        // Still shown as a warning so the over-limit amount stays visible, but
+        // Continue/Submit are not disabled and no Special Approval entry is required.
+        setCacWarning(
+          `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ` +
+          `₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle for ${eligibility.dealerType} dealer ` +
+          `(CAC limit temporarily not enforced — proceeding is allowed).`
         );
         setCacBlocking(false);
       } else {
@@ -533,7 +582,10 @@ export default function RSMProposalForm() {
   }, []);
 
   const goToActivities = () => {
-    if (eligibility && !eligibility.isEligible) {
+    // ── TEMP: "Not Eligible" no longer blocks proceeding while
+    // ELIGIBILITY_CHECK_ENABLED is false — both eligible and non-eligible
+    // dealers can have a proposal created for them till Diwali.
+    if (ELIGIBILITY_CHECK_ENABLED && eligibility && !eligibility.isEligible) {
       setFieldErrors({ dealerName: "This dealer is not eligible for BTL this month." });
       setShowDetailErr(true); window.scrollTo({ top: 0, behavior: "smooth" }); return;
     }
@@ -567,7 +619,8 @@ export default function RSMProposalForm() {
     }
     if (Object.keys(errs).length) { setActivityErrors(errs); setShowActErr(true); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
     setActivityErrors({}); setShowActErr(false);
-    if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
+    // ── TEMP: CAC cap no longer blocks proceeding to Summary till Diwali — see CAC_LIMIT_CHECK_ENABLED ──
+    if (CAC_LIMIT_CHECK_ENABLED && eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
       setCacWarning(
         `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ` +
         `₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle for ${eligibility.dealerType} dealer. ` +
@@ -885,7 +938,8 @@ export default function RSMProposalForm() {
   };
 
   const handleSubmit = async () => {
-    if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
+    // ── TEMP: CAC cap no longer blocks Submit till Diwali — see CAC_LIMIT_CHECK_ENABLED ──
+    if (CAC_LIMIT_CHECK_ENABLED && eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
       setCacBlocking(true);
       setCacWarning(`CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle. Cannot submit.`);
       return;
@@ -1114,8 +1168,8 @@ export default function RSMProposalForm() {
               </div>
             </div>
 
-            {/* Row 2 — State, City, Dealer Type, Eligibility */}
-            <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(4,1fr)", marginTop:0 }}>
+            {/* Row 2 — State, City, Dealer Type[, Eligibility while ELIGIBILITY_CHECK_ENABLED] */}
+            <div className="rsm-form-row1" style={{ gridTemplateColumns:`repeat(${ELIGIBILITY_CHECK_ENABLED?4:3},1fr)`, marginTop:0 }}>
               <div className="rsm-field">
                 <Label text="State" required/>
                 {dealerAutoFilled && !editMode ? <LockedField value={header.state}/> :
@@ -1165,17 +1219,20 @@ export default function RSMProposalForm() {
                 {fieldErrors.type && <span className="rsm-field-error">{fieldErrors.type}</span>}
               </div>
 
-              <div className="rsm-field">
-                <Label text="Eligibility" required/>
-                {dealerAutoFilled && !editMode ? <LockedField value={header.eligibility}/> : (
-                  <select className={`rsm-select${fieldErrors.eligibility?" rsm-input--error":""}`}
-                    value={header.eligibility} onChange={(e) => setField("eligibility", e.target.value)}>
-                    <option value="">{eligibilityLoading?"Checking…":"Select eligibility"}</option>
-                    {ELIGIBILITY_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-                  </select>
-                )}
-                {fieldErrors.eligibility && <span className="rsm-field-error">{fieldErrors.eligibility}</span>}
-              </div>
+              {/* ── TEMP: Eligibility field hidden till Diwali — see ELIGIBILITY_CHECK_ENABLED ── */}
+              {ELIGIBILITY_CHECK_ENABLED && (
+                <div className="rsm-field">
+                  <Label text="Eligibility" required/>
+                  {dealerAutoFilled && !editMode ? <LockedField value={header.eligibility}/> : (
+                    <select className={`rsm-select${fieldErrors.eligibility?" rsm-input--error":""}`}
+                      value={header.eligibility} onChange={(e) => setField("eligibility", e.target.value)}>
+                      <option value="">{eligibilityLoading?"Checking…":"Select eligibility"}</option>
+                      {ELIGIBILITY_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  )}
+                  {fieldErrors.eligibility && <span className="rsm-field-error">{fieldErrors.eligibility}</span>}
+                </div>
+              )}
             </div>
 
             {!editMode && showDealerPanel && selectedDealer && (
@@ -1235,8 +1292,11 @@ export default function RSMProposalForm() {
               </div>
             )}
 
-            {eligibilityLoading && <div className="rsm-elig-loading"><div className="rsm-spinner-sm"/><span>Checking eligibility…</span></div>}
-            {!eligibilityLoading && eligibility && (
+            {/* ── TEMP: Eligible/Not-Eligible banner hidden till Diwali — see ELIGIBILITY_CHECK_ENABLED.
+                The CAC ₹/vehicle limit itself is a separate rule and still shows later
+                (in the CAC warning banner on Activities/Summary) when it's actually relevant. ── */}
+            {ELIGIBILITY_CHECK_ENABLED && eligibilityLoading && <div className="rsm-elig-loading"><div className="rsm-spinner-sm"/><span>Checking eligibility…</span></div>}
+            {ELIGIBILITY_CHECK_ENABLED && !eligibilityLoading && eligibility && (
               <div className={`rsm-elig-banner ${eligibility.isEligible?"rsm-elig-banner--ok":"rsm-elig-banner--no"}`}>
                 <span className="rsm-elig-icon">{eligibility.isEligible?"✓":"✕"}</span>
                 <div style={{ flex:1 }}>
@@ -1585,7 +1645,8 @@ export default function RSMProposalForm() {
                 <ReviewRow label="Type"         value={header.type||"—"}/>
                 <ReviewRow label="Year"         value={header.year||"—"}/>
                 <ReviewRow label="Month"        value={header.month||"—"}/>
-                <ReviewRow label="Eligibility"  value={header.eligibility||"—"}/>
+                {/* ── TEMP: Eligibility hidden till Diwali — see ELIGIBILITY_CHECK_ENABLED ── */}
+                {ELIGIBILITY_CHECK_ENABLED && <ReviewRow label="Eligibility"  value={header.eligibility||"—"}/>}
                 <ReviewRow label="RSM Name"     value={header.rsmName||"—"}/>
                 <ReviewRow label="TSM Name"     value={header.tsmName||"—"}/>
                 <ReviewRow label="Commando"     value={header.commandoName||"—"}/>

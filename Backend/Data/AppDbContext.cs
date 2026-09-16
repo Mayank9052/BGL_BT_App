@@ -46,6 +46,7 @@ public class AppDbContext : DbContext
             e.Property(u => u.Email).HasMaxLength(255).IsRequired();
             e.HasIndex(u => u.Email).IsUnique();
             e.Property(u => u.DisplayName).HasMaxLength(255).IsRequired();
+            e.Property(u => u.EmployeeCode).HasMaxLength(50);
             e.Property(u => u.Role).HasMaxLength(50).HasDefaultValue("User");
             e.Property(u => u.AuthType).HasMaxLength(20).HasDefaultValue("AzureAD");
             e.Property(u => u.PasswordHash).HasMaxLength(255);

@@ -1262,18 +1262,23 @@ export default function ApproverDashboard() {
                         {/* Notify Dealer checkbox — Checker only, Approved only. Not disabled
                             just because dealerNotified is true, so resending (with team cc)
                             is always possible. */}
-                        {isChecker&&(
+                          {isChecker&&(
                           <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>
                             {p.status==="Approved"?(
-                              <input type="checkbox"
-                                checked={notifySelectedIds.has(p.id)}
-                                onChange={()=>setNotifySelectedIds(prev=>{
-                                  const next=new Set(prev);
-                                  next.has(p.id)?next.delete(p.id):next.add(p.id);
-                                  return next;
-                                })}
-                                style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
-                                title={p.dealerNotified ? "Already notified — select to resend" : "Select to bulk notify dealer"}/>
+                              <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
+                                <input type="checkbox"
+                                  checked={notifySelectedIds.has(p.id)}
+                                  onChange={()=>setNotifySelectedIds(prev=>{
+                                    const next=new Set(prev);
+                                    next.has(p.id)?next.delete(p.id):next.add(p.id);
+                                    return next;
+                                  })}
+                                  style={{ width:15,height:15,cursor:"pointer",accentColor:p.dealerNotified?"#2563eb":"#16a34a" }}
+                                  title={p.dealerNotified ? `Already notified${p.dealerEmail?` (${p.dealerEmail})`:""} — select to resend` : "Select to bulk notify dealer"}/>
+                                {p.dealerNotified&&(
+                                  <span style={{ fontSize:8,color:"#16a34a",fontWeight:700,whiteSpace:"nowrap" }}>✓ sent</span>
+                                )}
+                              </div>
                             ):(
                               <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>
                             )}

@@ -10,6 +10,19 @@ interface DealerNavbarProps {
   onLogout:    () => void;
 }
 
+// Maps the actual account role to a display label + CSS class so the badge
+// no longer always says "Dealer" regardless of who's signed in.
+const ROLE_DISPLAY: Record<string, { label: string; cls: string }> = {
+  Dealer:   { label: "Dealer",   cls: "role-dealer" },
+  RSM:      { label: "RSM",      cls: "role-rsm" },
+  TSM:      { label: "TSM",      cls: "role-tsm" },
+  ZSM:      { label: "ZSM",      cls: "role-zsm" },
+  Commando: { label: "Commando", cls: "role-commando" },
+};
+function roleDisplay(role: string | undefined) {
+  return ROLE_DISPLAY[role ?? ""] ?? { label: role ?? "—", cls: "role-dealer" };
+}
+
 export default function DealerNavbar({ dealer, onMenuClick, onLogout }: DealerNavbarProps) {
   const [open,        setOpen]        = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -34,6 +47,8 @@ export default function DealerNavbar({ dealer, onMenuClick, onLogout }: DealerNa
     return () => window.removeEventListener("chat-unread", handler);
   }, []);
 
+  const { label: roleLabel, cls: roleCls } = roleDisplay(dealer?.role);
+
   const initials = dealer
     ? (dealer.dealerName || dealer.displayName || "D")
         .split(" ").map((n: string) => n[0]).slice(0, 2).join("").toUpperCase()
@@ -56,7 +71,7 @@ export default function DealerNavbar({ dealer, onMenuClick, onLogout }: DealerNa
         </div>
 
         <div className="app-navbar-right" ref={ref}>
-          <span className="role-chip role-chip--nav role-dealer">Dealer</span>
+          <span className={`role-chip role-chip--nav ${roleCls}`}>{roleLabel}</span>
 
           {/* ── Notification bell ── */}
           <div className="nav-bell-wrap">
@@ -96,7 +111,7 @@ export default function DealerNavbar({ dealer, onMenuClick, onLogout }: DealerNa
                     )}
                   </div>
                 </div>
-                <span className="role-chip role-dealer">Dealer</span>
+                <span className={`role-chip ${roleCls}`}>{roleLabel}</span>
               </div>
               <div className="nav-profile-divider" />
               <button className="nav-profile-logout" onClick={onLogout} role="menuitem">

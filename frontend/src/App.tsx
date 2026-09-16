@@ -18,8 +18,11 @@ import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 import ReportsPage from "./pages/ReportsPage";
 import DealerDashboard from "./pages/DealerDashboard";
+import StaffDashboard from "./pages/StaffDashboard";
 import ChatTestPage from "./pages/ChatTestPage";
 import { getDealerUser, type DealerLoginResponse } from "./services/dealerAuthService";
+
+const STAFF_ROLES = new Set(["RSM", "TSM", "ZSM", "Commando"]);
 
 export default function App() {
   const { instance, inProgress } = useMsal();
@@ -42,9 +45,17 @@ export default function App() {
     }
   }, [isAuthenticated, inProgress]);
 
+  // ── Distinguish WHICH kind of local-auth session this is. staffLogin()
+  // and dealerLogin() both write to the same localStorage key so existing
+  // token/session helpers (getDealerToken, dealerLogout, etc.) work for
+  // both — but that means `dealer` being truthy no longer implies the
+  // account is actually a Dealer. Branch on the real role instead. ──────────
+  const isDealerSession = !!dealer && dealer.role === "Dealer";
+  const isStaffSession  = !!dealer && STAFF_ROLES.has(dealer.role);
+
   return (
     <BrowserRouter>
-      {dealer ? (
+      {isDealerSession ? (
         // ── Dealer login — DealerLayout with own sidebar ──────────────────────
         <Routes>
           <Route element={<DealerLayout onLogout={refreshDealer} />}>
@@ -58,8 +69,31 @@ export default function App() {
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password"  element={<ResetPasswordPage />} />
         </Routes>
+      ) : isStaffSession ? (
+        // ── RSM/TSM/ZSM/Commando local login — their own dashboard,
+        // filtered to proposals matching their name via
+        // GET /api/proposals/my-team-proposals. They do NOT get the
+        // dealer's proposal-submission form or the DealerLayout shell. ──────
+        <Routes>
+          <Route element={<DealerLayout onLogout={refreshDealer} />}>
+            <Route path="/staff-dashboard" element={<StaffDashboard staff={dealer!} />} />
+            {/* Reuses the same submission form as RSM/dealer — a TSM/RSM/Commando
+                filling this in submits on a dealer's behalf, same as any other
+                proposal creation path. Both paths are registered because
+                DealerSidebar's "New Proposal" nav link is hardcoded to
+                /dealer-proposal regardless of which role is signed in — rather
+                than touching that shared component, both routes just resolve
+                to the same form here. */}
+            <Route path="/staff-proposal"  element={<RSMProposalForm />} />
+            <Route path="/dealer-proposal" element={<RSMProposalForm />} />
+            <Route path="/" element={<Navigate to="/staff-dashboard" replace />} />
+            <Route path="*" element={<Navigate to="/staff-dashboard" replace />} />
+          </Route>
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password"  element={<ResetPasswordPage />} />
+        </Routes>
       ) : isAuthenticated ? (
-        // ── Staff login — AppLayout (RSM / Manager / Admin) ───────────────────
+        // ── Microsoft SSO login — AppLayout (RSM / Manager / Admin) ───────────
         <Routes>
           <Route element={<AppLayout />}>
             {/* Dashboard — state-wise, dealer-wise summary */}

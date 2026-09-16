@@ -228,7 +228,41 @@
   font-size: 0.9rem; outline: none; font-family: inherit; transition: border-color 0.15s, box-shadow 0.15s;
 }
 .login-dealer-field input:focus { border-color: #1e3a5f; box-shadow: 0 0 0 3px rgba(30,58,95,0.12); }
-
+.login-password-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.login-password-wrap input {
+  width: 100%;
+  padding-right: 40px; /* room for the eye button */
+}
+.login-password-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: none;
+  color: #9aa5b1;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 0;
+  transition: color 0.15s, background 0.15s;
+}
+.login-password-toggle:hover {
+  color: #1e3a5f;
+  background: #eef1f5;
+}
+.login-password-toggle:focus-visible {
+  outline: 2px solid var(--volt);
+  outline-offset: 1px;
+}
 .login-forgot-link {
   font-size: 0.78rem; color: #1e3a5f; text-decoration: none;
   align-self: flex-end; margin-top: 2px;
