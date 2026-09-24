@@ -145,7 +145,8 @@ public class DailyDigestService : BackgroundService
                           ?? "vijay.maurya@bgauss.com";
             var portalUrl  = _cfg["Smtp:PortalBaseUrl"]
                           ?? _cfg["PortalUrl"]
-                          ?? "https://44.210.115.237";
+                          ?? "https://44.210.115.237"
+                          ?? "https://btl.bgauss.com";
 
             var subject = $"[BGauss BTL] Daily Forwarded Proposals Digest — " +
                           $"{todayIst:dd MMM yyyy} ({proposals.Count} proposal{(proposals.Count != 1 ? "s" : "")})";

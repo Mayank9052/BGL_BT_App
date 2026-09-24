@@ -1,4 +1,4 @@
-@Backend_HostAddress = https://44.210.115.237
+@Backend_HostAddress = https://btl.bgauss.com
 
 GET {{Backend_HostAddress}}/weatherforecast/
 Accept: application/json

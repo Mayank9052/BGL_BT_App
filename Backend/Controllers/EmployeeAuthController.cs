@@ -30,12 +30,13 @@ public class EmployeeAuthController : ControllerBase
     private readonly BaplDbContext _bapl;
     private readonly JwtTokenService _jwt;
     private readonly ILogger<EmployeeAuthController> _logger;
+    private readonly AuditLogService _audit;
 
     public EmployeeAuthController(
         AppDbContext db, BaplDbContext bapl,
-        JwtTokenService jwt, ILogger<EmployeeAuthController> logger)
+        JwtTokenService jwt, ILogger<EmployeeAuthController> logger, AuditLogService audit)
     {
-        _db = db; _bapl = bapl; _jwt = jwt; _logger = logger;
+        _db = db; _bapl = bapl; _jwt = jwt; _logger = logger; _audit = audit;
     }
 
     // ── POST /api/employee-auth/login — public ────────────────────────────────
@@ -283,6 +284,9 @@ public class EmployeeAuthController : ControllerBase
 
             _logger.LogInformation(
                 "Admin {Admin} reset password for staff {Email}", guard.CallerEmail, staff.Email);
+            
+            await _audit.LogAsync(guard.CallerEmail!, "Admin", "Admin", "AzureAD", "PasswordAdminReset",
+                targetEmail: staff.Email, details: $"Admin reset password for {staff.DisplayName}");
 
             return Ok(new { message = $"Password reset successfully for {staff.DisplayName}." });
         }

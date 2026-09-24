@@ -30,6 +30,7 @@ public class AppDbContext : DbContext
     public DbSet<LmsLeadRecord> LmsLeadRecords => Set<LmsLeadRecord>();
     public DbSet<LeadChannelMapping> LeadChannelMappings => Set<LeadChannelMapping>();
     public DbSet<LeadTarget> LeadTargets => Set<LeadTarget>();
+    public DbSet<AuditLog> AuditLogs { get; set; }
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

@@ -168,13 +168,14 @@ builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddTransient<IClaimsTransformation, DbRoleClaimsTransformation>();
 builder.Services.AddSingleton<GraphTokenStore>();
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<GraphAppTokenService>();
 builder.Services.AddHostedService<DailyDigestService>();
 
 // ── Email ─────────────────────────────────────────────────────────────────────
 builder.Services.AddHttpClient<GraphEmailService>();
 builder.Services.AddScoped<IEmailService, GraphEmailService>();
 builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("Smtp"));
-
+builder.Services.AddScoped<AuditLogService>();
 // ── Chat — SignalR + AI bot with DB access ────────────────────────────────────
 builder.Services.AddSignalR(opts =>
 {

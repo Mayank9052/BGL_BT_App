@@ -18,7 +18,7 @@ public class SmtpSettings
     public string ApproverEmail           { get; set; } = string.Empty;
     public string ApproverEmail2          { get; set; } = string.Empty;
     public string FinalApproverEmail      { get; set; } = string.Empty;
-    public string PortalBaseUrl           { get; set; } = "https://44.210.115.237";
+    public string PortalBaseUrl           { get; set; } = "https://btl.bgauss.com";
 
     public string ApproverFirstName =>
         FirstName(ApproverEmail);
@@ -41,17 +41,20 @@ public class GraphEmailService : IEmailService
     private readonly SmtpSettings              _settings;
     private readonly ILogger<GraphEmailService> _logger;
     private readonly IConfiguration            _config;
+    private readonly GraphAppTokenService _appToken;
 
     public GraphEmailService(
         HttpClient http,
         IOptions<SmtpSettings> settings,
         ILogger<GraphEmailService> logger,
-        IConfiguration config)
+        IConfiguration config,
+        GraphAppTokenService appToken)
     {
         _http     = http;
         _settings = settings.Value;
         _logger   = logger;
         _config   = config;
+        _appToken = appToken;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -251,6 +254,89 @@ public class GraphEmailService : IEmailService
         var body      = BuildRevisionToMakerBody(proposal, checkerNote, portalUrl);
         await SendEmailAsync(to: makerEmail, subject: subject, body: body);
     }
+
+    // Sends via an APP-ONLY Graph token (client credentials), not the
+    // delegated/interactive token the rest of this class uses. This is what
+    // makes it work from a public, unauthenticated endpoint like forgot-password
+    // — there's no signed-in user to borrow a token from, so this mints its own.
+    //
+    // Uses /users/{mailbox}/sendMail (application-permission endpoint), NOT
+    // /me/sendMail (which only exists for delegated/interactive tokens).
+    public async Task<(bool Sent, string? Error)> SendPasswordResetEmailAsync(
+        string toEmail, string displayName, string resetLink)
+    {
+        if (string.IsNullOrWhiteSpace(toEmail))
+            return (false, "No recipient.");
+
+        try
+        {
+            var appToken = await _appToken.GetAppOnlyTokenAsync();
+
+            // The mailbox that will appear as the sender — must be a real mailbox
+            // in your tenant, and the app registration must have Mail.Send
+            // (Application) permission with admin consent to send as it.
+            var senderMailbox = _settings.ApproverEmail;
+
+            var body = $"""
+                <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:0 auto;
+                            border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+                  <div style="background:#0a2540;padding:18px 24px">
+                    <div style="color:#fff;font-size:16px;font-weight:700">BGauss BTL Portal</div>
+                    <div style="color:rgba(255,255,255,0.6);font-size:12px;margin-top:2px">Password Reset Request</div>
+                  </div>
+                  <div style="padding:22px 24px">
+                    <p style="margin:0 0 14px;font-size:14px;color:#374151">Hi {displayName},</p>
+                    <p style="margin:0 0 18px;font-size:13px;color:#374151">
+                      Click the button below to reset your BGauss BTL portal password.
+                      This link is valid for <strong>1 hour</strong>.</p>
+                    <div style="text-align:center;margin-bottom:18px">
+                      <a href="{resetLink}" style="background:#1e3a5f;color:#fff;text-decoration:none;
+                        padding:11px 28px;border-radius:7px;font-weight:600;font-size:13px;display:inline-block">
+                        Reset Password
+                      </a>
+                    </div>
+                    <p style="margin:0;font-size:11px;color:#9ca3af;word-break:break-all">
+                      Or copy this link: <a href="{resetLink}" style="color:#64748b">{resetLink}</a></p>
+                    <p style="margin:16px 0 0;font-size:12px;color:#9ca3af">
+                      If you didn't request this, you can safely ignore this email.</p>
+                  </div>
+                </div>
+                """;
+
+            var payload = new
+            {
+                message = new
+                {
+                    subject      = "Reset your BGauss BTL portal password",
+                    body         = new { contentType = "HTML", content = body },
+                    toRecipients = new[] { new { emailAddress = new { address = toEmail } } },
+                },
+                saveToSentItems = true,
+            };
+
+            using var req = new HttpRequestMessage(
+                HttpMethod.Post, $"https://graph.microsoft.com/v1.0/users/{senderMailbox}/sendMail")
+            { Content = JsonContent.Create(payload) };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", appToken);
+
+            var resp = await _http.SendAsync(req);
+            if (resp.IsSuccessStatusCode)
+            {
+                _logger.LogInformation("Password reset email sent to {To}", toEmail);
+                return (true, null);
+            }
+
+            var err = await resp.Content.ReadAsStringAsync();
+            _logger.LogError("App-only Graph sendMail failed for {To}: {Status} {Err}", toEmail, resp.StatusCode, err);
+            return (false, $"Graph {resp.StatusCode}: {err}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Password reset email failed for {To}", toEmail);
+            return (false, ex.Message);
+        }
+    }
+
 
     // ═══════════════════════════════════════════════════════════════════════════
     // CORE SEND

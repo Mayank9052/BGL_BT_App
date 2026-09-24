@@ -331,6 +331,20 @@ public class EmailService : IEmailService
             """);
     }
 
+    public async Task<(bool Sent, string? Error)> SendPasswordResetEmailAsync(
+        string toEmail, string displayName, string resetLink)
+    {
+        var subject = "Reset your BGauss BTL portal password";
+        var body = $"""
+            <p>Hi {displayName},</p>
+            <p>Click the link below to reset your BGauss BTL portal password (valid 1 hour):</p>
+            <p><a href="{resetLink}">{resetLink}</a></p>
+            <p>If you didn't request this, you can ignore this email.</p>
+            """;
+        return await SendAsync(to: toEmail, cc: null, subject: subject, body: body);
+    }
+
+
     private string BuildRevisionBody(Proposal p, string? note)
     {
         var sender   = p.SubmittedByDisplayName ?? p.RsmName ?? p.SubmittedBy;
