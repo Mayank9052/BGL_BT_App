@@ -238,7 +238,7 @@ export default function RSMProposalForm() {
   const [revisionNote,     setRevisionNote]     = useState<string | null>(null);
   const [loadingEdit,      setLoadingEdit]      = useState(false);
   const [dealerAutoFilled, setDealerAutoFilled] = useState(false);
-
+  const [dealerTypeOverridden, setDealerTypeOverridden] = useState(false);
   const [fieldErrors,    setFieldErrors]    = useState<FieldErrors>({});
   const [activityErrors, setActivityErrors] = useState<ActivityErrors>({});
   const [showDetailErr,  setShowDetailErr]  = useState(false);
@@ -447,6 +447,7 @@ export default function RSMProposalForm() {
     setHeader(emptyHeader());
     setCities([]);
     setDealerAutoFilled(false);
+    setDealerTypeOverridden(false);
 
     if (dealer) {
       setDealerAutoFilled(true);
@@ -964,7 +965,10 @@ export default function RSMProposalForm() {
         dealerName: header.dealerName, dealerCode: header.dealerId || null,
         vendorId: header.vendorId ? Number(header.vendorId) : null, vendorName: header.vendorName || null,
         rsmName: header.rsmName, tsmName: header.tsmName, commandoName: header.commandoName || null,
-        month: header.month, year: header.year, eligibility: header.eligibility, remarks: header.remarks,
+        month: header.month, year: header.year, eligibility: header.eligibility,
+        remarks: header.remarks + (dealerTypeOverridden
+          ? `\n[Dealer type manually overridden to "${header.type}" — ERP shows a different classification. Verify onboarding date.]`
+          : ""),
         // ── notification recipients — sent so the backend can email "activity sheet updated" ──
         dealerEmail: header.dealerEmail || null, rsmEmail: header.rsmEmail || null, commandoEmail: header.commandoEmail || null,
         submittedBy: account?.username ?? null, docNumber: generateDocNumber(),
@@ -1209,12 +1213,33 @@ export default function RSMProposalForm() {
 
               <div className="rsm-field">
                 <Label text="Dealer Type" required/>
-                {dealerAutoFilled && !editMode ? <LockedField value={header.type}/> : (
-                  <select className={`rsm-select${fieldErrors.type?" rsm-input--error":""}`}
-                    value={header.type} onChange={(e) => setField("type", e.target.value)}>
-                    <option value="">{eligibilityLoading?"Loading…":"Select type"}</option>
-                    {DEALER_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
+                {dealerAutoFilled && !editMode && !dealerTypeOverridden ? (
+                  <>
+                    <LockedField value={header.type}/>
+                    {eligibility && (
+                      <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>
+                        From ERP onboarding date · <button type="button"
+                          style={{ fontSize:10,color:"#2563eb",background:"none",border:"none",cursor:"pointer",padding:0 }}
+                          onClick={() => setDealerTypeOverridden(true)}>
+                          Wrong? Override manually
+                        </button>
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <select className={`rsm-select${fieldErrors.type?" rsm-input--error":""}`}
+                      value={header.type} onChange={(e) => setField("type", e.target.value)}>
+                      <option value="">{eligibilityLoading?"Loading…":"Select type"}</option>
+                      {DEALER_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                    {dealerTypeOverridden && (
+                      <span style={{ fontSize:10,color:"#f59e0b",marginTop:2,display:"block" }}>
+                        ⚠ Overriding ERP's classification — this will be flagged in the proposal
+                        remarks for the checker to verify against ERP onboarding records.
+                      </span>
+                    )}
+                  </>
                 )}
                 {fieldErrors.type && <span className="rsm-field-error">{fieldErrors.type}</span>}
               </div>

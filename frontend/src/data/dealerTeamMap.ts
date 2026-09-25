@@ -294,7 +294,20 @@ export const DEALER_TEAM_MAP: DealerTeam[] = [
   { dealerName: "TEJAS MOBILITY", city: "", state: "Odisha", rsm: "Shrivatsa Joshi", tsm: "Asit Panda", commando: "Santanu", dealerEmail: "bgauss.bargarh1@gmail.com", commandoEmail: "santanu.parida@bgauss.com" },
   { dealerName: "VEVA E-BIKES", city: "", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Santhosh B", commando: "", dealerEmail: "bgauss.tiruppur02@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
   { dealerName: "VoltMart", city: "", state: "Delhi", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "", rsmEmail: "victor.sirohi@bgauss.com" },
-  { dealerName: "E TURN MOTORS LLP-KANCHEEPURAM", city: "", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Santhosh B", commando: "", dealerEmail: "bgauss.kanchipuram@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },];
+  { dealerName: "E TURN MOTORS LLP-KANCHEEPURAM", city: "", state: "Tamil Nadu", rsm: "Balakrishnan K", tsm: "Santhosh B", commando: "", dealerEmail: "bgauss.kanchipuram@gmail.com", rsmEmail: "balakrishnan.k@bgauss.com" },
+  // ── ADDED per Gorakh's request — these 5 dealers had active portal logins
+  // (visible in AdminUsersPage → Dealer Accounts) but were missing from this
+  // map entirely, which meant they never showed up in the RSM Form dealer
+  // dropdown (dealerOptions filters to only dealers present here) and any
+  // proposal for them had no RSM/TSM auto-fill. ──
+  { dealerName: "SPG eVEHICLES",        city: "Khanpur",     state: "Uttar Pradesh", rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "", dealerEmail: "bgauss.khanpur@gmail.com",       rsmEmail: "victor.sirohi@bgauss.com", tsmEmail: "ravikant.mahawar@bgauss.com" },
+  { dealerName: "KESHAV EMOBILITY LLP", city: "Jamnagar",    state: "Gujarat",       rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "", dealerEmail: "bgauss.jamnagar@gmail.com",      rsmEmail: "victor.sirohi@bgauss.com", tsmEmail: "ravikant.mahawar@bgauss.com" },
+  { dealerName: "PARI EV SOLUTION",     city: "Vasant Kunj", state: "Delhi",         rsm: "Victor Sirohi", tsm: "Ravi Kant Mahawar", commando: "", dealerEmail: "bgauss.vasantkunj@gmail.com",    rsmEmail: "victor.sirohi@bgauss.com", tsmEmail: "ravikant.mahawar@bgauss.com" },
+  { dealerName: "VEERA MOTORS - YEOLA", city: "Yeola",       state: "Maharashtra",   rsm: "Shashank Chinnapurkar", tsm: "Amol Sanap",              commando: "", dealerEmail: "bgauss.yeola@gmail.com",         rsmEmail: "shashank.c@bgauss.com" },
+  { dealerName: "BHOOMI MOTORS",        city: "Nagpur",      state: "Maharashtra",   rsm: "Shashank Chinnapurkar", tsm: "Sanket Ajabrao Jachak",   commando: "", dealerEmail: "bgauss.indorasquare@gmail.com",  rsmEmail: "shashank.c@bgauss.com" },
+  { dealerName: "PRAKASH SALES",             city: "Jhansi",   state: "Uttar Pradesh", rsm: "Shrivatsa Joshi", tsm: "Saurabh Jauhari", commando: "", dealerEmail: "bgauss.jhansi0001@gmail.com", rsmEmail: "shrivatsa.joshi@bgauss.com", tsmEmail: "saurabh.jauhari@bgauss.com" },
+  { dealerName: "SINGH & SONS ENTERPRISES",  city: "Azamgarh", state: "Uttar Pradesh", rsm: "Shrivatsa Joshi", tsm: "Saurabh Jauhari", commando: "", dealerEmail: "bgauss.azamgarh@gmail.com",   rsmEmail: "shrivatsa.joshi@bgauss.com", tsmEmail: "saurabh.jauhari@bgauss.com" },
+];
 
 // Build a normalized lookup map for fast matching
 const _normalizedMap = new Map<string, DealerTeam>(
