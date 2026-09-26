@@ -4,6 +4,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchMyDealerProposals, type ProposalResponse } from "../services/proposalService";
+import * as XLSX from "xlsx";
 import "./DealerDashboard.css";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
@@ -184,7 +185,7 @@ export default function DealerDashboard() {
   const toggleActualsPanel = (activityId:string, panel:"photos"|"invoices"|"history") =>
     setOpenActualsPanel(prev => ({ ...prev, [activityId]: prev[activityId]===panel?undefined as any:panel }));
   const [mediaViewer, setMediaViewer] = useState<{url:string;name:string;type:string}|null>(null);
-
+  const [teamHistoryOpen, setTeamHistoryOpen] = useState<{ role: "RSM"|"TSM"|"Commando"; name: string } | null>(null);
   const showToast = (msg:string, ok:boolean) => {
     setToast({ msg, ok });
     setTimeout(() => setToast(null), 3500);
@@ -233,6 +234,64 @@ export default function DealerDashboard() {
     budget:   src.reduce((s,p) => s + p.totalBudget, 0),
     retail:   src.reduce((s,p) => s + p.totalRetailTarget, 0),
   }), [src]);
+
+  // ── My Team — RSM/TSM/Commando linked to this dealer, plus the budget
+  // totals attributable to that team (same numbers, just framed as "your
+  // team's" figures rather than raw dealer totals). Pulled from whichever
+  // proposal has the most recent RSM/TSM/Commando assignment, since a
+  // dealer's team can be reassigned between months. ──
+  const myTeam = useMemo(() => {
+    if (proposals.length === 0) return null;
+    const latest = [...proposals].sort((a, b) =>
+      new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())[0];
+    return {
+      rsmName: latest.rsmName || "—",
+      tsmName: (latest as any).tsmName || "—",
+      commandoName: latest.commandoName || "—",
+      // Emails aren't on ProposalResponse today — see note below the code block.
+      rsmEmail: (latest as any).rsmEmail || null,
+      tsmEmail: (latest as any).tsmEmail || null,
+      commandoEmail: (latest as any).commandoEmail || null,
+    };
+  }, [proposals]);
+
+  const teamBudget = useMemo(() => ({
+    totalBudget:    proposals.reduce((s, p) => s + p.totalBudget, 0),
+    approvedBudget: proposals.filter(p => p.status === "Approved").reduce((s, p) => s + p.totalBudget, 0),
+    totalRetail:    proposals.reduce((s, p) => s + p.totalRetailTarget, 0),
+    totalLead:      proposals.reduce((s, p) => s + p.totalLeadTarget, 0),
+  }), [proposals]);
+
+  // ── Download Report — Excel export of every proposal this dealer has
+  // submitted, one row per activity, so it can be opened/printed/shared
+  // outside the portal. ──
+  const handleDownloadReport = () => {
+    const rows: (string | number)[][] = [
+      ["Token", "Month", "Year", "Activity Name", "Category", "RSM", "TSM", "Commando",
+       "Lead Target", "Retail Target", "Budget (₹)", "Status", "Submitted"],
+    ];
+    for (const p of proposals) {
+      for (const a of p.activities) {
+        rows.push([
+          p.tokenNumber ?? "—", p.month, (p as any).year ?? "—",
+          a.activityType, a.category ?? "—",
+          p.rsmName || "—", (p as any).tsmName || "—", p.commandoName || "—",
+          a.leadTarget, a.retailTarget, Math.round(a.budget + (a.additionalBudget || 0)),
+          p.status === "NeedsRevision" ? "Needs Revision" : p.status,
+          p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-IN") : "—",
+        ]);
+      }
+    }
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [
+      { wch: 14 }, { wch: 12 }, { wch: 8 }, { wch: 24 }, { wch: 10 },
+      { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 12 }, { wch: 12 },
+      { wch: 14 }, { wch: 14 }, { wch: 14 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "My Proposals");
+    XLSX.writeFile(wb, `${proposals[0]?.dealerName?.replace(/[^a-z0-9]/gi, "_") || "Dealer"}_BTL_Report.xlsx`);
+  };
 
   // ── Post-Activity: init actualsData when opening a proposal ───────────────
   const initActuals = useCallback((p:ProposalResponse) => {
@@ -535,8 +594,71 @@ export default function DealerDashboard() {
             {revisionCount > 0 && <span style={{ color:"#f59e0b",fontWeight:700 }}> · {revisionCount} need revision</span>}
           </p>
         </div>
-        <button className="dash-add-btn" onClick={() => navigate("/dealer-proposal")}>+ New Proposal</button>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+          <button onClick={handleDownloadReport} disabled={proposals.length === 0}
+            style={{ background:"#1e3a5f", color:"#fff", border:"none", borderRadius:8,
+              padding:"10px 18px", fontSize:13, fontWeight:700, cursor:proposals.length===0?"not-allowed":"pointer",
+              opacity:proposals.length===0?0.5:1 }}
+            title={proposals.length===0?"No proposals to export yet":"Download all your proposals as Excel"}>
+            ⬇ Download Report
+          </button>
+          <button className="dash-add-btn" onClick={() => navigate("/dealer-proposal")}>+ New Proposal</button>
+        </div>
       </div>
+      {/* ── My Team & Linked Budget ──────────────────────────────────────── */}
+      {myTeam && (
+        <div style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:12,
+          padding:"16px 20px", marginBottom:16 }}>
+          <div style={{ fontWeight:700, fontSize:13, color:"#0a2540", marginBottom:12 }}>
+            👥 My Team
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))", gap:14, marginBottom:16 }}>
+            {[
+              { label: "RSM" as const,      name: myTeam.rsmName,      email: myTeam.rsmEmail },
+              { label: "TSM" as const,      name: myTeam.tsmName,      email: myTeam.tsmEmail },
+              { label: "Commando" as const, name: myTeam.commandoName, email: myTeam.commandoEmail },
+            ].map((t) => {
+              const clickable = t.name && t.name !== "—";
+              return (
+                <div key={t.label}
+                  onClick={() => clickable && setTeamHistoryOpen({ role: t.label, name: t.name })}
+                  style={{ background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 14px",
+                    cursor: clickable ? "pointer" : "default", transition:"box-shadow 0.15s, border-color 0.15s" }}
+                  onMouseEnter={(e) => { if (clickable) { e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)"; e.currentTarget.style.borderColor = "#93c5fd"; } }}
+                  onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "#e2e8f0"; }}
+                  title={clickable ? `View ${t.label} activity history` : undefined}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                    <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em" }}>{t.label}</div>
+                    {clickable && <span style={{ fontSize:11, color:"#2563eb" }}>View history →</span>}
+                  </div>
+                  <div style={{ fontSize:14, fontWeight:600, color:"#0a2540", marginTop:2 }}>{t.name}</div>
+                  {t.email && (
+                    <a href={`mailto:${t.email}`} onClick={(e) => e.stopPropagation()}
+                      style={{ fontSize:11, color:"#2563eb", textDecoration:"none" }}>{t.email}</a>
+                  )}
+                </div>
+              );
+          })}
+          </div>
+          <div style={{ height:1, background:"#f1f5f9", margin:"0 0 14px" }}/>
+          <div style={{ fontSize:11, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em", marginBottom:10 }}>
+            Budget linked to your team
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:10 }}>
+            {[
+              { label: "Total Budget",    value: inrCompact(teamBudget.totalBudget),    color: "#0a2540" },
+              { label: "Approved Budget", value: inrCompact(teamBudget.approvedBudget), color: "#16a34a" },
+              { label: "Retail Target",   value: String(teamBudget.totalRetail),        color: "#7c3aed" },
+              { label: "Lead Target",     value: String(teamBudget.totalLead),          color: "#0369a1" },
+            ].map((k) => (
+              <div key={k.label} style={{ borderTop:`3px solid ${k.color}`, background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 14px" }}>
+                <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em" }}>{k.label}</div>
+                <div style={{ fontSize:18, fontWeight:800, color:k.color, marginTop:2 }}>{k.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}    
 
       {/* ── NeedsRevision banner ────────────────────────────────────────────── */}
       {revisionCount > 0 && (
@@ -559,6 +681,107 @@ export default function DealerDashboard() {
           </button>
         </div>
       )}
+
+      {/* ══ TEAM MEMBER HISTORY MODAL ══════════════════════════════════════════ */}
+      {teamHistoryOpen && (() => {
+        const fieldForRole = (p: ProposalResponse) =>
+          teamHistoryOpen.role === "RSM"      ? p.rsmName :
+          teamHistoryOpen.role === "TSM"      ? (p as any).tsmName :
+          teamHistoryOpen.role === "Commando" ? p.commandoName : "";
+
+        const teamProposals = proposals.filter(p =>
+          (fieldForRole(p) || "").trim().toLowerCase() === teamHistoryOpen.name.trim().toLowerCase());
+
+        const teamTotals = teamProposals.reduce((s, p) => ({
+          budget: s.budget + p.totalBudget,
+          retail: s.retail + p.totalRetailTarget,
+          lead:   s.lead   + p.totalLeadTarget,
+        }), { budget: 0, retail: 0, lead: 0 });
+
+        return (
+          <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.52)",
+            zIndex:1000,overflowY:"auto",padding:"20px 12px" }}
+            onClick={e => { if (e.target===e.currentTarget) setTeamHistoryOpen(null); }}>
+            <div style={{ background:"#fff",borderRadius:14,maxWidth:900,margin:"0 auto",
+              boxShadow:"0 20px 60px rgba(0,0,0,0.3)",overflow:"hidden" }}>
+
+              <div style={{ background:"#0a2540",padding:"18px 24px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap" }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ color:"rgba(255,255,255,0.5)",fontSize:10,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:2 }}>
+                    {teamHistoryOpen.role} — Activity History
+                  </div>
+                  <div style={{ color:"#fff",fontWeight:700,fontSize:16 }}>{teamHistoryOpen.name}</div>
+                </div>
+                <button onClick={() => setTeamHistoryOpen(null)} style={{ background:"rgba(255,255,255,0.12)",border:"none",color:"#fff",
+                  borderRadius:8,width:32,height:32,display:"flex",alignItems:"center",justifyContent:"center",
+                  cursor:"pointer",fontSize:16 }}>✕</button>
+              </div>
+
+              <div style={{ padding:"20px 24px 24px" }}>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
+                  {[
+                    { label: "Proposals",      value: String(teamProposals.length), color: "#0a2540" },
+                    { label: "Total Budget",   value: inrCompact(teamTotals.budget), color: "#16a34a" },
+                    { label: "Retail Target",  value: String(teamTotals.retail),     color: "#7c3aed" },
+                    { label: "Lead Target",    value: String(teamTotals.lead),       color: "#0369a1" },
+                  ].map((k) => (
+                    <div key={k.label} style={{ borderTop:`3px solid ${k.color}`, background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 14px" }}>
+                      <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em" }}>{k.label}</div>
+                      <div style={{ fontSize:18, fontWeight:800, color:k.color, marginTop:2 }}>{k.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {teamProposals.length === 0 ? (
+                  <div style={{ textAlign:"center", padding:"40px 20px", color:"#9ca3af" }}>
+                    <div style={{ fontSize:32, marginBottom:10 }}>📭</div>
+                    No proposal history found for this {teamHistoryOpen.role}.
+                  </div>
+                ) : (
+                  <div style={{ overflowX:"auto", border:"1px solid #e2e8f0", borderRadius:10 }}>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                      <thead>
+                        <tr style={{ background:"#0a2540" }}>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Token</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Month</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Year</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Status</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"right", fontSize:10 }}>Budget</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"right", fontSize:10 }}>Retail</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"right", fontSize:10 }}>Lead</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...teamProposals].sort((a,b) => new Date(b.createdAt??0).getTime()-new Date(a.createdAt??0).getTime())
+                          .map((p, i) => (
+                          <tr key={p.id} style={{ background:i%2===0?"#fff":"#f8fafc", borderBottom:"1px solid #f1f5f9",
+                              cursor:"pointer" }}
+                            onClick={() => { setTeamHistoryOpen(null); openModal(p); }}>
+                            <td style={{ padding:"7px 10px", fontFamily:"monospace", color:"#1e3a5f", fontWeight:600 }}>{p.tokenNumber ?? "—"}</td>
+                            <td style={{ padding:"7px 10px" }}>{p.month}</td>
+                            <td style={{ padding:"7px 10px" }}>{(p as any).year ?? "—"}</td>
+                            <td style={{ padding:"7px 10px" }}><StatusPill status={p.status}/></td>
+                            <td style={{ padding:"7px 10px", textAlign:"right", fontWeight:600 }}>{inrCompact(p.totalBudget)}</td>
+                            <td style={{ padding:"7px 10px", textAlign:"right" }}>{p.totalRetailTarget}</td>
+                            <td style={{ padding:"7px 10px", textAlign:"right" }}>{p.totalLeadTarget}</td>
+                            <td style={{ padding:"7px 10px", fontSize:11, color:"#6b7280" }}>
+                              {p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}) : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p style={{ fontSize:11, color:"#9ca3af", marginTop:12 }}>
+                  Click any row to open that proposal's full detail.
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Filter bar ──────────────────────────────────────────────────────── */}
       <div className="dash-filter-bar">

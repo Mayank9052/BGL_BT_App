@@ -30,7 +30,12 @@ public class AppDbContext : DbContext
     public DbSet<LmsLeadRecord> LmsLeadRecords => Set<LmsLeadRecord>();
     public DbSet<LeadChannelMapping> LeadChannelMappings => Set<LeadChannelMapping>();
     public DbSet<LeadTarget> LeadTargets => Set<LeadTarget>();
-    public DbSet<AuditLog> AuditLogs { get; set; }
+
+    // ── NEW: Activity Log (login/password-event audit trail) ──────────────────
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+
+    // ── NEW: Dealer Mapping (DB-backed replacement for dealerTeamMap.ts) ───────
+    public DbSet<DealerTeamMapping> DealerTeamMappings => Set<DealerTeamMapping>();
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -326,8 +331,6 @@ public class AppDbContext : DbContext
             e.Property(x => x.CreatedAt)
                 .HasDefaultValueSql("SYSUTCDATETIME()");
             e.Property(x => x.UpdatedAt);
-            // Matches:
-            // CREATE INDEX IX_LmsLeadRecords_State_Source_SubSource
             e.HasIndex(x => new
             {
                 x.State,
@@ -335,8 +338,6 @@ public class AppDbContext : DbContext
                 x.SubSource
             })
             .HasDatabaseName("IX_LmsLeadRecords_State_Source_SubSource");
-            // Matches:
-            // CREATE INDEX IX_LmsLeadRecords_LeadDate
             e.HasIndex(x => x.LeadDate)
                 .HasDatabaseName("IX_LmsLeadRecords_LeadDate");
         });
@@ -404,6 +405,49 @@ public class AppDbContext : DbContext
             .HasDatabaseName("UX_LeadTargets");
         });
 
+        // ── NEW: Audit Log ──────────────────────────────────────────────────────
+        modelBuilder.Entity<AuditLog>(e =>
+        {
+            e.ToTable("AuditLogs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ActorEmail).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ActorName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ActorRole).HasMaxLength(50).IsRequired();
+            e.Property(x => x.AuthType).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Action).HasMaxLength(50).IsRequired();
+            e.Property(x => x.TargetEmail).HasMaxLength(200);
+            e.Property(x => x.Details).HasMaxLength(500);
+            e.Property(x => x.IpAddress).HasMaxLength(50);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            e.HasIndex(x => x.CreatedAt);
+            e.HasIndex(x => x.ActorEmail);
+            e.HasIndex(x => x.Action);
+        });
 
+        // ── NEW: Dealer Team Mapping (DB-backed replacement for dealerTeamMap.ts) ──
+        modelBuilder.Entity<DealerTeamMapping>(e =>
+        {
+            e.ToTable("DealerTeamMappings");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.DealerName).HasMaxLength(300).IsRequired();
+            e.HasIndex(x => x.DealerName).IsUnique();
+            e.Property(x => x.DealerCode).HasMaxLength(50);
+            e.Property(x => x.City).HasMaxLength(150);
+            e.Property(x => x.State).HasMaxLength(100);
+            e.Property(x => x.Rsm).HasMaxLength(200).IsRequired().HasDefaultValue("");
+            e.Property(x => x.RsmEmail).HasMaxLength(200);
+            e.Property(x => x.Tsm).HasMaxLength(200);
+            e.Property(x => x.TsmEmail).HasMaxLength(200);
+            e.Property(x => x.Commando).HasMaxLength(200);
+            e.Property(x => x.CommandoEmail).HasMaxLength(200);
+            e.Property(x => x.DealerEmail).HasMaxLength(200);
+            e.Property(x => x.IsEligible).HasDefaultValue(true);
+            e.Property(x => x.DealerType).HasMaxLength(20);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            e.Property(x => x.UpdatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            e.Property(x => x.UpdatedByEmail).HasMaxLength(200);
+            e.HasIndex(x => x.DealerCode);
+            e.HasIndex(x => x.State);
+        });
     }
 }

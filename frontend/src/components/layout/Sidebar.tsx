@@ -50,6 +50,7 @@ const NAV_ITEMS = [
 const ADMIN_ITEMS = [
   { to: "/admin/users",     label: "Manage Users & Activity", icon: "users" },
   { to: "/admin/audit-log", label: "Activity Log",            icon: "logs"  },
+  { to: "/admin/dealer-map", label: "Dealer Mapping",         icon: "users" },
 ];
 
 export default function Sidebar({

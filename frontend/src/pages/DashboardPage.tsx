@@ -1072,7 +1072,7 @@ export default function DashboardPage() {
                             : isNew
                             ? "Budget taken for BTL (New)"
                             : "Budget taken for BTL (Old+New+Special Approval)";
-                          const btlBudget   = row.eligibleOldBudget + row.eligibleNewBudget;
+                          const btlBudget = row.eligibleOldBudget + row.eligibleNewBudget + row.nonBudget;
                           const q           = sharedSearch.toLowerCase().trim();
                           const dealerMatch = q && row.dealerName.toLowerCase().includes(q);
                           return (

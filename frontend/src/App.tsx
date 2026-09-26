@@ -22,6 +22,8 @@ import StaffDashboard from "./pages/StaffDashboard";
 import ChatTestPage from "./pages/ChatTestPage";
 import { getDealerUser, type DealerLoginResponse } from "./services/dealerAuthService";
 import AdminAuditLogPage from "./pages/AdminAuditLogPage";
+import AdminDealerMapPage from "./pages/AdminDealerMapPage";
+
 const STAFF_ROLES = new Set(["RSM", "TSM", "ZSM", "Commando"]);
 
 export default function App() {
@@ -112,6 +114,7 @@ export default function App() {
             <Route element={<AdminRoute />}>
               <Route path="/admin/users" element={<AdminUsersPage />} />
               <Route path="/admin/audit-log" element={<AdminAuditLogPage />} />
+              <Route path="/admin/dealer-map" element={<AdminDealerMapPage />} />
             </Route>
             <Route path="/"  element={<Navigate to="/dashboard" replace />} />
             <Route path="*"  element={<Navigate to="/dashboard" replace />} />
