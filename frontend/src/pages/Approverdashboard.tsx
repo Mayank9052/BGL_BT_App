@@ -3,7 +3,8 @@ import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/authStore";
-import { findDealerTeam } from "../data/dealerTeamMap";
+// import { findDealerTeam } from "../data/dealerTeamMap";
+import { useDealerTeamLookup, type DealerTeam } from "../hooks/useDealerTeamLookup";
 import {
   fetchProposals, fetchMyProposals, decideProposal, updateProposal,
   sendBackProposal, updateProposalActuals, uploadActivityMedia,
@@ -88,14 +89,20 @@ function mediaIcon(t: string | null) {
 }
 
 // ── Looks up the RSM/TSM/Commando emails for a proposal's dealer, from the
-// static dealerTeamMap. Used to auto-fill the "cc" line whenever we notify
-// the dealer — no separate button or endpoint needed. ──
-function getTeamEmailsFor(p: ProposalResponse): { rsmEmail: string; tsmEmail: string; commandoEmail: string } {
-  const team = findDealerTeam((p as any).dealerCode ?? "", p.dealerName);
-  return {
-    rsmEmail: team?.rsmEmail ?? "",
-    tsmEmail: team?.tsmEmail ?? "",
-    commandoEmail: team?.commandoEmail ?? "",
+// live DealerTeamMappings table (fetched via useDealerTeamLookup below).
+// Used to auto-fill the "cc" line whenever we notify the dealer — no
+// separate button or endpoint needed. Only RSM/TSM/Commando exist in the
+// mapping — there is no ZSM field. ──
+function makeGetTeamEmailsFor(
+  findDealerTeam: (dealerCode: string, dealerName: string) => DealerTeam | null,
+) {
+  return function getTeamEmailsFor(p: ProposalResponse): { rsmEmail: string; tsmEmail: string; commandoEmail: string } {
+    const team = findDealerTeam((p as any).dealerCode ?? "", p.dealerName);
+    return {
+      rsmEmail: team?.rsmEmail ?? "",
+      tsmEmail: team?.tsmEmail ?? "",
+      commandoEmail: team?.commandoEmail ?? "",
+    };
   };
 }
 
@@ -302,6 +309,8 @@ export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
   const navigate  = useNavigate();
   const account   = accounts[0];
+  const { findDealerTeam } = useDealerTeamLookup(instance);
+  const getTeamEmailsFor = useMemo(() => makeGetTeamEmailsFor(findDealerTeam), [findDealerTeam]);
   const { user }  = useAuthStore();
   const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
   const myEmail         = (account?.username ?? user?.email ?? "").toLowerCase();

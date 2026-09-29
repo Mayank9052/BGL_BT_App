@@ -37,7 +37,8 @@ import {
 import { fetchVendors, type VendorOption } from "../services/vendorService";
 import SearchableSelect from "../components/SearchableSelect";
 import type { StateOption, CityOption } from "../types/location";
-import { findDealerTeam, DEALER_TEAM_MAP } from "../data/dealerTeamMap";
+// import { findDealerTeam, DEALER_TEAM_MAP } from "../data/dealerTeamMap";
+import { useDealerTeamLookup } from "../hooks/useDealerTeamLookup";
 import * as XLSX from "xlsx";
 import "./RSMForm.css";
 import {
@@ -202,6 +203,7 @@ export default function RSMProposalForm() {
   const navigate       = useNavigate();
   const [searchParams] = useSearchParams();
   const account        = accounts[0];
+  const { findDealerTeam, teamRows: dealerTeamRows } = useDealerTeamLookup(instance);
 
   const dealerUser = (() => {
     try {
@@ -987,9 +989,9 @@ export default function RSMProposalForm() {
   // Dealers not in the sheet have no RSM/TSM assigned and should not appear in the form.
   const dealerOptions = dealers
     .filter((d) => {
-      // Check if this dealer exists in the Excel mapping (by name fuzzy match)
+      // Check if this dealer exists in the DB-backed mapping (by name fuzzy match)
       const nameNorm = d.customerName.toLowerCase().trim().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ");
-      return DEALER_TEAM_MAP.some((m) => {
+      return dealerTeamRows.some((m) => {
         const mapNorm = m.dealerName.toLowerCase().trim().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ");
         return mapNorm === nameNorm || mapNorm.includes(nameNorm) || nameNorm.includes(mapNorm);
       });
