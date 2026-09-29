@@ -400,24 +400,26 @@ export default function DashboardPage() {
     };
   }, [stateBreakdown]);
 
-  const dealerRows = useMemo(() => {
-    const map: Record<string, {
-      state: string; dealerName: string; monthTarget: number;
-      eligibleOldBudget: number; eligibleNewBudget: number; nonBudget: number;
-      retailTarget: number; leadTarget: number; activities: number;
-      eligibility: string; type: string;
-      pending: number; approved: number; rejected: number; revision: number;
-      activityNames: Set<string>;
-    }> = {};
+    const dealerRows = useMemo(() => {
+      const map: Record<string, {
+        state: string; dealerName: string; monthTarget: number;
+        eligibleOldBudget: number; eligibleNewBudget: number; nonBudget: number;
+        retailTarget: number; leadTarget: number; activities: number;
+        eligibility: string; type: string;
+        pending: number; approved: number; rejected: number; revision: number;
+        activityNames: Set<string>;
+        vendorNames: Set<string>; // ← NEW: tracks distinct vendors used across this dealer's proposals
+      }> = {};
     for (const p of searchFiltered) {
       const key = `${p.dealerName}__${p.state}`;
-      if (!map[key]) map[key] = {
+        if (!map[key]) map[key] = {
         state: p.state, dealerName: p.dealerName, monthTarget: 0,
         eligibleOldBudget: 0, eligibleNewBudget: 0, nonBudget: 0,
         retailTarget: 0, leadTarget: 0, activities: 0,
         eligibility: p.eligibility ?? "", type: p.type ?? "",
         pending: 0, approved: 0, rejected: 0, revision: 0,
         activityNames: new Set<string>(),
+        vendorNames: new Set<string>(), // ← NEW
       };
       const d  = map[key];
       const ty = (p.type ?? "").toLowerCase();
@@ -427,6 +429,7 @@ export default function DashboardPage() {
       d.leadTarget   += p.totalLeadTarget;
       d.activities   += p.activities.length;
       p.activities.forEach(a => { if (a.activityType) d.activityNames.add(a.activityType); });
+      if (p.vendorName && p.vendorName.trim()) d.vendorNames.add(p.vendorName.trim()); // ← NEW
       if (el.includes("not") || el.includes("non")) d.nonBudget         += p.totalBudget;
       else if (ty === "new")                         d.eligibleNewBudget += p.totalBudget;
       else                                           d.eligibleOldBudget += p.totalBudget;
@@ -542,7 +545,7 @@ export default function DashboardPage() {
   // correct Grand Totals row (pure column sums) appended at the end. ────────
   const downloadDealerExcel = () => {
     const rows: (string | number)[][] = [[
-      "State", "Dealer", "Month Target", "Category", "Activities / BTL Category",
+      "State", "Dealer", "Vendor", "Month Target", "Category", "Activities / BTL Category",
       "Retail Target", "Lead Target", "Budget for BTL (₹)",
       "Pending", "Approved", "Rejected", "Needs Revision",
     ]];
@@ -551,7 +554,9 @@ export default function DashboardPage() {
       const isNon = el.includes("not") || el.includes("non");
       const btlBudget = row.eligibleOldBudget + row.eligibleNewBudget + row.nonBudget;
       rows.push([
-        row.state, row.dealerName, Math.round(row.monthTarget),
+        row.state, row.dealerName,
+        row.vendorNames.size > 0 ? Array.from(row.vendorNames).join(", ") : "",
+        Math.round(row.monthTarget),
         isNon ? "Non Eligible" : "BTL Budget Eligible",
         row.activityNames.size > 0 ? Array.from(row.activityNames).join(", ") : "",
         Math.round(row.retailTarget), Math.round(row.leadTarget), Math.round(btlBudget),
@@ -560,7 +565,7 @@ export default function DashboardPage() {
     }
     if (dealerGrandTotal) {
       rows.push([
-        "GRAND TOTAL", `${dealerGrandTotal.dealerCount} dealers`, Math.round(dealerGrandTotal.monthTarget),
+        "GRAND TOTAL", `${dealerGrandTotal.dealerCount} dealers`, "", Math.round(dealerGrandTotal.monthTarget),
         "", `${dealerGrandTotal.activities} activities`,
         Math.round(dealerGrandTotal.retailTarget), Math.round(dealerGrandTotal.leadTarget),
         Math.round(dealerGrandTotal.btlBudget),
@@ -1176,6 +1181,7 @@ export default function DashboardPage() {
                         <tr>
                           <th className="dash-th" style={{textAlign:"left"}}>State</th>
                           <th className="dash-th" style={{textAlign:"left"}}>Dealer Name</th>
+                          <th className="dash-th" style={{textAlign:"left"}}>Vendor</th>
                           <th className="dash-th" style={{textAlign:"center"}}>Month Target</th>
                           <th className="dash-th" style={{textAlign:"left"}}>Category</th>
                           <th className="dash-th" style={{textAlign:"left"}}>BTL Category</th>
@@ -1212,6 +1218,9 @@ export default function DashboardPage() {
                                   {row.dealerName}
                                 </span>
                               </td>
+                              <td className="dash-td" style={{fontSize:12,color:"#374151"}}>
+                                {row.vendorNames.size > 0 ? Array.from(row.vendorNames).join(", ") : <span className="dash-muted">—</span>}
+                              </td>
                               <td className="dash-td" style={{textAlign:"center"}}>{Math.round(row.monthTarget).toLocaleString("en-IN")}</td>
                               <td className="dash-td">
                                 <span className={`dash-cat-tag dash-cat-tag--${isNon ? "non" : "eligible"}`}>{catBase}</span>
@@ -1246,7 +1255,7 @@ export default function DashboardPage() {
                       {dealerGrandTotal && (
                         <tfoot>
                           <tr className="dash-grand-total">
-                            <td className="dash-td dash-td--grand-label" colSpan={2}>
+                            <td className="dash-td dash-td--grand-label" colSpan={3}>
                               Grand Totals ({dealerGrandTotal.dealerCount} dealers)
                             </td>
                             <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>
