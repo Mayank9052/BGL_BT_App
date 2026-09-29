@@ -19,6 +19,7 @@ public class ProposalsController : ControllerBase
     private readonly IEmailService _emailService;
     private readonly ILogger<ProposalsController> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly DailyDigestService _digestService; // ← NEW: immediate-send
 
     private string GraphToken() =>
         Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
@@ -28,13 +29,15 @@ public class ProposalsController : ControllerBase
         BaplDbContext bapl,
         IEmailService emailService,
         ILogger<ProposalsController> logger,
-        IServiceScopeFactory scopeFactory)
+        IServiceScopeFactory scopeFactory,
+        DailyDigestService digestService) // ← NEW
     {
-        _db           = db;
-        _bapl         = bapl;
-        _emailService = emailService;
-        _logger       = logger;
-        _scopeFactory = scopeFactory;
+        _db             = db;
+        _bapl           = bapl;
+        _emailService   = emailService;
+        _logger         = logger;
+        _scopeFactory   = scopeFactory;
+        _digestService  = digestService; // ← NEW
     }
 
     // ── POST /api/proposals ───────────────────────────────────────────────────
@@ -789,10 +792,32 @@ public class ProposalsController : ControllerBase
         }
         else
         {
-            // Regular forward — existing flow unchanged
-            var (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, GraphToken());
+            // Regular forward — try the delegated (X-Graph-Token) path first,
+            // since it sends from the Checker's own browser session exactly
+            // as before. Fall back to the app-only immediate-send path (still
+            // using the Checker's own email as sender) if no delegated token
+            // was attached to this request.
+            var graphToken = GraphToken();
+            bool sent; string? error;
+
+            if (!string.IsNullOrWhiteSpace(graphToken))
+            {
+                (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, graphToken);
+                if (!sent)
+                    _logger.LogWarning("Delegated checker-forward mail failed for {Id}: {Error} — trying immediate app-only send.", proposal.Id, error);
+            }
+            else
+            {
+                sent = false;
+            }
+
             if (!sent)
-                _logger.LogWarning("Checker-forward mail failed for {Id}: {Error}", proposal.Id, error);
+            {
+                var (immSent, immError) = await _digestService.SendForwardDigestNowAsync(
+                    new List<Guid> { proposal.Id }, CurrentUserEmail());
+                if (!immSent)
+                    _logger.LogWarning("Immediate app-only forward mail also failed for {Id}: {Error}", proposal.Id, immError);
+            }
         }
 
         return Ok(ToResponse(proposal));

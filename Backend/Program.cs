@@ -169,7 +169,11 @@ builder.Services.AddTransient<IClaimsTransformation, DbRoleClaimsTransformation>
 builder.Services.AddSingleton<GraphTokenStore>();
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<GraphAppTokenService>();
-builder.Services.AddHostedService<DailyDigestService>();
+// Registered TWICE, deliberately: once as itself (so controllers can inject
+// it directly for immediate sends), once as the hosted background service
+// (the nightly safety-net loop). Both share the same stateless logic.
+builder.Services.AddSingleton<DailyDigestService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DailyDigestService>());
 
 // ── Email ─────────────────────────────────────────────────────────────────────
 builder.Services.AddHttpClient<GraphEmailService>();

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMsal } from "@azure/msal-react";
 import { useAuthStore } from "../store/authStore";
+import * as XLSX from "xlsx";
 import {
   fetchMyProposals,
   fetchProposals,
@@ -346,7 +347,13 @@ export default function DashboardPage() {
       const oldCountFinal    = Math.max(d.oldDealers.size, bapl?.eligibleOld ?? 0);
       const newCountFinal    = Math.max(d.newDealers.size, bapl?.eligibleNew ?? 0);
       const totalDealers     = oldCountFinal + newCountFinal + nonCountFinal;
-      const totalBudget      = d.oldBudget + d.newBudget;
+      // FIX: include nonBudget too — Total Retail/Total Lead already include
+      // their Non-Eligible counterparts, so Total Budget must too, or states
+      // where every dealer is Non-Eligible show Total Budget = ₹0 while
+      // Total Retail/Total Lead are non-zero, which then makes Overall CAC
+      // and Overall CPL (both = totalBudget ÷ totalRetail|totalLead) show 0
+      // as well — exactly what Delhi and Jharkhand were doing.
+      const totalBudget      = d.oldBudget + d.newBudget + d.nonBudget;
       const totalRetail      = d.oldRetail + d.newRetail + d.nonRetail;
       const totalLead        = d.oldLead + d.newLead + d.nonLead;
       return {
@@ -386,6 +393,10 @@ export default function DashboardPage() {
       totalBudget:  stateBreakdown.reduce((s, r) => s + r.totalBudget,  0),
       totalRetail:  stateBreakdown.reduce((s, r) => s + r.totalRetail,  0),
       totalLead:    stateBreakdown.reduce((s, r) => s + r.totalLead,    0),
+      pending:      stateBreakdown.reduce((s, r) => s + r.pending,      0),
+      approved:     stateBreakdown.reduce((s, r) => s + r.approved,     0),
+      rejected:     stateBreakdown.reduce((s, r) => s + r.rejected,     0),
+      revision:     stateBreakdown.reduce((s, r) => s + r.revision,     0),
     };
   }, [stateBreakdown]);
 
@@ -431,6 +442,25 @@ export default function DashboardPage() {
     );
   }, [searchFiltered]);
 
+  // ── Grand totals for the dealer-wise table — same shape used both by the
+  // on-screen footer and by the Excel/PDF exports, so every surface always
+  // agrees on the same numbers. ──────────────────────────────────────────────
+  const dealerGrandTotal = useMemo(() => {
+    if (!dealerRows.length) return null;
+    return {
+      dealerCount:  dealerRows.length,
+      monthTarget:  dealerRows.reduce((s, r) => s + r.monthTarget, 0),
+      activities:   dealerRows.reduce((s, r) => s + r.activities, 0),
+      retailTarget: dealerRows.reduce((s, r) => s + r.retailTarget, 0),
+      leadTarget:   dealerRows.reduce((s, r) => s + r.leadTarget, 0),
+      btlBudget:    dealerRows.reduce((s, r) => s + r.eligibleOldBudget + r.eligibleNewBudget + r.nonBudget, 0),
+      pending:      dealerRows.reduce((s, r) => s + r.pending, 0),
+      approved:     dealerRows.reduce((s, r) => s + r.approved, 0),
+      rejected:     dealerRows.reduce((s, r) => s + r.rejected, 0),
+      revision:     dealerRows.reduce((s, r) => s + (r.revision||0), 0),
+    };
+  }, [dealerRows]);
+
   const searchResultLabel = useMemo(() => {
     if (!sharedSearch.trim()) return null;
     return `${stateBreakdown.length} state${stateBreakdown.length !== 1 ? "s" : ""} · ${dealerRows.length} dealer${dealerRows.length !== 1 ? "s" : ""} matching "${sharedSearch}"`;
@@ -446,6 +476,103 @@ export default function DashboardPage() {
   const clearAllFilters = () => {
     setActiveFilter("All"); setStateFilter("All");
     setMonthFilter("All");  setYearFilter("All"); setSharedSearch("");
+  };
+
+  // ── Filename suffix reflecting whichever filters are currently active ─────
+  const filterSuffix = () =>
+    [
+      stateFilter !== "All" ? stateFilter : "",
+      monthFilter !== "All" ? monthFilter : "",
+      yearFilter  !== "All" ? yearFilter  : "",
+      activeFilter !== "All" ? activeFilter : "",
+    ].filter(Boolean).join("_").replace(/\s+/g, "");
+
+  // ── Excel: State-wise Summary — built directly from `stateBreakdown`, the
+  // exact same filtered array driving the on-screen table, with a correct
+  // Grand Totals row (pure column sums / weighted CAC-CPL) appended at the end. ──
+  const downloadStateExcel = () => {
+    const rows: (string | number)[][] = [[
+      "State",
+      "Old Retail Target", "Old Count", "Old Budget (₹)", "Old CAC (₹)",
+      "New Retail Target", "New Count", "New Budget (₹)", "New CAC (₹)",
+      "Non-Eligible Retail Target", "Non-Eligible Count", "Non-Eligible Budget (₹)", "Non-Eligible CAC (₹)",
+      "Total Dealers", "Total Budget (₹)", "Total Retail Target", "Total Lead Target",
+      "Overall CAC (₹)", "Overall CPL (₹)",
+      "Pending", "Approved", "Rejected", "Needs Revision", "Remarks",
+    ]];
+    for (const r of stateBreakdown) {
+      rows.push([
+        r.state,
+        r.oldRetail, r.oldCount, Math.round(r.oldBudget), Math.round(r.oldCac),
+        r.newRetail, r.newCount, Math.round(r.newBudget), Math.round(r.newCac),
+        r.nonRetail, r.nonCount, Math.round(r.nonBudget), Math.round(r.nonCac),
+        r.totalDealers, Math.round(r.totalBudget), Math.round(r.totalRetail), Math.round(r.totalLead),
+        Math.round(r.overallCac), Math.round(r.overallCpl),
+        r.pending, r.approved, r.rejected, r.revision, r.remarks || "",
+      ]);
+    }
+    // Grand Totals row — same math as `stateGrandTotal`, so the file always
+    // agrees with whatever the app itself would show as the grand total.
+    if (stateGrandTotal) {
+      const oldCacTotal = stateGrandTotal.oldRetail > 0 ? stateGrandTotal.oldBudget / stateGrandTotal.oldRetail : 0;
+      const newCacTotal = stateGrandTotal.newRetail > 0 ? stateGrandTotal.newBudget / stateGrandTotal.newRetail : 0;
+      const nonCacTotal = stateGrandTotal.nonRetail > 0 ? stateGrandTotal.nonBudget / stateGrandTotal.nonRetail : 0;
+      const overallCacTotal = stateGrandTotal.totalRetail > 0 ? stateGrandTotal.totalBudget / stateGrandTotal.totalRetail : 0;
+      const overallCplTotal = stateGrandTotal.totalLead   > 0 ? stateGrandTotal.totalBudget / stateGrandTotal.totalLead   : 0;
+      rows.push([
+        "GRAND TOTAL",
+        stateGrandTotal.oldRetail, stateGrandTotal.oldCount, Math.round(stateGrandTotal.oldBudget), Math.round(oldCacTotal),
+        stateGrandTotal.newRetail, stateGrandTotal.newCount, Math.round(stateGrandTotal.newBudget), Math.round(newCacTotal),
+        stateGrandTotal.nonRetail, stateGrandTotal.nonCount, Math.round(stateGrandTotal.nonBudget), Math.round(nonCacTotal),
+        stateGrandTotal.totalDealers, Math.round(stateGrandTotal.totalBudget),
+        Math.round(stateGrandTotal.totalRetail), Math.round(stateGrandTotal.totalLead),
+        Math.round(overallCacTotal), Math.round(overallCplTotal),
+        stateGrandTotal.pending, stateGrandTotal.approved, stateGrandTotal.rejected, stateGrandTotal.revision, "",
+      ]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = rows[0].map(() => ({ wch: 16 }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "State-wise Summary");
+    const suffix = filterSuffix();
+    XLSX.writeFile(wb, `BTL_State_Summary${suffix ? `_${suffix}` : ""}.xlsx`);
+  };
+
+  // ── Excel: Dealer-wise Data — built directly from `dealerRows`, with a
+  // correct Grand Totals row (pure column sums) appended at the end. ────────
+  const downloadDealerExcel = () => {
+    const rows: (string | number)[][] = [[
+      "State", "Dealer", "Month Target", "Category", "Activities / BTL Category",
+      "Retail Target", "Lead Target", "Budget for BTL (₹)",
+      "Pending", "Approved", "Rejected", "Needs Revision",
+    ]];
+    for (const row of dealerRows) {
+      const el = (row.eligibility ?? "").toLowerCase();
+      const isNon = el.includes("not") || el.includes("non");
+      const btlBudget = row.eligibleOldBudget + row.eligibleNewBudget + row.nonBudget;
+      rows.push([
+        row.state, row.dealerName, Math.round(row.monthTarget),
+        isNon ? "Non Eligible" : "BTL Budget Eligible",
+        row.activityNames.size > 0 ? Array.from(row.activityNames).join(", ") : "",
+        Math.round(row.retailTarget), Math.round(row.leadTarget), Math.round(btlBudget),
+        row.pending, row.approved, row.rejected, row.revision || 0,
+      ]);
+    }
+    if (dealerGrandTotal) {
+      rows.push([
+        "GRAND TOTAL", `${dealerGrandTotal.dealerCount} dealers`, Math.round(dealerGrandTotal.monthTarget),
+        "", `${dealerGrandTotal.activities} activities`,
+        Math.round(dealerGrandTotal.retailTarget), Math.round(dealerGrandTotal.leadTarget),
+        Math.round(dealerGrandTotal.btlBudget),
+        dealerGrandTotal.pending, dealerGrandTotal.approved, dealerGrandTotal.rejected, dealerGrandTotal.revision,
+      ]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = rows[0].map(() => ({ wch: 18 }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Dealer-wise Data");
+    const suffix = filterSuffix();
+    XLSX.writeFile(wb, `BTL_Dealer_Data${suffix ? `_${suffix}` : ""}.xlsx`);
   };
 
   // ── Approved proposals — the single source used for every live report tab ──
@@ -864,13 +991,12 @@ export default function DashboardPage() {
                           {stateFilter}{monthFilter !== "All" ? ` · ${monthFilter}` : ""}
                         </span>
                       )}
-                      <button className="dash-dl-btn dash-dl-btn--excel"
-                        onClick={() => handleDownload("excel")} disabled={downloading !== null}>
-                        {downloading === "excel" ? <><span className="dash-dl-spinner"/>Generating…</> : <>⬇ Excel</>}
+                      <button className="dash-dl-btn dash-dl-btn--excel" onClick={downloadStateExcel}>
+                        ⬇ Excel
                       </button>
                       <button className="dash-dl-btn dash-dl-btn--pdf"
-                        onClick={() => handleDownload("pdf")} disabled={downloading !== null}>
-                        {downloading === "pdf" ? <><span className="dash-dl-spinner"/>Generating…</> : <>⬇ PDF</>}
+                        onClick={() => printSection("dash-state-table", "State-wise Summary")}>
+                        ⬇ PDF
                       </button>
                       <button className="dash-dl-btn dash-dl-btn--full" onClick={() => navigate("/reports")}>
                         Full Report ↗
@@ -878,7 +1004,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <div className="dash-table-wrap dash-table-wrap--wide">
-                    <table className="dash-table dash-table--summary">
+                    <table id="dash-state-table" className="dash-table dash-table--summary">
                       <thead>
                         <tr className="dash-thead-group">
                           <th className="dash-th dash-th--state" rowSpan={2}>States</th>
@@ -1007,8 +1133,11 @@ export default function DashboardPage() {
                             <td className="dash-td dash-td--right dash-td--grand dash-td--mono">
                               {stateGrandTotal.totalLead > 0 ? `₹${Math.round(stateGrandTotal.totalBudget / stateGrandTotal.totalLead).toLocaleString("en-IN")}` : "—"}
                             </td>
-                            {/* POINT 7: 5 empty cells = 4 status + 1 remarks */}
-                            <td className="dash-td" colSpan={5}/>
+                            <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.pending  > 0 ? stateGrandTotal.pending  : "—"}</td>
+                            <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.approved > 0 ? stateGrandTotal.approved : "—"}</td>
+                            <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.rejected > 0 ? stateGrandTotal.rejected : "—"}</td>
+                            <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.revision > 0 ? stateGrandTotal.revision : "—"}</td>
+                            <td className="dash-td"/>
                           </tr>
                         </tfoot>
                       )}
@@ -1025,13 +1154,12 @@ export default function DashboardPage() {
                     <span className="dash-count-chip">{dealerRows.length}</span>
                   </h2>
                   <div className="dash-section-dl-group">
-                    <button className="dash-dl-btn dash-dl-btn--excel"
-                      onClick={() => handleDownload("excel")} disabled={downloading !== null}>
-                      {downloading === "excel" ? <><span className="dash-dl-spinner"/>Generating…</> : <>⬇ Excel</>}
+                    <button className="dash-dl-btn dash-dl-btn--excel" onClick={downloadDealerExcel}>
+                      ⬇ Excel
                     </button>
                     <button className="dash-dl-btn dash-dl-btn--pdf"
-                      onClick={() => handleDownload("pdf")} disabled={downloading !== null}>
-                      {downloading === "pdf" ? <><span className="dash-dl-spinner"/>Generating…</> : <>⬇ PDF</>}
+                      onClick={() => printSection("dash-dealer-table", "Dealer-wise Data")}>
+                      ⬇ PDF
                     </button>
                   </div>
                 </div>
@@ -1043,7 +1171,7 @@ export default function DashboardPage() {
                   </div>
                 ) : (
                   <div className="dash-table-wrap">
-                    <table className="dash-table dash-table--dealer">
+                    <table id="dash-dealer-table" className="dash-table dash-table--dealer">
                       <thead>
                         <tr>
                           <th className="dash-th" style={{textAlign:"left"}}>State</th>
@@ -1115,6 +1243,34 @@ export default function DashboardPage() {
                           );
                         })}
                       </tbody>
+                      {dealerGrandTotal && (
+                        <tfoot>
+                          <tr className="dash-grand-total">
+                            <td className="dash-td dash-td--grand-label" colSpan={2}>
+                              Grand Totals ({dealerGrandTotal.dealerCount} dealers)
+                            </td>
+                            <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>
+                              {Math.round(dealerGrandTotal.monthTarget).toLocaleString("en-IN")}
+                            </td>
+                            <td className="dash-td"/>
+                            <td className="dash-td"/>
+                            <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>{dealerGrandTotal.activities}</td>
+                            <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>
+                              {Math.round(dealerGrandTotal.retailTarget).toLocaleString("en-IN")}
+                            </td>
+                            <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>
+                              {Math.round(dealerGrandTotal.leadTarget).toLocaleString("en-IN")}
+                            </td>
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono" style={{textAlign:"center"}}>
+                              {inr(dealerGrandTotal.btlBudget)}
+                            </td>
+                            <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>{dealerGrandTotal.pending  > 0 ? dealerGrandTotal.pending  : "—"}</td>
+                            <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>{dealerGrandTotal.approved > 0 ? dealerGrandTotal.approved : "—"}</td>
+                            <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>{dealerGrandTotal.rejected > 0 ? dealerGrandTotal.rejected : "—"}</td>
+                            <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>{dealerGrandTotal.revision > 0 ? dealerGrandTotal.revision : "—"}</td>
+                          </tr>
+                        </tfoot>
+                      )}
                     </table>
                   </div>
                 )}

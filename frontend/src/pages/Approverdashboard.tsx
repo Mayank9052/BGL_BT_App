@@ -305,8 +305,8 @@ export default function ApproverDashboard() {
   const { user }  = useAuthStore();
   const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
   const myEmail         = (account?.username ?? user?.email ?? "").toLowerCase();
-  const FINAL_APPROVER  = "vijay.maurya@bgauss.com";
-  const CHECKER_EMAILS  = ["seema.shakya@bgauss.com", "shivam.khandelwal@bgauss.com", "mayank.maheshwari@bgauss.com", "oat@bgauss.com"];
+  const FINAL_APPROVER  = "durgesh.guptaa@bgauss.com";
+  const CHECKER_EMAILS  = ["seema.shakya@bgauss.com", "shivam.khandelwal@bgauss.com"];
   const isFinalApprover = myEmail === FINAL_APPROVER;
   const isChecker       = isAdmin && CHECKER_EMAILS.includes(myEmail);
   const isForwardOnly   = isAdmin && !isFinalApprover;
@@ -1219,8 +1219,8 @@ export default function ApproverDashboard() {
                       </div>
                     </th>
                   )}
-                  <th>Action</th><th>Token</th><th>Submitted</th>
-                  {isAdmin&&<th>RSM / TSM</th>}
+                  <th>Action</th><th>Token</th><th>Submitted</th><th>Vendor</th>
+                    {isAdmin&&<th>RSM / TSM</th>}
                   <th>Dealer &amp; location</th><th>Month</th><th>Year</th><th>Activities</th>
                   <th className="ap-num">Budget</th><th className="ap-num">Lead</th><th className="ap-num">Retail</th>
                   <th className="ap-num">CAC</th><th className="ap-num">CPL</th>
@@ -1228,7 +1228,7 @@ export default function ApproverDashboard() {
                   <th>Status</th>
                 </tr></thead>
                 <tbody>
-                  {filtered.length===0&&(<tr><td colSpan={isAdmin?15:11} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
+                  {filtered.length===0&&(<tr><td colSpan={isAdmin?16:12} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
                   {filtered.map((p)=>{
                     const isPending=p.status==="Pending"; const isChecked=selectedIds.has(p.id);
                     return (
@@ -1291,6 +1291,7 @@ export default function ApproverDashboard() {
                         </td>
                         <td><span className="ap-id-chip">{p.tokenNumber??p.id.split("-").slice(-1)[0]}</span></td>
                         <td><span className="ap-cell-p">{fmtDate(p.createdAt)}</span>{isAdmin&&<span className="ap-cell-m">{p.submittedByDisplayName??p.submittedBy}</span>}</td>
+                        <td><span className="ap-cell-p">{p.vendorName || <span style={{color:"#cbd5e1"}}>—</span>}</span></td>
                         {isAdmin&&<td><span className="ap-cell-p">{p.rsmName}</span><span className="ap-cell-m">{(p as any).tsmName||p.commandoName}</span></td>}
                         <td><span className="ap-cell-p">{p.dealerName}</span><span className="ap-cell-m">{p.location}, {p.state}</span></td>
                         <td>{p.month}</td><td>{p.year}</td>

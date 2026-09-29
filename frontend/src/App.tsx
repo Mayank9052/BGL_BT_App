@@ -23,6 +23,7 @@ import ChatTestPage from "./pages/ChatTestPage";
 import { getDealerUser, type DealerLoginResponse } from "./services/dealerAuthService";
 import AdminAuditLogPage from "./pages/AdminAuditLogPage";
 import AdminDealerMapPage from "./pages/AdminDealerMapPage";
+import AutoUpdateChecker from "./components/AutoUpdateChecker";
 
 const STAFF_ROLES = new Set(["RSM", "TSM", "ZSM", "Commando"]);
 
@@ -57,6 +58,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
+    <AutoUpdateChecker />
       {isDealerSession ? (
         // ── Dealer login — DealerLayout with own sidebar ──────────────────────
         <Routes>
