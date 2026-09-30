@@ -7,7 +7,8 @@ public interface IEmailService
 {
     Task<(bool Sent, string? Error)> SendSubmissionMailAsync(Proposal p, string graphToken);
     Task<(bool Sent, string? Error)> SendCheckerForwardMailAsync(Proposal p, string graphToken);
-    Task<(bool Sent, string? Error)> SendDecisionMailAsync(Proposal p, ApprovalDecision decision, string graphToken);
+    Task<(bool Sent, string? Error)> SendDecisionMailAsync(
+        Proposal p, ApprovalDecision decision, string graphToken, IEnumerable<string>? teamCc = null);
     Task<(bool Sent, string? Error)> SendRevisionRequestMailAsync(Proposal p, string? note, string graphToken);
     Task<(bool Sent, string? Error)> SendResubmissionMailAsync(Proposal p, string graphToken);
     Task<(bool Sent, string? Error)> SendDealerNotificationMailAsync(

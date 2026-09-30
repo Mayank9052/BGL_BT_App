@@ -6,6 +6,7 @@ using BGL_BT_App.Backend.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using BGL_BT_App.Backend.Services;
 
 namespace BGL_BT_App.Backend.Controllers;
 
@@ -104,6 +105,57 @@ public class DealerTeamMappingController : ControllerBase
 
         var rows = await query.OrderBy(d => d.DealerName).ToListAsync();
         return Ok(rows.Select(ToLookupDto));
+    }
+
+    // ── GET /api/dealer-team-mapping/my-team — Dealer login: own RSM/TSM/Commando ──
+    [HttpGet("my-team")]
+    public async Task<IActionResult> MyTeam()
+    {
+        var sub = User.FindFirstValue("sub");
+        if (string.IsNullOrWhiteSpace(sub) || !int.TryParse(sub, out var userId))
+            return Unauthorized(new { message = "Dealer login required." });
+
+        var u = await _db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Id == userId);
+        if (u is null) return Unauthorized(new { message = "User not found." });
+
+        var m = await DealerNameMatcher.FindMappingAsync(_db, u.DealerName);
+        if (m is null) return NotFound(new { message = "No Dealer Mapping found for your dealership." });
+
+        return Ok(ToLookupDto(m));
+    }
+
+        // ── GET /api/dealer-team-mapping/my-dealers — RSM/TSM/Commando login ──────
+    // All dealers mapped to this person (match by email first, else by name).
+    [HttpGet("my-dealers")]
+    public async Task<IActionResult> MyDealers()
+    {
+        var sub = User.FindFirstValue("sub");
+        if (string.IsNullOrWhiteSpace(sub) || !int.TryParse(sub, out var userId))
+            return Unauthorized(new { message = "Staff login required." });
+
+        var u = await _db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Id == userId);
+        if (u is null) return Unauthorized(new { message = "User not found." });
+
+        var email   = (u.Email ?? "").Trim();
+        var nameKey = DealerNameMatcher.Normalize(u.DisplayName);
+
+        bool IsMe(string? name, string? emails) =>
+            (email.Length > 0 && !string.IsNullOrWhiteSpace(emails) &&
+             emails.Split(',', ';').Any(x => string.Equals(x.Trim(), email, StringComparison.OrdinalIgnoreCase)))
+            || (nameKey.Length > 0 && DealerNameMatcher.Normalize(name) == nameKey);
+
+        var rows = await _db.Set<DealerTeamMapping>().AsNoTracking()
+            .OrderBy(d => d.DealerName).ToListAsync();
+
+        var mine = (u.Role ?? "") switch
+        {
+            var r when r.Equals("RSM", StringComparison.OrdinalIgnoreCase)      => rows.Where(m => IsMe(m.Rsm, m.RsmEmail)),
+            var r when r.Equals("TSM", StringComparison.OrdinalIgnoreCase)      => rows.Where(m => IsMe(m.Tsm, m.TsmEmail)),
+            var r when r.Equals("Commando", StringComparison.OrdinalIgnoreCase) => rows.Where(m => IsMe(m.Commando, m.CommandoEmail)),
+            _ => Enumerable.Empty<DealerTeamMapping>(),
+        };
+
+        return Ok(mine.Select(ToLookupDto));
     }
 
     // ── POST /api/dealer-team-mapping — Admin only ─────────────────────────

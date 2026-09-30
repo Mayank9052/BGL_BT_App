@@ -36,13 +36,22 @@ public class EmailService : IEmailService
         return Task.FromResult<(bool, string?)>((false, "SMTP not supported for checker-forward. Use Graph."));
     }
 
-    // ── Step 3a: Decision → Mayank + CC RSM ──────────────────────────────────
+    // ── Step 3a: Decision → Checker + CC RSM (+ RSM/TSM/Commando on Approved) ──
     public async Task<(bool Sent, string? Error)> SendDecisionMailAsync(
-        Proposal p, ApprovalDecision decision, string graphToken)
+        Proposal p, ApprovalDecision decision, string graphToken, IEnumerable<string>? teamCc = null)
     {
+        var to = _settings.ApproverEmail;
+        var cc = new[] { p.SubmittedBy }
+            .Concat(teamCc ?? Enumerable.Empty<string>())
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .Where(e => !string.Equals(e, to, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
         return await SendAsync(
-            to:      _settings.ApproverEmail,
-            cc:      p.SubmittedBy,
+            to:      to,
+            cc:      cc.Length > 0 ? string.Join(",", cc) : null,
             subject: BuildSubject($"Re: Proposal {decision.Status}", p),
             body:    BuildDecisionBody(p, decision));
     }

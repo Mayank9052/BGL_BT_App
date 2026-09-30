@@ -3,7 +3,6 @@ import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/authStore";
-// import { findDealerTeam } from "../data/dealerTeamMap";
 import { useDealerTeamLookup, type DealerTeam } from "../hooks/useDealerTeamLookup";
 import {
   fetchProposals, fetchMyProposals, decideProposal, updateProposal,
@@ -26,8 +25,6 @@ const fmtDate = (iso: string | null | undefined) => {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 };
-const fmtDateTime = (iso: string) =>
-  new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", timeStyle: "short" });
 const eligClass   = (e: string) =>
   e === "Eligible" ? "ap-elig-yes" : e === "Not Eligible" ? "ap-elig-no" : "ap-elig-pend";
 const statusClass = (s: string) =>
@@ -88,11 +85,9 @@ function mediaIcon(t: string | null) {
   return "📎";
 }
 
-// ── Looks up the RSM/TSM/Commando emails for a proposal's dealer, from the
-// live DealerTeamMappings table (fetched via useDealerTeamLookup below).
-// Used to auto-fill the "cc" line whenever we notify the dealer — no
-// separate button or endpoint needed. Only RSM/TSM/Commando exist in the
-// mapping — there is no ZSM field. ──
+// ── RSM/TSM/Commando emails for a proposal's dealer, from the live
+// DealerTeamMappings table. Used as "cc" when notifying the dealer.
+// Submitter and Checker are NOT cc'd (filtered on the backend). ──
 function makeGetTeamEmailsFor(
   findDealerTeam: (dealerCode: string, dealerName: string) => DealerTeam | null,
 ) {
@@ -314,9 +309,9 @@ export default function ApproverDashboard() {
   const { user }  = useAuthStore();
   const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
   const myEmail         = (account?.username ?? user?.email ?? "").toLowerCase();
-  const FINAL_APPROVER  = "durgesh.guptaa@bgauss.com";
+  const FINAL_APPROVERS = ["vijay.maurya@bgauss.com", "durgesh.guptaa@bgauss.com"];
   const CHECKER_EMAILS  = ["seema.shakya@bgauss.com", "shivam.khandelwal@bgauss.com"];
-  const isFinalApprover = myEmail === FINAL_APPROVER;
+  const isFinalApprover = FINAL_APPROVERS.includes(myEmail);
   const isChecker       = isAdmin && CHECKER_EMAILS.includes(myEmail);
   const isForwardOnly   = isAdmin && !isFinalApprover;
 
@@ -354,7 +349,7 @@ export default function ApproverDashboard() {
       [activityId]: prev[activityId] === panel ? undefined as any : panel
     }));
   const [mediaViewer,      setMediaViewer]      = useState<{url:string;name:string;type:string}|null>(null);
-  const [activityMasterList, setActivityMasterList] = useState<ActivityType[]>([]);
+  const [, setActivityMasterList] = useState<ActivityType[]>([]);
   const [activityGroups,     setActivityGroups]     = useState<ActivityGroup[]>([]);
   // Bulk approve
   const [selectedIds,       setSelectedIds]       = useState<Set<string>>(new Set());
@@ -382,7 +377,7 @@ export default function ApproverDashboard() {
       let data: ProposalResponse[];
       try {
         data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
-      } catch (firstErr) {
+      } catch {
         await new Promise(r => setTimeout(r, 2000));
         data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
       }
@@ -410,18 +405,18 @@ export default function ApproverDashboard() {
     return ()=>{ document.body.style.overflow=""; };
   },[selected]);
   useEffect(() => {
-  const params = new URLSearchParams(window.location.search);
-  const highlightParam = params.get("highlight");
-  if (highlightParam && proposals.length > 0) {
-    const ids = highlightParam.split(",").filter(Boolean);
-    const validIds = ids.filter(id => proposals.some(p => p.id === id));
-    if (validIds.length > 0) {
-      setSelectedIds(new Set(validIds));
-      setHighlightedFromEmail(new Set(validIds));
-      window.history.replaceState({}, "", window.location.pathname);
+    const params = new URLSearchParams(window.location.search);
+    const highlightParam = params.get("highlight");
+    if (highlightParam && proposals.length > 0) {
+      const ids = highlightParam.split(",").filter(Boolean);
+      const validIds = ids.filter(id => proposals.some(p => p.id === id));
+      if (validIds.length > 0) {
+        setSelectedIds(new Set(validIds));
+        setHighlightedFromEmail(new Set(validIds));
+        window.history.replaceState({}, "", window.location.pathname);
+      }
     }
-  }
-}, [proposals]);
+  }, [proposals]);
 
   // ── Computed ───────────────────────────────────────────────────────────────
   const months   = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],[proposals]);
@@ -441,6 +436,9 @@ export default function ApproverDashboard() {
     return true;
   }),[proposals,filterStatus,filterMonth,filterYear,search,fwdDateFilter]);
   const pendingFiltered = useMemo(()=>filtered.filter((p)=>p.status==="Pending"),[filtered]);
+  // Approved AND not yet notified — the only rows the Checker can bulk-notify
+  const notifiableFiltered = useMemo(
+    ()=>filtered.filter((p)=>p.status==="Approved"&&!p.dealerNotified),[filtered]);
   const stats = useMemo(()=>{
     const approved=proposals.filter((p)=>p.status==="Approved");
     return { total:proposals.length, pending:proposals.filter((p)=>p.status==="Pending").length,
@@ -559,11 +557,9 @@ export default function ApproverDashboard() {
       const geo=await captureGeo();
       const capturedAt=new Date().toISOString();
       for (const file of fileArray){
-        let uploaded: {url:string; fileName:string; fileType:string};
-        uploaded = await uploadActivityMedia(file, instance);
+        const uploaded = await uploadActivityMedia(file, instance);
 
-        let saved: import("../services/proposalService").ActivityMediaResponse;
-        saved = await addActivityMedia(proposalId, activityId, {
+        const saved = await addActivityMedia(proposalId, activityId, {
           fileUrl: uploaded.url,
           fileName: uploaded.fileName,
           fileType: uploaded.fileType,
@@ -654,19 +650,6 @@ export default function ApproverDashboard() {
   const removeInvoice=(activityId:string,id:string)=>
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
       invoiceMedia:prev[activityId].invoiceMedia.filter((m)=>m.id!==id)}}));
-
-  const handleActualMedia=async(activityId:string,file:File)=>{
-    setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:true,mediaFile:file}}));
-    try {
-      const r=await uploadActivityMedia(file,instance);
-      setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:false,
-        mediaFileUrl:r.url,mediaFileName:r.fileName,mediaFileType:r.fileType,mediaFile:file}}));
-      showToast("File uploaded.",true);
-    } catch(err){
-      setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:false}}));
-      showToast(err instanceof Error?err.message:"Upload failed.",false);
-    }
-  };
 
   const handleEditMediaUpload=async(idx:number,files:FileList)=>{
     const actId=editData?.activities[idx]?.id??String(idx);
@@ -840,13 +823,11 @@ export default function ApproverDashboard() {
     finally { setForwardLoading(false); }
   };
 
-  // ── Notify Dealer — always resendable. Even after dealerNotified is true,
-  // clicking this again sends a fresh email with the dealer as "To" and
-  // whichever RSM/TSM/Commando emails are on file as "cc". This lets you
-  // notify the team even if the first send (before this feature existed, or
-  // before team emails were on file) only reached the dealer. ──
+  // ── Notify Dealer — ONE-TIME. Once dealerNotified is true only the
+  // "✓ Dealer notified" status is shown; the backend also rejects repeats (409). ──
   const handleNotifyDealer=async()=>{
-    if (!selected||!dealerEmailInput.trim()) return; setNotifyLoading(true);
+    if (!selected||selected.dealerNotified||notifyLoading||!dealerEmailInput.trim()) return;
+    setNotifyLoading(true);
     try {
       const teamEmails = getTeamEmailsFor(selected);
       const updated=await notifyDealer(selected.id,dealerEmailInput.trim(),instance,teamEmails);
@@ -918,6 +899,11 @@ export default function ApproverDashboard() {
     if (!isPending) return;
     setSelectedIds((prev)=>{ const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n; });
   };
+  const allNotifySelected = notifiableFiltered.length>0 && notifiableFiltered.every(p=>notifySelectedIds.has(p.id));
+  const toggleNotifySelectAll=()=>{
+    if (allNotifySelected) setNotifySelectedIds(new Set());
+    else setNotifySelectedIds(new Set(notifiableFiltered.map(p=>p.id)));
+  };
   const handleBulkApprove=async()=>{
     if (selectedIds.size===0) return; setBulkApproving(true);
     let ok=0,fail=0;
@@ -931,29 +917,21 @@ export default function ApproverDashboard() {
     setSelectedIds(new Set()); setShowBulkPanel(false); setBulkNote("");
     showToast(fail===0?`✓ ${ok} proposal${ok>1?"s":""} approved.`:`${ok} approved, ${fail} failed.`,fail===0);
     setBulkApproving(false);
-  }
+  };
 
-
-  // ── Bulk Notify Dealer — same logic as individual modal Notify Dealer button ──
-  // For each selected proposal:
-  //   1. Use p.dealerEmail if already known
-  //   2. Otherwise auto-fetch from dealer accounts by matching DealerName
-  //   3. Call notifyDealer() — identical to clicking Notify Dealer in the modal
+  // ── Bulk Notify Dealer — same logic as the modal button, ONE-TIME per proposal.
+  // Already-notified proposals are skipped (and cannot be selected in the table).
   const handleBulkNotifyDealer = async () => {
-    if (notifySelectedIds.size === 0) return;
+    if (notifySelectedIds.size === 0 || bulkNotifying) return;
     setBulkNotifying(true);
-    let successCount = 0; let failCount = 0; let noEmailCount = 0;
+    let successCount = 0; let failCount = 0; let noEmailCount = 0; let alreadyCount = 0;
     const failedDetails: string[] = [];
 
-    // ── Acquire the Graph token ONCE for the whole batch. Re-acquiring per
-    // item triggers up to 200 separate calls to Azure AD's token endpoint,
-    // which routinely gets throttled — and getGraphToken() silently returns
-    // "" on any non-interaction-required failure, so those sends fail with
-    // an invisible "No Graph token" error instead of an obvious one. ──
+    // Acquire the Graph token ONCE for the whole batch (avoids AAD throttling).
     let graphToken = "";
     try {
       graphToken = await getGraphTokenForBulk(instance);
-    } catch (err) {
+    } catch {
       showToast("Could not get Microsoft Graph token — sign-in may have expired. Please refresh and try again.", false);
       setBulkNotifying(false);
       return;
@@ -967,7 +945,7 @@ export default function ApproverDashboard() {
     let dealerAccounts: Awaited<ReturnType<typeof fetchDealerUsers>> = [];
     const needsFetch = Array.from(notifySelectedIds).some(id => {
       const p = proposals.find(x => x.id === id);
-      return p && !p.dealerEmail;
+      return p && !p.dealerNotified && !p.dealerEmail;
     });
     if (needsFetch) {
       try { dealerAccounts = await fetchDealerUsers(instance); } catch {}
@@ -978,6 +956,7 @@ export default function ApproverDashboard() {
       const id = ids[i];
       const p = proposals.find(x => x.id === id);
       if (!p) continue;
+      if (p.dealerNotified) { alreadyCount++; continue; }
       let email = p.dealerEmail ?? "";
       if (!email) {
         const match = dealerAccounts.find(d =>
@@ -998,8 +977,7 @@ export default function ApproverDashboard() {
         failedDetails.push(`${p.tokenNumber ?? id}: ${msg}`);
         console.error(`[BULK-NOTIFY] Failed for ${p.tokenNumber ?? id}:`, err);
       }
-      // Small gap between actual Graph sendMail calls to stay under Graph's
-      // own per-mailbox rate limit (separate from the AAD token throttle above).
+      // Gap between Graph sendMail calls (per-mailbox rate limit).
       if (i < ids.length - 1) await new Promise(r => setTimeout(r, 300));
     }
 
@@ -1009,7 +987,8 @@ export default function ApproverDashboard() {
     if (successCount > 0) parts.push(`✓ ${successCount} dealer${successCount > 1 ? "s" : ""} notified`);
     if (failCount    > 0) parts.push(`${failCount} failed`);
     if (noEmailCount > 0) parts.push(`${noEmailCount} skipped (no email found)`);
-    showToast(parts.join(" · "), failCount === 0 && noEmailCount === 0);
+    if (alreadyCount > 0) parts.push(`${alreadyCount} skipped (already notified)`);
+    showToast(parts.join(" · ") || "Nothing to send.", failCount === 0 && noEmailCount === 0);
     if (failedDetails.length > 0) {
       console.warn("[BULK-NOTIFY] Failure details:\n" + failedDetails.join("\n"));
     }
@@ -1112,7 +1091,7 @@ export default function ApproverDashboard() {
               <div style={{ background:"#1e3a5f",borderRadius:10,padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
                 <span style={{ color:"#e2e8f0",fontSize:13,fontWeight:600 }}>{selectedIds.size} proposal{selectedIds.size>1?"s":""} selected</span>
                 <span style={{ color:"#93c5fd",fontSize:11 }}>📧 Final Approver receives 1 digest email at midnight</span>
-                <button onClick={async()=>{
+                <button disabled={bulkForwarding} onClick={async()=>{
                   setBulkForwarding(true);
                   try {
                     const result = await forwardProposalsBulk(Array.from(selectedIds), instance);
@@ -1129,8 +1108,8 @@ export default function ApproverDashboard() {
                   } finally {
                     setBulkForwarding(false);
                   }
-                }} style={{ background:"#fff",color:"#1e3a5f",border:"none",borderRadius:7,padding:"8px 20px",fontWeight:700,fontSize:13,cursor:"pointer" }}>
-                  📤 Forward Selected to Final Approver
+                }} style={{ background:"#fff",color:"#1e3a5f",border:"none",borderRadius:7,padding:"8px 20px",fontWeight:700,fontSize:13,cursor:bulkForwarding?"not-allowed":"pointer",opacity:bulkForwarding?0.7:1 }}>
+                  {bulkForwarding?"Forwarding…":"📤 Forward Selected to Final Approver"}
                 </button>
                 <button onClick={()=>setSelectedIds(new Set())} style={{ background:"rgba(255,255,255,0.1)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,0.2)",borderRadius:7,padding:"8px 16px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
               </div>
@@ -1147,7 +1126,7 @@ export default function ApproverDashboard() {
                     cursor:bulkNotifying?"not-allowed":"pointer",opacity:bulkNotifying?0.7:1 }}>
                   {bulkNotifying?`Notifying ${notifySelectedIds.size}…`:"📧 Notify Dealers"}
                 </button>
-                <button onClick={()=>setNotifySelectedIds(new Set())}
+                <button onClick={()=>setNotifySelectedIds(new Set())} disabled={bulkNotifying}
                   style={{ background:"rgba(255,255,255,0.15)",color:"#dcfce7",
                     border:"1px solid rgba(255,255,255,0.25)",borderRadius:7,
                     padding:"8px 14px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
@@ -1198,31 +1177,18 @@ export default function ApproverDashboard() {
                       </div>
                     </th>
                   )}
-                                    {isChecker&&(
+                  {isChecker&&(
                     <th style={{ width:44,textAlign:"center",padding:"8px 6px" }}>
                       <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
                         <input type="checkbox"
-                          checked={
-                            filtered.filter(p=>p.status==="Approved").length>0 &&
-                            filtered.filter(p=>p.status==="Approved").every(p=>notifySelectedIds.has(p.id))
-                          }
-                          onChange={()=>{
-                            // ── FIX: "notifiable" now covers ALL Approved proposals, not just
-                            // un-notified ones — matches the row checkboxes, which allow
-                            // re-selecting an already-notified proposal for a resend (e.g. to
-                            // also cc RSM/TSM/Commando). Previously this filtered out
-                            // dealerNotified rows, so once every approved proposal had been
-                            // notified at least once, "select all" had nothing left to select. ──
-                            const notifiable = filtered.filter(p=>p.status==="Approved");
-                            const allSel = notifiable.length>0 && notifiable.every(p=>notifySelectedIds.has(p.id));
-                            if(allSel) setNotifySelectedIds(new Set());
-                            else setNotifySelectedIds(new Set(notifiable.map(p=>p.id)));
-                          }}
-                          style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
-                          title="Select all Approved proposals (includes already-notified, for resend)"/>
-                        {filtered.filter(p=>p.status==="Approved").length>0&&(
+                          checked={allNotifySelected}
+                          disabled={notifiableFiltered.length===0}
+                          onChange={toggleNotifySelectAll}
+                          style={{ width:15,height:15,cursor:notifiableFiltered.length?"pointer":"not-allowed",accentColor:"#16a34a" }}
+                          title="Select all Approved proposals not yet notified"/>
+                        {notifiableFiltered.length>0&&(
                           <span style={{ fontSize:9,color:"#64748b",whiteSpace:"nowrap" }}>
-                            {filtered.filter(p=>p.status==="Approved").length} appr.
+                            {notifiableFiltered.length} to notify
                           </span>
                         )}
                       </div>
@@ -1237,7 +1203,7 @@ export default function ApproverDashboard() {
                   <th>Status</th>
                 </tr></thead>
                 <tbody>
-                  {filtered.length===0&&(<tr><td colSpan={isAdmin?16:12} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
+                  {filtered.length===0&&(<tr><td colSpan={isAdmin?(isChecker?17:16):12} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
                   {filtered.map((p)=>{
                     const isPending=p.status==="Pending"; const isChecked=selectedIds.has(p.id);
                     return (
@@ -1268,28 +1234,26 @@ export default function ApproverDashboard() {
                             )}
                           </td>
                         )}
-                        {/* Notify Dealer checkbox — Checker only, Approved only. Not disabled
-                            just because dealerNotified is true, so resending (with team cc)
-                            is always possible. */}
-                          {isChecker&&(
+                        {/* Notify Dealer column — Checker only. Approved + not notified → checkbox.
+                            Already notified → "✓ Sent" only (one-time, no resend). */}
+                        {isChecker&&(
                           <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>
-                            {p.status==="Approved"?(
-                              <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
-                                <input type="checkbox"
-                                  checked={notifySelectedIds.has(p.id)}
-                                  onChange={()=>setNotifySelectedIds(prev=>{
-                                    const next=new Set(prev);
-                                    next.has(p.id)?next.delete(p.id):next.add(p.id);
-                                    return next;
-                                  })}
-                                  style={{ width:15,height:15,cursor:"pointer",accentColor:p.dealerNotified?"#2563eb":"#16a34a" }}
-                                  title={p.dealerNotified ? `Already notified${p.dealerEmail?` (${p.dealerEmail})`:""} — select to resend` : "Select to bulk notify dealer"}/>
-                                {p.dealerNotified&&(
-                                  <span style={{ fontSize:8,color:"#16a34a",fontWeight:700,whiteSpace:"nowrap" }}>✓ sent</span>
-                                )}
-                              </div>
-                            ):(
+                            {p.status!=="Approved" ? (
                               <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>
+                            ) : p.dealerNotified ? (
+                              <span title={`Dealer already notified${p.dealerEmail?` (${p.dealerEmail})`:""}`}
+                                style={{ fontSize:10,color:"#16a34a",fontWeight:700,whiteSpace:"nowrap" }}>✓ Sent</span>
+                            ) : (
+                              <input type="checkbox"
+                                checked={notifySelectedIds.has(p.id)}
+                                disabled={bulkNotifying}
+                                onChange={()=>setNotifySelectedIds(prev=>{
+                                  const next=new Set(prev);
+                                  next.has(p.id)?next.delete(p.id):next.add(p.id);
+                                  return next;
+                                })}
+                                style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
+                                title="Select to bulk notify dealer"/>
                             )}
                           </td>
                         )}
@@ -1338,7 +1302,7 @@ export default function ApproverDashboard() {
               <div style={{ minWidth:0 }}>
                 {isEditing?<input style={{ background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",borderRadius:6,padding:"4px 10px",fontSize:15,fontWeight:600,width:200 }} value={editData.dealerName} onChange={(e)=>setF("dealerName",e.target.value)}/>
                   :<span style={{ fontWeight:700,fontSize:16,color:"#fff" }}>{selected.dealerName}</span>}
-                <span style={{ color:"#94a3b8",fontSize:12,marginLeft:12 }}>{selected.location}, {selected.state} · {selected.month}{selected.checkedByEmail&&<span style={{ marginLeft:8,color:"#86efac",fontSize:11 }}>✓ Forwarded</span>}</span>
+                <span style={{ color:"#94a3b8",fontSize:12,marginLeft:12 }}>{selected.location}, {selected.state} · {selected.month}{selected.checkedByEmail&&<span style={{ marginLeft:8,color:"#86efac",fontSize:11 }}>✓ Forwarded</span>}{selected.dealerNotified&&<span style={{ marginLeft:8,color:"#86efac",fontSize:11 }}>✓ Dealer notified</span>}</span>
               </div>
             </div>
             <div style={{ display:"flex",alignItems:"center",gap:8,flexShrink:0 }}>
@@ -1563,7 +1527,6 @@ export default function ApproverDashboard() {
                       {!isEditing&&selected.status==="Approved"&&selected.activities.map((a)=>{
                         const d=actualsData[a.id];
                         if (openActualsId!==a.id||!d) return null;
-                        const pctColor=(actual:number,planned:number)=>{ if(!actual) return ""; const r=planned>0?actual/planned:1; return r>=0.9?"#d1fae5":r>=0.6?"#fef3c7":"#fee2e2"; };
                         return (
                           <tr key={`actuals-${a.id}`}>
                             <td colSpan={14} style={{ padding:0,background:"#f0fdf4",borderBottom:"2px solid #bbf7d0" }}>
@@ -1578,10 +1541,7 @@ export default function ApproverDashboard() {
                                 {(()=>{
                                   const totalLmsLeads = d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
                                   const totalPunched = d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0);
-                                  const lastMtdActivity = [...d.dailyEntries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any;
-                                  const mtdRetailActivity = lastMtdActivity?.retailMtdActivity ?? 0;
                                   const lmsGap = totalLmsLeads - totalPunched;
-                                  const retailConvPct = totalLmsLeads > 0 ? Math.round((mtdRetailActivity/totalLmsLeads)*100) : 0;
                                   return (
                                     <div style={{ display:"flex",gap:8,flexWrap:"wrap",marginBottom:12 }}>
                                       <span style={{ fontSize:11,background:"#eef2ff",color:"#4338ca",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Leads: {totalLmsLeads}</span>
@@ -1865,7 +1825,7 @@ export default function ApproverDashboard() {
                                                   </td>
 
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <div title="Auto: running (Booking Today − Retail), floored at 0"
+                                                    <div title="Auto: running (Booking Today − Retail)"
                                                       style={{ width:48,margin:"0 auto",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,
                                                         background:(entry.bookingInHand>0)?"#fdf4ff":"#fff",
                                                         fontWeight:(entry.bookingInHand>0)?700:400,
@@ -2197,31 +2157,34 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* Notify Dealer — resendable even after dealerNotified is true */}
+              {/* Notify Dealer — ONE-TIME. After sending, only the status is shown. */}
               {isAdmin&&selected.status==="Approved"&&(
                 <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"20px",marginBottom:20 }}>
                   <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:8 }}>Notify Dealer</p>
-                  {selected.dealerNotified&&<div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:12 }}>✓ Dealer notified{selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}<span style={{ color:"#6b7280",marginLeft:6 }}>— you can still resend below (e.g. to also cc RSM/TSM/Commando)</span></div>}
-                  {!showNotifyDealer?(<button onClick={async()=>{
-                    setShowNotifyDealer(true);
-                    if(selected.dealerEmail){
-                      setDealerEmailMode("dealer"); setDealerEmailInput(selected.dealerEmail);
-                    } else {
-                      setDealerEmailMode("custom"); setDealerEmailInput("");
-                      setDealerEmailFetching(true);
-                      try {
-                        const dealers = await fetchDealerUsers(instance);
-                        const match = dealers.find(d =>
-                          d.dealerName?.trim().toLowerCase() === selected.dealerName?.trim().toLowerCase()
-                          || d.dealerCode === (selected as any).dealerCode
-                        );
-                        if (match?.email) {
-                          setDealerEmailInput(match.email);
-                          setDealerEmailMode("dealer");
-                        }
-                      } catch {} finally { setDealerEmailFetching(false); }
-                    }
-                  }} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }} title={selected.dealerNotified?"Resend — also cc RSM/TSM/Commando":"Send activity details to dealer"}>{selected.dealerNotified?"🔁 Notify Again":"📧 Notify Dealer"}</button>):(
+                  {selected.dealerNotified ? (
+                    <div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534" }}>
+                      ✓ Dealer notified{selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}
+                    </div>
+                  ) : !showNotifyDealer ? (
+                    <button onClick={async()=>{
+                      setShowNotifyDealer(true);
+                      if(selected.dealerEmail){
+                        setDealerEmailMode("dealer"); setDealerEmailInput(selected.dealerEmail);
+                      } else {
+                        setDealerEmailMode("custom"); setDealerEmailInput("");
+                        setDealerEmailFetching(true);
+                        try {
+                          const dealers = await fetchDealerUsers(instance);
+                          const match = dealers.find(d =>
+                            d.dealerName?.trim().toLowerCase() === selected.dealerName?.trim().toLowerCase()
+                            || d.dealerCode === (selected as any).dealerCode
+                          );
+                          if (match?.email) { setDealerEmailInput(match.email); setDealerEmailMode("dealer"); }
+                        } catch {} finally { setDealerEmailFetching(false); }
+                      }
+                    }} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }}
+                      title="Send activity details to dealer">📧 Notify Dealer</button>
+                  ) : (
                     <div style={{ background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:16 }}>
                       {(() => {
                         const team = getTeamEmailsFor(selected);
@@ -2231,33 +2194,27 @@ export default function ApproverDashboard() {
                           team.commandoEmail && `Commando (${selected.commandoName})`,
                         ].filter(Boolean);
                         return names.length > 0 ? (
-                          <div style={{ fontSize:11, color:"#6b7280", marginBottom:12, background:"#f5f3ff", border:"1px solid #ddd6fe", borderRadius:6, padding:"6px 10px" }}>
+                          <div style={{ fontSize:11,color:"#6b7280",marginBottom:12,background:"#f5f3ff",border:"1px solid #ddd6fe",borderRadius:6,padding:"6px 10px" }}>
                             Will also cc: {names.join(", ")}
                           </div>
                         ) : (
-                          <div style={{ fontSize:11, color:"#92400e", marginBottom:12, background:"#fffbeb", border:"1px solid #fde68a", borderRadius:6, padding:"6px 10px" }}>
-                            No RSM/TSM/Commando email found in the dealer team map for this dealer — only the dealer will be notified.
+                          <div style={{ fontSize:11,color:"#92400e",marginBottom:12,background:"#fffbeb",border:"1px solid #fde68a",borderRadius:6,padding:"6px 10px" }}>
+                            No RSM/TSM/Commando email found in Dealer Mapping for this dealer — only the dealer will be notified.
                           </div>
                         );
                       })()}
                       <div style={{ display:"flex",flexDirection:"column",gap:8,marginBottom:14 }}>
-                        {selected.dealerEmail&&(<label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="dealer"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="dealer"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="dealer" checked={dealerEmailMode==="dealer"} onChange={()=>{setDealerEmailMode("dealer");setDealerEmailInput(selected.dealerEmail??"");}}/><div><span style={{ fontWeight:600,color:"#0a2540" }}>Dealer (previously used)</span> <span style={{ color:"#6b7280",fontSize:12 }}>{selected.dealerEmail}</span></div></label>)}
+                        {selected.dealerEmail&&(<label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="dealer"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="dealer"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="dealer" checked={dealerEmailMode==="dealer"} onChange={()=>{setDealerEmailMode("dealer");setDealerEmailInput(selected.dealerEmail??"");}}/><div><span style={{ fontWeight:600,color:"#0a2540" }}>Dealer (on file)</span> <span style={{ color:"#6b7280",fontSize:12 }}>{selected.dealerEmail}</span></div></label>)}
                         <label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="custom"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="custom"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="custom" checked={dealerEmailMode==="custom"} onChange={()=>{setDealerEmailMode("custom");setDealerEmailInput("");}}/><span style={{ fontWeight:600,color:"#0a2540" }}>Enter email manually</span></label>
                       </div>
-                      {dealerEmailFetching && (
-                        <div style={{ fontSize:12,color:"#2563eb",padding:"6px 0",marginBottom:6 }}>
-                          ⏳ Looking up dealer email…
-                        </div>
-                      )}
-                      <input type="email" value={dealerEmailInput} onChange={(e)=>setDealerEmailInput(e.target.value)} placeholder="recipient@example.com" style={{ width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${dealerEmailInput?"#16a34a":"#d1d5db"}`,fontSize:13,boxSizing:"border-box" as const,marginBottom:14 }}/>
-                      {dealerEmailInput && !dealerEmailFetching && (
-                        <div style={{ fontSize:11,color:"#16a34a",marginBottom:10,fontWeight:500 }}>
-                          ✓ Email auto-fetched from dealer account
-                        </div>
-                      )}
+                      {dealerEmailFetching&&<div style={{ fontSize:12,color:"#2563eb",padding:"6px 0",marginBottom:6 }}>⏳ Looking up dealer email…</div>}
+                      <input type="email" value={dealerEmailInput} onChange={(e)=>setDealerEmailInput(e.target.value)} placeholder="recipient@example.com"
+                        style={{ width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${dealerEmailInput?"#16a34a":"#d1d5db"}`,fontSize:13,boxSizing:"border-box" as const,marginBottom:14 }}/>
                       <div style={{ display:"flex",gap:10 }}>
-                        <button onClick={handleNotifyDealer} disabled={notifyLoading||!dealerEmailInput.trim()} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:notifyLoading||!dealerEmailInput.trim()?"not-allowed":"pointer",opacity:notifyLoading||!dealerEmailInput.trim()?0.6:1 }}>{notifyLoading?"Sending…":selected.dealerNotified?"📧 Resend":"📧 Send to Dealer"}</button>
-                        <button onClick={()=>setShowNotifyDealer(false)} style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"10px 20px",borderRadius:8,fontWeight:500,fontSize:14,cursor:"pointer" }}>Cancel</button>
+                        <button onClick={handleNotifyDealer} disabled={notifyLoading||!dealerEmailInput.trim()}
+                          style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:notifyLoading||!dealerEmailInput.trim()?"not-allowed":"pointer",opacity:notifyLoading||!dealerEmailInput.trim()?0.6:1 }}>
+                          {notifyLoading?"Sending…":"📧 Send to Dealer"}</button>
+                        <button onClick={()=>setShowNotifyDealer(false)} disabled={notifyLoading} style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"10px 20px",borderRadius:8,fontWeight:500,fontSize:14,cursor:"pointer" }}>Cancel</button>
                       </div>
                     </div>
                   )}

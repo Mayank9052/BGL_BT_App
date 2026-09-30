@@ -532,7 +532,17 @@ public class ProposalsController : ControllerBase
         _db.ApprovalDecisions.Add(decision);
         await _db.SaveChangesAsync();
 
-        var (sent, error) = await _emailService.SendDecisionMailAsync(proposal, decision, GraphToken());
+        // Approved → cc RSM/TSM/Commando from Dealer Mapping. Rejected → Checker + submitter only.
+        List<string>? teamCc = null;
+        if (dto.Status == "Approved")
+        {
+            var mapping = await DealerNameMatcher.FindMappingAsync(_db, proposal.DealerName);
+            teamCc = DealerNameMatcher.TeamEmails(mapping);
+            if (mapping is null)
+                _logger.LogWarning("No Dealer Mapping for '{Dealer}' — approval mail sent without team cc.", proposal.DealerName);
+        }
+
+        var (sent, error) = await _emailService.SendDecisionMailAsync(proposal, decision, GraphToken(), teamCc);
         decision.MailSent   = sent;
         decision.MailSentAt = sent ? DateTimeOffset.UtcNow : null;
         decision.MailError  = error;
@@ -595,7 +605,9 @@ public class ProposalsController : ControllerBase
     }
 
     // ── PATCH /api/proposals/{id}/actuals ─────────────────────────────────────
+    // Staff (Azure) OR Dealer login. A dealer can only update proposals of its own dealership.
     [HttpPatch("{id:guid}/actuals")]
+    [Authorize(AuthenticationSchemes = "AzureAD,DealerJwt")]
     public async Task<ActionResult<ProposalResponseDto>> UpdateActuals(
         Guid id, [FromBody] List<UpdateActivityActualsDto> actuals)
     {
@@ -607,6 +619,20 @@ public class ProposalsController : ControllerBase
         if (proposal is null) return NotFound();
         if (proposal.Status != "Approved")
             return BadRequest(new { message = "Actuals can only be added after approval." });
+
+        // Dealer caller → must own this proposal
+        var sub = User.FindFirstValue("sub");
+        if (int.TryParse(sub, out var userId))
+        {
+            var caller = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+            if (caller is not null && string.Equals(caller.Role, "Dealer", StringComparison.OrdinalIgnoreCase))
+            {
+                var mapping = await DealerNameMatcher.FindMappingAsync(_db, caller.DealerName);
+                var own = DealerNameMatcher.SameDealer(caller.DealerName, proposal.DealerName)
+                       || (mapping is not null && DealerNameMatcher.SameDealer(mapping.DealerName, proposal.DealerName));
+                if (!own) return Forbid();
+            }
+        }
 
         foreach (var dto in actuals)
         {
@@ -685,6 +711,10 @@ public class ProposalsController : ControllerBase
     }
 
     // ── GET /api/proposals/my-dealer-proposals ────────────────────────────────
+    // Returns EVERY proposal for this dealer, whoever submitted it (RSM Azure login,
+    // RSM/TSM local login, or the dealer). Match = normalised name of the dealer
+    // login + its Dealer Mapping row. No partial/Contains matching (prevents
+    // showing another dealer's proposals).
     [HttpGet("my-dealer-proposals")]
     [Authorize(AuthenticationSchemes = "DealerJwt")]
     public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMyDealerProposals()
@@ -695,46 +725,32 @@ public class ProposalsController : ControllerBase
 
         var dealerUser = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
         if (dealerUser is null) return Unauthorized();
+        if (string.IsNullOrWhiteSpace(dealerUser.DealerName))
+            return Ok(Array.Empty<ProposalResponseDto>());
 
-        List<Proposal> proposals;
+        var mapping = await DealerNameMatcher.FindMappingAsync(_db, dealerUser.DealerName);
 
-        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
-        {
-            proposals = await _db.Proposals
-                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
-                .Where(p => p.DealerName == dealerUser.DealerName)
-                .OrderByDescending(p => p.CreatedAt)
-                .AsNoTracking()
-                .ToListAsync();
+        var keys = new[] { dealerUser.DealerName, mapping?.DealerName }
+            .Select(DealerNameMatcher.Normalize)
+            .Where(k => k.Length > 0)
+            .ToHashSet();
 
-            if (proposals.Count > 0) return Ok(proposals.Select(ToResponse));
-        }
+        var allNames = await _db.Proposals.AsNoTracking()
+            .Select(p => p.DealerName).Distinct().ToListAsync();
+        var matchedNames = allNames
+            .Where(n => keys.Contains(DealerNameMatcher.Normalize(n)))
+            .ToList();
 
-        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
-        {
-            var lower = dealerUser.DealerName.Trim().ToLower();
-            proposals = await _db.Proposals
-                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
-                .Where(p => p.DealerName.ToLower() == lower)
-                .OrderByDescending(p => p.CreatedAt)
-                .AsNoTracking()
-                .ToListAsync();
+        if (matchedNames.Count == 0) return Ok(Array.Empty<ProposalResponseDto>());
 
-            if (proposals.Count > 0) return Ok(proposals.Select(ToResponse));
+        var proposals = await _db.Proposals
+            .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
+            .Where(p => matchedNames.Contains(p.DealerName))
+            .OrderByDescending(p => p.CreatedAt)
+            .AsNoTracking()
+            .ToListAsync();
 
-            var partial = lower;
-            proposals = await _db.Proposals
-                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
-                .Where(p => p.DealerName.ToLower().Contains(partial)
-                        || partial.Contains(p.DealerName.ToLower()))
-                .OrderByDescending(p => p.CreatedAt)
-                .AsNoTracking()
-                .ToListAsync();
-
-            if (proposals.Count > 0) return Ok(proposals.Select(ToResponse));
-        }
-
-        return Ok(Array.Empty<ProposalResponseDto>());
+        return Ok(proposals.Select(ToResponse));
     }
 
     // ── POST /api/proposals/{id}/forward ─────────────────────────────────────
@@ -823,8 +839,7 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(proposal));
     }
 
-    // ── GET /api/proposals/my-team-proposals ──────────────────────────────────
-    // For RSM/TSM/Commando staff logins (DealerJwt scheme, role-differentiated).
+        // ── GET /api/proposals/my-team-proposals ──────────────────────────────────
     [HttpGet("my-team-proposals")]
     [Authorize(AuthenticationSchemes = "DealerJwt")]
     public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMyTeamProposals()
@@ -833,34 +848,63 @@ public class ProposalsController : ControllerBase
         if (string.IsNullOrWhiteSpace(sub) || !int.TryParse(sub, out var userId))
             return Unauthorized();
 
-        var staffUser = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
-        if (staffUser is null) return Unauthorized();
+        var staff = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+        if (staff is null) return Unauthorized();
+        if (string.Equals(staff.Role, "Dealer", StringComparison.OrdinalIgnoreCase)) return Forbid();
 
-        if (staffUser.Role == "Dealer")
-            return Forbid();
+        var role    = (staff.Role ?? "").Trim();
+        var email   = (staff.Email ?? "").Trim();
+        var nameKey = DealerNameMatcher.Normalize(staff.DisplayName);
 
-        var nameLower = staffUser.DisplayName.Trim().ToLower();
+        bool IsMe(string? name, string? emails) =>
+            (email.Length > 0 && !string.IsNullOrWhiteSpace(emails) &&
+             emails.Split(',', ';').Any(x => string.Equals(x.Trim(), email, StringComparison.OrdinalIgnoreCase)))
+            || (nameKey.Length > 0 && DealerNameMatcher.Normalize(name) == nameKey);
 
-        IQueryable<Proposal> query = _db.Proposals
-            .Include(p => p.Activities).ThenInclude(a => a.MediaFiles);
+        // (a) dealers mapped to me in Dealer Mapping
+        var maps = await _db.Set<DealerTeamMapping>().AsNoTracking().ToListAsync();
+        IEnumerable<DealerTeamMapping> myMaps =
+            role.Equals("RSM", StringComparison.OrdinalIgnoreCase)      ? maps.Where(m => IsMe(m.Rsm, m.RsmEmail)) :
+            role.Equals("TSM", StringComparison.OrdinalIgnoreCase)      ? maps.Where(m => IsMe(m.Tsm, m.TsmEmail)) :
+            role.Equals("Commando", StringComparison.OrdinalIgnoreCase) ? maps.Where(m => IsMe(m.Commando, m.CommandoEmail)) :
+            Enumerable.Empty<DealerTeamMapping>();
+        var dealerKeys = myMaps.Select(m => DealerNameMatcher.Normalize(m.DealerName))
+                               .Where(k => k.Length > 0).ToHashSet();
 
-        query = staffUser.Role switch
-        {
-            "RSM"      => query.Where(p => p.RsmName.ToLower() == nameLower),
-            "TSM"      => query.Where(p => p.TsmName.ToLower() == nameLower),
-            "Commando" => query.Where(p => p.CommandoName != null && p.CommandoName.ToLower() == nameLower),
-            _          => query.Where(p => false),
-        };
-
-        var proposals = await query
-            .OrderByDescending(p => p.CreatedAt)
-            .AsNoTracking()
+        // Light projection only — no activities/media yet
+        var heads = await _db.Proposals.AsNoTracking()
+            .Select(p => new { p.Id, p.DealerName, p.RsmName, p.TsmName, p.CommandoName, p.SubmittedBy })
             .ToListAsync();
+
+        var ids = heads.Where(h =>
+                dealerKeys.Contains(DealerNameMatcher.Normalize(h.DealerName))                                  // (a)
+             || (nameKey.Length > 0 && (                                                                         // (b)
+                    (role.Equals("RSM", StringComparison.OrdinalIgnoreCase)      && DealerNameMatcher.Normalize(h.RsmName)      == nameKey) ||
+                    (role.Equals("TSM", StringComparison.OrdinalIgnoreCase)      && DealerNameMatcher.Normalize(h.TsmName)      == nameKey) ||
+                    (role.Equals("Commando", StringComparison.OrdinalIgnoreCase) && DealerNameMatcher.Normalize(h.CommandoName) == nameKey)))
+             || (email.Length > 0 && string.Equals(h.SubmittedBy, email, StringComparison.OrdinalIgnoreCase))) // (c)
+            .Select(h => h.Id)
+            .ToList();
+
+        if (ids.Count == 0) return Ok(Array.Empty<ProposalResponseDto>());
+
+        var proposals = await _db.Proposals
+            .Where(p => ids.Contains(p.Id))
+            .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
+            .AsSplitQuery()
+            .AsNoTracking()
+            .OrderByDescending(p => p.CreatedAt)
+            .ToListAsync();
+
+        _logger.LogInformation("my-team-proposals: {Email} ({Role}) → {Maps} mapped dealers, {Count} proposals",
+            email, role, dealerKeys.Count, proposals.Count);
 
         return Ok(proposals.Select(ToResponse));
     }
 
     // ── POST /api/proposals/{id}/notify-dealer ────────────────────────────────
+    // ONE-TIME: once DealerNotified = true, further calls are rejected (409).
+    // Flag is set ONLY after the mail is actually sent.
     [HttpPost("{id:guid}/notify-dealer")]
     public async Task<ActionResult<ProposalResponseDto>> NotifyDealer(
         Guid id, [FromBody] NotifyDealerDto dto)
@@ -873,10 +917,23 @@ public class ProposalsController : ControllerBase
         if (proposal is null) return NotFound();
         if (proposal.Status != "Approved")
             return Conflict(new { message = "Only approved proposals can be sent to the dealer." });
+        if (proposal.DealerNotified)
+            return Conflict(new { message = $"Dealer already notified{(string.IsNullOrWhiteSpace(proposal.DealerEmail) ? "" : $" ({proposal.DealerEmail})")}." });
         if (string.IsNullOrWhiteSpace(dto.DealerEmail))
             return BadRequest(new { message = "Dealer email is required." });
 
-        proposal.DealerEmail    = dto.DealerEmail;
+        var dealerEmail = dto.DealerEmail.Trim();
+
+        var (sent, error) = await _emailService.SendDealerNotificationMailAsync(
+            proposal, dealerEmail, dto.RsmEmail, dto.TsmEmail, dto.CommandoEmail, GraphToken());
+
+        if (!sent)
+        {
+            _logger.LogWarning("Dealer notification failed for {Id}: {Error}", proposal.Id, error);
+            return BadRequest(new { message = $"Mail not sent — {error ?? "unknown error"}. Proposal NOT marked as notified; you can retry." });
+        }
+
+        proposal.DealerEmail    = dealerEmail;
         proposal.DealerNotified = true;
         await _db.SaveChangesAsync();
 
@@ -892,11 +949,6 @@ public class ProposalsController : ControllerBase
             }
         });
 
-        var (sent, error) = await _emailService.SendDealerNotificationMailAsync(
-                proposal, dto.DealerEmail, dto.RsmEmail, dto.TsmEmail, dto.CommandoEmail, GraphToken());
-        if (!sent)
-            _logger.LogWarning("Dealer notification failed for {Id}: {Error}", proposal.Id, error);
-
         return Ok(ToResponse(proposal));
     }
 
@@ -905,8 +957,9 @@ public class ProposalsController : ControllerBase
     // ─────────────────────────────────────────────────────────────────────────
     private string CurrentUserEmail() =>
         User.FindFirstValue("preferred_username")
-        ?? User.FindFirstValue(ClaimTypes.Upn)
+        ?? User.FindFirstValue("email")                 // ← local-login JWT (RSM/TSM/Commando/Dealer)
         ?? User.FindFirstValue(ClaimTypes.Email)
+        ?? User.FindFirstValue(ClaimTypes.Upn)
         ?? User.Identity?.Name
         ?? "unknown";
 

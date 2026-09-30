@@ -18,10 +18,14 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(
         builder.Configuration.GetConnectionString("DefaultConnection"),
-        sqlOptions => sqlOptions.EnableRetryOnFailure(
-            maxRetryCount:       5,
-            maxRetryDelay:       TimeSpan.FromSeconds(10),
-            errorNumbersToAdd:   null)));
+        sqlOptions =>
+        {
+            sqlOptions.CommandTimeout(30);                     // seconds per query
+            sqlOptions.EnableRetryOnFailure(
+                maxRetryCount:     2,                           // was 5
+                maxRetryDelay:     TimeSpan.FromSeconds(5),
+                errorNumbersToAdd: null);
+        }));
 
 builder.Services.AddDbContext<BaplDbContext>(options =>
     options.UseSqlServer(
@@ -73,6 +77,17 @@ builder.Services.PostConfigure<JwtBearerOptions>("AzureAD", options =>
 authBuilder.AddJwtBearer("DealerJwt", options =>
 {
     var jwtSecret = builder.Configuration["DealerJwt:Secret"]!;
+    options.Events = new JwtBearerEvents
+    {
+        // SignalR sends the token as ?access_token= on WebSocket/SSE requests
+        OnMessageReceived = ctx =>
+        {
+            var token = ctx.Request.Query["access_token"];
+            if (!string.IsNullOrEmpty(token) && ctx.HttpContext.Request.Path.StartsWithSegments("/hubs"))
+                ctx.Token = token;
+            return Task.CompletedTask;
+        },
+    };
     options.MapInboundClaims = false;
     options.TokenValidationParameters = new TokenValidationParameters
     {

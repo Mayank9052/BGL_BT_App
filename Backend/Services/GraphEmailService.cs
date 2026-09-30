@@ -71,11 +71,22 @@ public class GraphEmailService : IEmailService
         SendAsync(graphToken, _settings.FinalApproverEmail, _settings.ApproverEmail,
             BuildSubject("Forwarded for Approval", p), BuildCheckerForwardBody(p));
 
-    // Step 3a: Final Approver decides → Checker + CC RSM
+    // Step 3a: Final Approver decides → To: Checker, Cc: RSM (submitter) + RSM/TSM/Commando (Dealer Mapping, on Approved)
     public Task<(bool Sent, string? Error)> SendDecisionMailAsync(
-        Proposal p, ApprovalDecision decision, string graphToken) =>
-        SendAsync(graphToken, _settings.ApproverEmail, p.SubmittedBy,
+        Proposal p, ApprovalDecision decision, string graphToken, IEnumerable<string>? teamCc = null)
+    {
+        var to = _settings.ApproverEmail;
+        var cc = new[] { p.SubmittedBy }
+            .Concat(teamCc ?? Enumerable.Empty<string>())
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .Where(e => !string.Equals(e, to, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return SendAsync(graphToken, to, cc.Length > 0 ? string.Join(",", cc) : null,
             BuildSubject($"Re: Proposal {decision.Status}", p), BuildDecisionBody(p, decision));
+    }
 
     // Step 3b: Send back for revision → Checker + CC RSM
     public Task<(bool Sent, string? Error)> SendRevisionRequestMailAsync(
@@ -88,22 +99,29 @@ public class GraphEmailService : IEmailService
         SendAsync(graphToken, _settings.ApproverEmail, null,
             BuildSubject("Resubmitted for Review", p), BuildResubmissionBody(p));
 
-        // Step 4: Notify Dealer (after approval) → To: Dealer, Cc: Approver + RSM + TSM + Commando
-    // Sent via the Approver's own Graph token — same mailbox that already sends
-    // every other step in this pipeline (ApproverEmail).
+    // Step 4: Notify Dealer (after approval) → To: Dealer, Cc: RSM + TSM + Commando (from Dealer Mapping)
+    // NOT cc'd: Checker (ApproverEmail — she is the sender, copy is in her Sent Items)
+    //           Submitter (p.SubmittedBy — already received Submission + Decision mails)
     public Task<(bool Sent, string? Error)> SendDealerNotificationMailAsync(
         Proposal p, string dealerEmail, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken)
     {
         if (string.IsNullOrWhiteSpace(dealerEmail))
             return Task.FromResult<(bool, string?)>((false, "No dealer email provided."));
 
-        var cc = new[] { _settings.ApproverEmail, p.SubmittedBy, rsmEmail, tsmEmail, commandoEmail }
+        var to = dealerEmail.Trim();
+        var excluded = new[] { to, _settings.ApproverEmail, p.SubmittedBy }
             .Where(e => !string.IsNullOrWhiteSpace(e))
             .Select(e => e!.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var cc = new[] { rsmEmail, tsmEmail, commandoEmail }
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .Where(e => !excluded.Contains(e))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        return SendAsync(graphToken, dealerEmail, string.Join(",", cc),
+        return SendAsync(graphToken, to, cc.Length > 0 ? string.Join(",", cc) : null,
             BuildSubject("Activity Proposal Approved — Your Action Required", p),
             BuildDealerNotificationBody(p, rsmEmail, tsmEmail, commandoEmail));
     }
@@ -352,12 +370,26 @@ public class GraphEmailService : IEmailService
             return (false, "No Graph token.");
         }
 
-        var toList = to.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                       .Select(a => new { emailAddress = new { address = a } }).ToArray();
-        var ccList = string.IsNullOrWhiteSpace(cc)
-            ? Array.Empty<object>()
-            : cc.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(a => (object)new { emailAddress = new { address = a } }).ToArray();
+        static bool IsEmail(string a) =>
+            System.Text.RegularExpressions.Regex.IsMatch(a, @"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$");
+
+        var toAddrs = to.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var ccAddrs = string.IsNullOrWhiteSpace(cc)
+            ? Array.Empty<string>()
+            : cc.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var skipped = toAddrs.Concat(ccAddrs).Where(a => !IsEmail(a)).ToArray();
+        if (skipped.Length > 0)
+            _logger.LogWarning("Skipped invalid recipient(s) for '{Subject}': {Bad}", subject, string.Join(", ", skipped));
+
+        var toList = toAddrs.Where(IsEmail).Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Select(a => new { emailAddress = new { address = a } }).ToArray();
+        if (toList.Length == 0) return (false, $"No valid recipient in '{to}'.");
+
+        var ccList = ccAddrs.Where(IsEmail)
+                            .Where(a => !toAddrs.Contains(a, StringComparer.OrdinalIgnoreCase))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Select(a => (object)new { emailAddress = new { address = a } }).ToArray();
 
         var payload = new
         {
