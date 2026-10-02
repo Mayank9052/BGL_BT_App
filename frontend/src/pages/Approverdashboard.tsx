@@ -357,6 +357,7 @@ export default function ApproverDashboard() {
   const [bulkNotifying,     setBulkNotifying]     = useState(false);
   const [bulkForwarding,    setBulkForwarding]    = useState(false);
   const [fwdDateFilter,     setFwdDateFilter]     = useState("");
+  const [submittedDateFilter, setSubmittedDateFilter] = useState(""); // ← NEW: filters by the "Submitted" column date (createdAt)
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkNote,      setBulkNote]      = useState("");
   const [showBulkPanel, setShowBulkPanel] = useState(false);
@@ -430,11 +431,20 @@ export default function ApproverDashboard() {
       const checkedDate = isoDate(new Date(p.checkedAt));
       if (checkedDate !== fwdDateFilter) return false;
     }
+    // ── NEW: filters by the same date shown in the "Submitted" column
+    // (p.createdAt) — not the Forward Date (p.checkedAt). This is the
+    // actual submission day, so "30" here means "proposals the RSM
+    // submitted on the 30th", independent of when a Checker later forwarded it.
+    if (submittedDateFilter) {
+      if (!p.createdAt) return false;
+      const submittedDate = isoDate(new Date(p.createdAt));
+      if (submittedDate !== submittedDateFilter) return false;
+    }
     if (search){ const q=search.toLowerCase();
       return p.dealerName.toLowerCase().includes(q)||p.rsmName.toLowerCase().includes(q)||
             p.location.toLowerCase().includes(q)||(p.tokenNumber??"").toLowerCase().includes(q); }
     return true;
-  }),[proposals,filterStatus,filterMonth,filterYear,search,fwdDateFilter]);
+  }),[proposals,filterStatus,filterMonth,filterYear,search,fwdDateFilter,submittedDateFilter]);
   const pendingFiltered = useMemo(()=>filtered.filter((p)=>p.status==="Pending"),[filtered]);
   // Approved AND not yet notified — the only rows the Checker can bulk-notify
   const notifiableFiltered = useMemo(
@@ -1077,6 +1087,15 @@ export default function ApproverDashboard() {
                 {years.map((y)=><option key={y} value={y}>{y==="All"?"All years":y}</option>)}
               </select>
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
+              <div style={{ display:"flex",alignItems:"center",gap:6 }}>
+                <label style={{ fontSize:12,color:"#64748b",fontWeight:600 }}>Submitted Date:</label>
+                <input type="date" value={submittedDateFilter}
+                  onChange={e=>setSubmittedDateFilter(e.target.value)}
+                  style={{ height:32,padding:"0 8px",border:"1px solid #e2e8f0",borderRadius:6,fontSize:12 }}
+                  title="Filter proposals by the date shown in the Submitted column (when the RSM submitted it)"/>
+                {submittedDateFilter&&<button onClick={()=>setSubmittedDateFilter("")}
+                  style={{ background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:12 }}>✕</button>}
+              </div>
               <div style={{ display:"flex",alignItems:"center",gap:6 }}>
                 <label style={{ fontSize:12,color:"#64748b",fontWeight:600 }}>Forward Date:</label>
                 <input type="date" value={fwdDateFilter}

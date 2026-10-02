@@ -100,7 +100,12 @@ export default function ReportsPage() {
   // Build API filters — used ONLY for the top-of-page "quick download" buttons,
   // which have no preview loaded yet and therefore no Status/Month to apply.
   const apiFilters: ReportFilters = {
-    period:  period === "custom" ? undefined : period,
+    // FIX: send period="custom" explicitly instead of undefined — omitting it
+    // entirely meant the backend had no way to know a custom range was
+    // requested and fell back to its default period (ignoring from/to
+    // completely), which is why proposals from a custom date range (e.g.
+    // "yesterday") never showed up.
+    period:  period === "custom" ? "custom" : period,
     from:    period === "custom" ? from   : undefined,
     to:      period === "custom" ? to     : undefined,
     state:   stateFilter  || undefined,
