@@ -381,7 +381,7 @@ BUDGET: Total = Base + Additional Budget
   - Default BGauss Share: 100%
 
 PROPOSAL WORKFLOW:
-  RSM submits → Manager reviews → Final approver (vijay.maurya@bgauss.com) → Execution
+  RSM submits → Manager reviews → Final approver (durgesh.guptaa@bgauss.com) → Execution
 
 ROLES:
   - RSM/User: submit proposals, view own data, chat, download reports

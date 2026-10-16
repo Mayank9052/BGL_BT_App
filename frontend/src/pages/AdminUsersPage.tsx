@@ -12,6 +12,11 @@ import {
   bulkPreviewDealers, bulkImportDealers, getBulkImportStatus,
   type BulkPreviewResult, type BulkImportResult, type BulkStatusResult,
 } from "../services/dealerAuthService";
+import {
+  fetchStaffUsers, bulkPreviewStaff, bulkImportStaff, toggleStaffActive,
+  resetStaffPassword, type StaffAccount,
+  type StaffBulkPreviewResult, type StaffBulkImportResult,
+} from "../services/employeeAuthService";
 import { fetchDealers, type DealerOption } from "../services/dealerService";
 import type { UserProfile } from "../types/user";
 import "./AdminUsersPage.css";
@@ -162,6 +167,7 @@ export default function AdminUsersPage() {
   const [userSearch,     setUserSearch]     = useState("");
   const [dealerSearch,   setDealerSearch]   = useState("");
   const [activitySearch, setActivitySearch] = useState("");
+  const [staffSearch,    setStaffSearch]    = useState("");
 
   // ── Activity types ───────────────────────────────────────────────────────
   const [activityTypes,   setActivityTypes]   = useState<ActivityType[]>([]);
@@ -195,12 +201,6 @@ export default function AdminUsersPage() {
         .some((v) => String(v).toLowerCase().includes(q))
     );
   }, [users, userSearch]);
-
-  // const filteredDealers = useMemo(() => {
-  //   const q = dealerSearch.trim().toLowerCase();
-  //   if (!q) return dealers => dealers; // placeholder, real filter below uses `dealers` state directly
-  //   return null;
-  // }, [dealerSearch]);
 
   const filteredActivityTypes = useMemo(() => {
     const q = activitySearch.trim().toLowerCase();
@@ -239,7 +239,7 @@ export default function AdminUsersPage() {
     );
   }, [dealers, dealerSearch]);
 
-  // ── Bulk import state ──────────────────────────────────────────────────────
+  // ── Bulk import state (dealers) ─────────────────────────────────────────────
   const [bulkStatus,   setBulkStatus]   = useState<BulkStatusResult | null>(null);
   const [bulkPreview,  setBulkPreview]  = useState<BulkPreviewResult | null>(null);
   const [bulkResult,   setBulkResult]   = useState<BulkImportResult | null>(null);
@@ -253,17 +253,39 @@ export default function AdminUsersPage() {
     dealerCode: "", dealerName: "", phoneNumber: "",
   });
 
-  // Reset password
+  // Reset password (dealer)
   const [resetTargetId,   setResetTargetId]   = useState<number | null>(null);
   const [resetTargetName, setResetTargetName] = useState("");
+  const [resetTargetKind, setResetTargetKind] = useState<"dealer"|"staff">("dealer");
   const [resetPassword,   setResetPassword]   = useState("");
   const [resetConfirm,    setResetConfirm]    = useState("");
   const [resetSaving,     setResetSaving]     = useState(false);
   const [resetError,      setResetError]      = useState<string | null>(null);
 
-  const [tab, setTab] = useState<"users"|"activities"|"dealers">("users");
+  // ── Staff (RSM/TSM/ZSM/Commando) accounts ───────────────────────────────────
+  const [staff,        setStaff]        = useState<StaffAccount[]>([]);
+  const [staffLoading, setStaffLoading] = useState(true);
+  const [staffError,   setStaffError]   = useState<string | null>(null);
+  const [staffSuccess, setStaffSuccess] = useState<string | null>(null);
 
-  useEffect(() => { loadUsers(); loadActivities(); loadDealers(); }, []);
+  const [staffBulkPreview, setStaffBulkPreview] = useState<StaffBulkPreviewResult | null>(null);
+  const [staffBulkResult,  setStaffBulkResult]  = useState<StaffBulkImportResult | null>(null);
+  const [staffBulkLoading, setStaffBulkLoading] = useState<"preview"|"import"|null>(null);
+  const [staffBulkError,   setStaffBulkError]   = useState<string|null>(null);
+
+  const filteredStaff = useMemo(() => {
+    const q = staffSearch.trim().toLowerCase();
+    if (!q) return staff;
+    return staff.filter((s) =>
+      [s.displayName, s.email, s.employeeCode, s.role, s.phoneNumber]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q))
+    );
+  }, [staff, staffSearch]);
+
+  const [tab, setTab] = useState<"users"|"activities"|"dealers"|"staff">("users");
+
+  useEffect(() => { loadUsers(); loadActivities(); loadDealers(); loadStaff(); }, []);
 
   useEffect(() => {
     if (tab === "dealers" && erpDealers.length === 0 && !erpLoading) {
@@ -291,6 +313,13 @@ export default function AdminUsersPage() {
     try { setDealers(await fetchDealerUsers(instance)); }
     catch (e) { setDealerError(e instanceof Error ? e.message : "Failed to load dealer accounts."); }
     finally { setDealersLoading(false); }
+  };
+
+  const loadStaff = async () => {
+    setStaffLoading(true); setStaffError(null);
+    try { setStaff(await fetchStaffUsers(instance)); }
+    catch (e) { setStaffError(e instanceof Error ? e.message : "Failed to load staff accounts."); }
+    finally { setStaffLoading(false); }
   };
 
   const startEdit  = (u: UserProfile) => {
@@ -359,14 +388,6 @@ export default function AdminUsersPage() {
     setEditActId(null); setEditActError(null);
   };
 
-  // We use createActivityType as an "upsert" isn't available — instead
-  // we toggle off the old one and create a new one. Simpler: we just
-  // directly PATCH the activity via toggleActivityType fields.
-  // Since backend doesn't have a full PUT for activity, we'll do the best
-  // we can: update isActive + show what would change.
-  // REAL solution: add PUT /api/activity-types/{id} on backend.
-  // For now we call a helper that POSTs a new one if name/sub changed,
-  // or just toggles if only isActive changed.
   const handleSaveEditActivity = async () => {
     if (!editActName.trim()) { setEditActError("Activity name is required."); return; }
     if (!editActSub.trim())  { setEditActError("Subcategory is required."); return; }
@@ -386,7 +407,6 @@ export default function AdminUsersPage() {
         || maxQtyNum !== (original.maxQty ?? 5);
 
       if (nameChanged) {
-        // Deactivate old + create new
         await toggleActivityType(editActId, false, instance);
         const created = await createActivityType(
           editActName.trim(), editActType, instance, editActSub.trim(), maxQtyNum,
@@ -397,7 +417,6 @@ export default function AdminUsersPage() {
         ]);
         setActSuccess(`Updated: "${created.activityName} → ${created.subcategory}"`);
       } else {
-        // Nothing changed except possibly isActive — no-op
         setActSuccess("No changes detected.");
       }
       setTimeout(() => setActSuccess(null), 3000);
@@ -441,8 +460,37 @@ export default function AdminUsersPage() {
       setDealers((prev) => prev.map((d) => d.id === id ? { ...d, isActive: result.isActive } : d));
     } catch (e) { setDealerError(e instanceof Error ? e.message : "Failed to update dealer status."); }
   };
-  const openResetModal = (id: number, name: string) => {
-    setResetTargetId(id); setResetTargetName(name);
+
+  // ── Staff handlers ───────────────────────────────────────────────────────
+  const handleToggleStaff = async (id: number) => {
+    try {
+      const result = await toggleStaffActive(id, instance);
+      setStaff((prev) => prev.map((s) => s.id === id ? { ...s, isActive: result.isActive } : s));
+    } catch (e) { setStaffError(e instanceof Error ? e.message : "Failed to update staff status."); }
+  };
+
+  const loadStaffPreview = async () => {
+    setStaffBulkLoading("preview"); setStaffBulkError(null);
+    try { setStaffBulkPreview(await bulkPreviewStaff(instance)); setStaffBulkResult(null); }
+    catch (e) { setStaffBulkError(e instanceof Error ? e.message : "Failed."); }
+    finally { setStaffBulkLoading(null); }
+  };
+
+  const runStaffBulkImport = async () => {
+    if (!window.confirm(`Import ${staffBulkPreview?.toCreate ?? "?"} staff accounts with default password Auto@123?`)) return;
+    setStaffBulkLoading("import"); setStaffBulkError(null);
+    try {
+      const r = await bulkImportStaff(instance);
+      setStaffBulkResult(r); setStaffBulkPreview(null);
+      setStaff(await fetchStaffUsers(instance).catch(() => staff));
+    }
+    catch (e) { setStaffBulkError(e instanceof Error ? e.message : "Failed."); }
+    finally { setStaffBulkLoading(null); }
+  };
+
+  // ── Reset password modal (shared: dealer + staff) ──────────────────────────
+  const openResetModal = (id: number, name: string, kind: "dealer"|"staff" = "dealer") => {
+    setResetTargetId(id); setResetTargetName(name); setResetTargetKind(kind);
     setResetPassword(""); setResetConfirm(""); setResetError(null);
   };
   const closeResetModal = () => {
@@ -456,9 +504,16 @@ export default function AdminUsersPage() {
     if (resetTargetId === null) return;
     setResetSaving(true);
     try {
-      await adminResetDealerPassword(resetTargetId, resetPassword, instance);
-      setDealerSuccess(`Password reset for ${resetTargetName}.`);
-      setTimeout(() => setDealerSuccess(null), 4000); closeResetModal();
+      if (resetTargetKind === "staff") {
+        await resetStaffPassword(resetTargetId, resetPassword, instance);
+        setStaffSuccess(`Password reset for ${resetTargetName}.`);
+        setTimeout(() => setStaffSuccess(null), 4000);
+      } else {
+        await adminResetDealerPassword(resetTargetId, resetPassword, instance);
+        setDealerSuccess(`Password reset for ${resetTargetName}.`);
+        setTimeout(() => setDealerSuccess(null), 4000);
+      }
+      closeResetModal();
     } catch (e) { setResetError(e instanceof Error ? e.message : "Failed to reset password."); }
     finally { setResetSaving(false); }
   };
@@ -467,7 +522,7 @@ export default function AdminUsersPage() {
     iso ? new Date(iso).toLocaleDateString("en-IN",
       { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
-  // ── Bulk import handlers ──────────────────────────────────────────────────
+  // ── Bulk import handlers (dealers) ──────────────────────────────────────────
   const loadBulkStatus = async () => {
     setBulkLoading("status"); setBulkError(null);
     try { setBulkStatus(await getBulkImportStatus(instance)); }
@@ -501,7 +556,7 @@ export default function AdminUsersPage() {
     <div className="admin-users-page">
       <div className="admin-users-head">
         <h1>Admin Settings</h1>
-        <p>Manage users, dealer accounts, and activity types for the BTL portal.</p>
+        <p>Manage users, dealer accounts, staff logins, and activity types for the BTL portal.</p>
       </div>
 
       <div className="admin-tabs">
@@ -509,6 +564,8 @@ export default function AdminUsersPage() {
           onClick={() => setTab("users")}>👥 Users</button>
         <button className={`admin-tab ${tab==="dealers"?"admin-tab--active":""}`}
           onClick={() => setTab("dealers")}>🏪 Dealer Accounts</button>
+        <button className={`admin-tab ${tab==="staff"?"admin-tab--active":""}`}
+          onClick={() => setTab("staff")}>🧑‍💼 Staff (RSM/TSM/ZSM/Commando)</button>
         <button className={`admin-tab ${tab==="activities"?"admin-tab--active":""}`}
           onClick={() => setTab("activities")}>📋 Activity Types</button>
       </div>
@@ -913,7 +970,7 @@ export default function AdminUsersPage() {
                         {d.isActive?"Deactivate":"Activate"}
                       </button>
                       <button className="admin-reset-btn"
-                        onClick={() => openResetModal(d.id, d.displayName)}>🔑 Reset</button>
+                        onClick={() => openResetModal(d.id, d.displayName, "dealer")}>🔑 Reset</button>
                     </div></td>
                   </tr>
                 ))}
@@ -924,7 +981,213 @@ export default function AdminUsersPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════
-          TAB 3 — Activity Types
+          TAB 3 — Staff Accounts (RSM/TSM/ZSM/Commando)
+      ══════════════════════════════════════════════════════ */}
+      {tab === "staff" && (
+        <div className="admin-act-section">
+          {staffError   && <div className="admin-error">{staffError}</div>}
+          {staffSuccess && <div className="admin-success">{staffSuccess}</div>}
+
+          {/* ══ BULK IMPORT FROM BAPLFINAL H_EmployeeMaster ═════════════════ */}
+          <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,
+            padding:"20px 24px",marginBottom:20 }}>
+            <h3 style={{ margin:0,fontSize:15,fontWeight:700,color:"#0a2540" }}>
+              🧑‍💼 Bulk Import RSM/TSM/ZSM/Commando Logins from ERP
+            </h3>
+            <p style={{ margin:"4px 0 16px",fontSize:12,color:"#6b7280" }}>
+              Fetches active RSM/TSM/ZSM/Sales Commando from{" "}
+              <code style={{ background:"#f1f5f9",padding:"1px 5px",borderRadius:3 }}>H_EmployeeMaster</code>{" "}
+              and creates portal logins. Default password:{" "}
+              <code style={{ background:"#f1f5f9",padding:"1px 5px",borderRadius:3 }}>Auto@123</code>
+            </p>
+
+            {staffBulkError && (
+              <div style={{ background:"#fef2f2",border:"1px solid #fecaca",borderRadius:7,
+                padding:"10px 14px",fontSize:12,color:"#991b1b",marginBottom:12 }}>
+                ⚠ {staffBulkError}
+              </div>
+            )}
+
+            {!staffBulkResult && (
+              <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
+                <button onClick={loadStaffPreview} disabled={!!staffBulkLoading}
+                  style={{ background:"#1e3a5f",color:"#fff",border:"none",borderRadius:8,
+                    padding:"10px 20px",fontSize:13,fontWeight:600,
+                    cursor:staffBulkLoading?"not-allowed":"pointer",
+                    opacity:staffBulkLoading?0.7:1 }}>
+                  {staffBulkLoading === "preview" ? "Loading…" : "🔍 Preview Import"}
+                </button>
+                {staffBulkPreview && staffBulkPreview.toCreate > 0 && (
+                  <button onClick={runStaffBulkImport} disabled={!!staffBulkLoading}
+                    style={{ background:"#16a34a",color:"#fff",border:"none",borderRadius:8,
+                      padding:"10px 20px",fontSize:13,fontWeight:700,
+                      cursor:staffBulkLoading?"not-allowed":"pointer",
+                      opacity:staffBulkLoading?0.7:1 }}>
+                    {staffBulkLoading === "import"
+                      ? `Importing ${staffBulkPreview.toCreate} staff…`
+                      : `✓ Import ${staffBulkPreview.toCreate} Staff`}
+                  </button>
+                )}
+                {staffBulkPreview && staffBulkPreview.toCreate === 0 && (
+                  <div style={{ fontSize:13,color:"#16a34a",fontWeight:600,background:"#f0fdf4",
+                    border:"1px solid #bbf7d0",borderRadius:8,padding:"10px 16px" }}>
+                    ✓ All eligible ERP staff already have logins
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Preview list */}
+            {staffBulkPreview && !staffBulkResult && staffBulkPreview.toCreate > 0 && (
+              <div style={{ marginTop:14 }}>
+                <div style={{ fontSize:13,fontWeight:600,color:"#0a2540",marginBottom:10 }}>
+                  <strong>{staffBulkPreview.toCreate}</strong> to create ·{" "}
+                  <span style={{ color:"#6b7280" }}>{staffBulkPreview.alreadyImported} already imported</span>
+                </div>
+                <div style={{ maxHeight:280,overflowY:"auto",border:"1px solid #e2e8f0",
+                  borderRadius:8,fontSize:11 }}>
+                  <table style={{ width:"100%",borderCollapse:"collapse" }}>
+                    <thead>
+                      <tr style={{ background:"#0a2540",position:"sticky",top:0 }}>
+                        {["Code","Employee Name","Role","Email","Real Email?"].map(h => (
+                          <th key={h} style={{ padding:"6px 8px",textAlign:"left",
+                            color:"#e2e8f0",fontSize:10,fontWeight:700 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {staffBulkPreview.employees.map((e, i) => (
+                        <tr key={e.employeeCode}
+                          style={{ background:i%2===0?"#f8fafc":"#fff",borderBottom:"1px solid #f1f5f9" }}>
+                          <td style={{ padding:"4px 8px",fontFamily:"monospace",fontSize:10,color:"#374151" }}>
+                            {e.employeeCode}
+                          </td>
+                          <td style={{ padding:"4px 8px",fontWeight:600,color:"#0a2540" }}>{e.employeeName}</td>
+                          <td style={{ padding:"4px 8px" }}>
+                            <span style={{ background:"#eff6ff",color:"#1e40af",padding:"1px 6px",
+                              borderRadius:3,fontSize:9,fontWeight:700 }}>{e.role ?? "—"}</span>
+                          </td>
+                          <td style={{ padding:"4px 8px",color:"#374151",fontSize:10 }}>{e.emailId || "—"}</td>
+                          <td style={{ padding:"4px 8px",textAlign:"center" }}>
+                            {e.hasRealEmail
+                              ? <span style={{ color:"#16a34a",fontWeight:700 }}>✓</span>
+                              : <span style={{ color:"#f59e0b",fontSize:10 }}>fallback</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {staffBulkResult && (
+              <div style={{ marginTop:14,background:"#f0fdf4",border:"1px solid #bbf7d0",
+                borderRadius:8,padding:"16px 20px" }}>
+                <div style={{ fontWeight:700,fontSize:14,color:"#166534",marginBottom:10 }}>✓ Import Complete</div>
+                <div style={{ display:"flex",gap:24,flexWrap:"wrap",marginBottom:10 }}>
+                  <span style={{ fontSize:13 }}>
+                    <strong style={{ color:"#166534" }}>{staffBulkResult.created}</strong> created
+                  </span>
+                  <span style={{ fontSize:13,color:"#6b7280" }}>
+                    <strong>{staffBulkResult.skipped}</strong> already existed/ineligible
+                  </span>
+                  {staffBulkResult.failed > 0 && (
+                    <span style={{ fontSize:13,color:"#dc2626" }}>
+                      <strong>{staffBulkResult.failed}</strong> failed
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize:12,color:"#374151" }}>
+                  Default password:{" "}
+                  <code style={{ background:"#dcfce7",padding:"2px 8px",borderRadius:4,fontWeight:700 }}>
+                    {staffBulkResult.defaultPassword}
+                  </code>
+                </div>
+                {staffBulkResult.errors.length > 0 && (
+                  <details style={{ fontSize:11,color:"#dc2626",marginTop:10 }}>
+                    <summary style={{ cursor:"pointer",fontWeight:600 }}>
+                      {staffBulkResult.errors.length} error(s) — click to expand
+                    </summary>
+                    <ul style={{ margin:"6px 0 0",paddingLeft:18 }}>
+                      {staffBulkResult.errors.map((e, i) => <li key={i}>{e}</li>)}
+                    </ul>
+                  </details>
+                )}
+                <button onClick={() => { setStaffBulkResult(null); setStaffBulkPreview(null); }}
+                  style={{ marginTop:14,background:"#1e3a5f",color:"#fff",border:"none",borderRadius:7,
+                    padding:"8px 18px",fontSize:12,fontWeight:600,cursor:"pointer" }}>
+                  ↩ Import More / Refresh
+                </button>
+              </div>
+            )}
+          </div>
+          {/* ══ END BULK IMPORT (STAFF) ══════════════════════════════════ */}
+
+          <TableSearchBox
+            value={staffSearch}
+            onChange={setStaffSearch}
+            placeholder="Search name, email, employee code, role, phone…"
+            resultCount={filteredStaff.length}
+            totalCount={staff.length}
+          />
+
+          <div className="admin-users-table-wrap">
+            <table className="admin-users-table">
+              <thead>
+                <tr>
+                  <th>Name</th><th>Email</th><th>Employee Code</th>
+                  <th>Role</th><th>Phone</th><th>Last Login</th>
+                  <th>Active</th><th style={{ width:190 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {staffLoading ? <TableSkeleton rows={5} cols={8}/> :
+                 filteredStaff.length === 0 ? (
+                  <tr><td colSpan={8} className="admin-empty-cell">
+                    {staff.length === 0 ? "No staff accounts yet." : "No staff accounts match your search."}
+                  </td></tr>
+                ) : filteredStaff.map((s) => (
+                  <tr key={s.id}>
+                    <td><span className="admin-user-name">{s.displayName}</span></td>
+                    <td className="admin-readonly">{s.email}</td>
+                    <td className="admin-cell-text">{s.employeeCode ?? "—"}</td>
+                    <td><span className={`role-chip role-${s.role.toLowerCase()}`}>{s.role}</span></td>
+                    <td className="admin-cell-text">{s.phoneNumber ?? "—"}</td>
+                    <td className="admin-readonly">{fmtDate(s.lastLoginAt)}</td>
+                    <td><span className={`admin-status-pill ${s.isActive?"admin-status-pill--active":"admin-status-pill--inactive"}`}>
+                      <span className="admin-status-dot"/>{s.isActive?"Active":"Inactive"}
+                    </span></td>
+                    <td><div className="admin-row-actions">
+                      <button className={s.isActive?"admin-cancel-btn":"admin-save-btn"}
+                        onClick={() => handleToggleStaff(s.id)}>
+                        {s.isActive?"Deactivate":"Activate"}
+                      </button>
+                      <button className="admin-reset-btn"
+                        onClick={() => openResetModal(s.id, s.displayName, "staff")}>🔑 Reset</button>
+                    </div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {!staffLoading && staff.length > 0 && (
+            <div style={{ display:"flex",gap:16,marginTop:12,fontSize:12,color:"#6b7280",flexWrap:"wrap" }}>
+              <span><strong style={{ color:"#0a2540" }}>{filteredStaff.length}</strong> {staffSearch ? "matching " : "total "}staff</span>
+              <span><strong style={{ color:"#16a34a" }}>{filteredStaff.filter(s=>s.isActive).length}</strong> active</span>
+              {["RSM","TSM","ZSM","Commando"].map((role) => (
+                <span key={role}>
+                  <strong style={{ color:"#1e40af" }}>{filteredStaff.filter(s=>s.role===role).length}</strong> {role}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════
+          TAB 4 — Activity Types
       ══════════════════════════════════════════════════════ */}
       {tab === "activities" && (
         <div className="admin-act-section">
@@ -937,10 +1200,8 @@ export default function AdminUsersPage() {
             <p style={{ fontSize:12,fontWeight:700,color:"#0a2540",margin:"0 0 10px" }}>
               + Add Activity
             </p>
-            {/* Single flex row: Name | Type | Subcategory | MaxQty | Add */}
             <div style={{ display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end" }}>
 
-              {/* Activity Name */}
               <div style={{ display:"flex",flexDirection:"column",gap:3,flex:"2 1 180px" }}>
                 <label style={{ fontSize:10,fontWeight:700,color:"#6b7280",
                   textTransform:"uppercase",letterSpacing:"0.05em" }}>Activity Name *</label>
@@ -952,7 +1213,6 @@ export default function AdminUsersPage() {
                   style={{ height:36 }}/>
               </div>
 
-              {/* ATL/BTL */}
               <div style={{ display:"flex",flexDirection:"column",gap:3,flex:"0 0 88px" }}>
                 <label style={{ fontSize:10,fontWeight:700,color:"#6b7280",
                   textTransform:"uppercase",letterSpacing:"0.05em" }}>Type *</label>
@@ -965,7 +1225,6 @@ export default function AdminUsersPage() {
                 </select>
               </div>
 
-              {/* Subcategory */}
               <div style={{ display:"flex",flexDirection:"column",gap:3,flex:"2 1 180px" }}>
                 <label style={{ fontSize:10,fontWeight:700,color:"#6b7280",
                   textTransform:"uppercase",letterSpacing:"0.05em" }}>Subcategory *</label>
@@ -977,7 +1236,6 @@ export default function AdminUsersPage() {
                   style={{ height:36 }}/>
               </div>
 
-              {/* Max QTY */}
               <div style={{ display:"flex",flexDirection:"column",gap:3,flex:"0 0 88px" }}>
                 <label style={{ fontSize:10,fontWeight:700,color:"#6b7280",
                   textTransform:"uppercase",letterSpacing:"0.05em" }}>Max QTY *</label>
@@ -987,7 +1245,6 @@ export default function AdminUsersPage() {
                   style={{ height:36 }}/>
               </div>
 
-              {/* Add button */}
               <button className="admin-save-btn"
                 onClick={handleAddActivity}
                 disabled={actSaving || !newActivity.trim() || !newSubcategory.trim()}
@@ -1042,21 +1299,18 @@ export default function AdminUsersPage() {
                           background: subIdx % 2 === 0 ? "#fff" : "#f8fafc",
                           borderTop: subIdx === 0 ? "2px solid #e2e8f0" : "1px solid #f1f5f9",
                         }}>
-                          {/* # */}
                           <td className="admin-readonly" style={{ verticalAlign:"middle" }}>
                             {subIdx === 0
                               ? <span>{Object.keys(groupedActivities).sort().indexOf(actName)+1}</span>
                               : <span style={{ color:"#cbd5e1" }}>↳</span>}
                           </td>
 
-                          {/* Activity Name */}
                           <td style={{ verticalAlign:"middle" }}>
                             {subIdx === 0
                               ? <span className="admin-user-name">{a.activityName}</span>
                               : <span style={{ color:"#9ca3af",fontSize:12 }}>{a.activityName}</span>}
                           </td>
 
-                          {/* Type — show badge on every row */}
                           <td style={{ verticalAlign:"middle" }}>
                             <span style={{
                               fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:4,display:"inline-block",
@@ -1067,7 +1321,6 @@ export default function AdminUsersPage() {
                             }}>{a.activityType||"—"}</span>
                           </td>
 
-                          {/* Subcategory */}
                           <td>
                             {a.subcategory
                               ? <span style={{ fontSize:12,fontWeight:500,color:"#1e3a5f",
@@ -1078,7 +1331,6 @@ export default function AdminUsersPage() {
                               : <span style={{ color:"#cbd5e1",fontSize:12 }}>—</span>}
                           </td>
 
-                          {/* Max QTY */}
                           <td style={{ textAlign:"center" }}>
                             <span style={{ fontSize:12,fontWeight:700,color:"#374151",
                               background:"#fafafa",border:"1px solid #e2e8f0",
@@ -1087,14 +1339,12 @@ export default function AdminUsersPage() {
                             </span>
                           </td>
 
-                          {/* Status */}
                           <td>
                             <span className={`admin-status-pill ${a.isActive?"admin-status-pill--active":"admin-status-pill--inactive"}`}>
                               <span className="admin-status-dot"/>{a.isActive?"Active":"Inactive"}
                             </span>
                           </td>
 
-                          {/* Actions: Edit + Toggle */}
                           <td>
                             <div className="admin-row-actions">
                               <button className="admin-edit-btn"
@@ -1115,7 +1365,6 @@ export default function AdminUsersPage() {
             </table>
           </div>
 
-          {/* Summary */}
           {!actLoading && activityTypes.length > 0 && (
             <div style={{ display:"flex",gap:16,marginTop:12,fontSize:12,color:"#6b7280",flexWrap:"wrap" }}>
               <span><strong style={{ color:"#0a2540" }}>{Object.keys(groupedActivities).length}</strong> activity names{activitySearch ? " (filtered)" : ""}</span>
@@ -1146,7 +1395,6 @@ export default function AdminUsersPage() {
             {editActError && <div className="admin-error">{editActError}</div>}
 
             <div style={{ display:"flex",flexDirection:"column",gap:12 }}>
-              {/* Row 1: Name + Type */}
               <div style={{ display:"flex",gap:10 }}>
                 <div style={{ flex:2,display:"flex",flexDirection:"column",gap:4 }}>
                   <label style={{ fontSize:11,fontWeight:600,color:"#374151",
@@ -1166,7 +1414,6 @@ export default function AdminUsersPage() {
                 </div>
               </div>
 
-              {/* Row 2: Subcategory + MaxQty */}
               <div style={{ display:"flex",gap:10 }}>
                 <div style={{ flex:2,display:"flex",flexDirection:"column",gap:4 }}>
                   <label style={{ fontSize:11,fontWeight:600,color:"#374151",
@@ -1196,7 +1443,7 @@ export default function AdminUsersPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════
-          Reset Password Modal
+          Reset Password Modal (shared: dealer + staff)
       ══════════════════════════════════════════════════════ */}
       {resetTargetId !== null && (
         <div className="admin-modal-overlay" onClick={closeResetModal}>
@@ -1205,7 +1452,10 @@ export default function AdminUsersPage() {
               <h3>Reset Password</h3>
               <button className="admin-modal-close" onClick={closeResetModal}>✕</button>
             </div>
-            <p className="admin-modal-sub">Set a new password for <strong>{resetTargetName}</strong>.</p>
+            <p className="admin-modal-sub">
+              Set a new password for <strong>{resetTargetName}</strong>
+              {resetTargetKind === "staff" ? " (staff account)" : " (dealer account)"}.
+            </p>
             <form onSubmit={handleResetSubmit} className="admin-modal-form">
               {resetError && <div className="admin-error">{resetError}</div>}
               <div className="admin-dealer-field">

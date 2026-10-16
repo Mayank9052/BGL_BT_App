@@ -558,21 +558,40 @@ public class ReportsController : ControllerBase
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+    // IST is UTC+5:30. CreatedAt is stored in UTC, but every date this method
+    // receives (from/to from the Custom picker, "today" for daily/weekly/monthly)
+    // represents a calendar day as the IST-based user sees it in their browser.
+    // Comparing an IST calendar day directly against UTC timestamps silently
+    // shifts the boundary by 5:30 hours: a proposal submitted at 2:00 AM IST on
+    // the 29th has a UTC CreatedAt of 18:30 on the 28th, so a naive UTC-based
+    // "29th" window would miss it entirely — exactly the "yesterday's submission
+    // sometimes doesn't show" symptom. Every boundary below is computed as an
+    // IST calendar-day edge, then shifted back to UTC for the actual query.
+    private static readonly TimeSpan IstOffset = TimeSpan.FromHours(5.5);
+
     private static (DateTime Start, DateTime End) ResolveDateRange(
         string? period, DateTime? from, DateTime? to)
     {
         if (from.HasValue && to.HasValue)
-            return (from.Value.Date, to.Value.Date.AddDays(1).AddTicks(-1));
-
-        var now = DateTime.UtcNow;
-        return (period?.ToLower()) switch
         {
-            "daily"   => (now.Date, now.Date.AddDays(1).AddTicks(-1)),
-            "weekly"  => (now.Date.AddDays(-(int)now.DayOfWeek),
-                          now.Date.AddDays(7 - (int)now.DayOfWeek).AddTicks(-1)),
-            "monthly" => (new DateTime(now.Year, now.Month, 1),
-                          new DateTime(now.Year, now.Month, 1).AddMonths(1).AddTicks(-1)),
-            _         => (now.Date.AddDays(-30), now.Date.AddDays(1).AddTicks(-1)),
+            var startIst = from.Value.Date;                         // 00:00:00 IST on the picked "from" day
+            var endIst   = to.Value.Date.AddDays(1).AddTicks(-1);    // 23:59:59.999... IST on the picked "to" day
+            return (startIst - IstOffset, endIst - IstOffset);       // → UTC window that actually covers that IST day
+        }
+
+        var nowIst = DateTime.UtcNow + IstOffset;                    // "now", expressed as IST wall-clock time
+        var todayIst = nowIst.Date;
+
+        var (startIstRange, endIstRange) = (period?.ToLower()) switch
+        {
+            "daily"   => (todayIst, todayIst.AddDays(1).AddTicks(-1)),
+            "weekly"  => (todayIst.AddDays(-(int)todayIst.DayOfWeek),
+                          todayIst.AddDays(7 - (int)todayIst.DayOfWeek).AddTicks(-1)),
+            "monthly" => (new DateTime(todayIst.Year, todayIst.Month, 1),
+                          new DateTime(todayIst.Year, todayIst.Month, 1).AddMonths(1).AddTicks(-1)),
+            _         => (todayIst.AddDays(-30), todayIst.AddDays(1).AddTicks(-1)),
         };
+
+        return (startIstRange - IstOffset, endIstRange - IstOffset);
     }
 }

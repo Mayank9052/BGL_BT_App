@@ -1,7 +1,8 @@
 // Services/DailyDigestService.cs
-// Background service — fires daily at scheduled time (IST).
-// Sends ONE summary email to FinalApproverEmail via Microsoft Graph API
-// using the Graph token stored by BulkForwardController.
+// Registered BOTH as a hosted background service (nightly safety-net for
+// anything that somehow never got an immediate send) AND as an injectable
+// scoped service (so controllers can call SendForwardDigestNowAsync directly
+// the moment a Checker clicks Forward). See Program.cs for both registrations.
 
 using System.Net.Http.Headers;
 using System.Text;
@@ -19,11 +20,9 @@ public class DailyDigestService : BackgroundService
     private readonly ILogger<DailyDigestService> _log;
     private readonly IHttpClientFactory          _httpClientFactory;
 
-    // ── FIX: 18:30 UTC = 00:00 (midnight) IST — the actual production time. ──
+    // ── 18:30 UTC = 00:00 (midnight) IST — safety-net time only now. ─────────
     private static readonly TimeSpan DigestTimeUtc = new(18, 30, 0);
-    
-    //private static readonly TimeSpan DigestTimeUtc = new(10, 0, 0);
-    
+
     public DailyDigestService(
         IServiceScopeFactory        scopeFactory,
         IConfiguration              cfg,
@@ -36,18 +35,14 @@ public class DailyDigestService : BackgroundService
         _httpClientFactory = httpClientFactory;
     }
 
-    // ── NEW: app-only Graph token via Client Credentials flow.
-    // Doesn't depend on any Checker being logged in recently — a fresh
-    // token is acquired at send time, every time, guaranteed to be valid. ──
+    // ── App-only Graph token via Client Credentials flow. Used for both the
+    // immediate send and the nightly safety-net — doesn't depend on any
+    // Checker being logged in recently. ───────────────────────────────────────
     private async Task<string?> AcquireAppOnlyGraphTokenAsync()
     {
         var tenantId     = _cfg["AzureAd:TenantId"];
         var clientId     = _cfg["AzureAd:ClientId"];
         var clientSecret = _cfg["AzureAd:ClientSecret"];
-
-        _log.LogInformation(
-            "AcquireAppOnlyGraphTokenAsync: tenantId={tenant} clientId={client} secretLen={len}",
-            tenantId, clientId, clientSecret?.Length ?? 0);
 
         if (string.IsNullOrWhiteSpace(tenantId) || string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
         {
@@ -66,35 +61,125 @@ public class DailyDigestService : BackgroundService
             var result = await app.AcquireTokenForClient(new[] { "https://graph.microsoft.com/.default" })
                 .ExecuteAsync();
 
-            _log.LogInformation(
-                "Graph app-only token acquired OK. Expires: {exp}. Scopes: {scopes}. TokenSource: {source}",
-                result.ExpiresOn, string.Join(",", result.Scopes), result.AuthenticationResultMetadata.TokenSource);
-
             return result.AccessToken;
         }
         catch (Microsoft.Identity.Client.MsalServiceException msalEx)
         {
-            _log.LogError(msalEx,
-                "MSAL service exception acquiring app-only token. ErrorCode={code} CorrelationId={corr} ResponseBody={body}",
-                msalEx.ErrorCode, msalEx.CorrelationId, msalEx.ResponseBody);
+            _log.LogError(msalEx, "MSAL service exception acquiring app-only token. ErrorCode={code}", msalEx.ErrorCode);
             return null;
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "Unexpected exception acquiring app-only Graph token for daily digest. Type={type}", ex.GetType().FullName);
+            _log.LogError(ex, "Unexpected exception acquiring app-only Graph token.");
             return null;
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // NEW: IMMEDIATE SEND — call this directly from the bulk-forward endpoint
+    // (or the single-forward endpoint) the moment a Checker clicks Forward.
+    // Sender = the CHECKER'S OWN EMAIL (e.g. seema.shakya@bgauss.com) — not a
+    // fixed DigestSenderMailbox — so Durgesh sees the mail as coming from
+    // whoever actually forwarded it, immediately, not at midnight.
+    // ═══════════════════════════════════════════════════════════════════════
+    public async Task<(bool Sent, string? Error)> SendForwardDigestNowAsync(
+        List<Guid> proposalIds, string checkerEmail, CancellationToken ct = default)
+    {
+        if (proposalIds is null || proposalIds.Count == 0)
+            return (false, "No proposal IDs provided.");
+        if (string.IsNullOrWhiteSpace(checkerEmail))
+            return (false, "No checker email provided — cannot determine sender.");
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            var proposals = await db.Proposals
+                .Where(p => proposalIds.Contains(p.Id) && (p.DigestSent == null || p.DigestSent == false))
+                .Include(p => p.Activities)
+                .OrderBy(p => p.State)
+                .ToListAsync(ct);
+
+            if (proposals.Count == 0)
+                return (false, "No un-sent proposals found for the given IDs — already emailed, or none selected.");
+
+            var finalEmail = _cfg["Smtp:FinalApproverEmail"]
+                          ?? _cfg["FinalApproverEmail"]
+                          ?? "durgesh.guptaa@bgauss.com";
+            var portalUrl  = _cfg["Smtp:PortalBaseUrl"]
+                          ?? _cfg["PortalUrl"]
+                          ?? "https://btl.bgauss.com";
+
+            var nowIst = DateTime.UtcNow.AddHours(5).AddMinutes(30);
+            var subject = $"[BGauss BTL] {proposals.Count} Proposal{(proposals.Count != 1 ? "s" : "")} Forwarded for Final Approval — " +
+                          $"by {checkerEmail} · {nowIst:dd MMM yyyy HH:mm}";
+
+            var html = BuildDigestHtml(proposals, nowIst, portalUrl, checkerEmail);
+
+            var appToken = await AcquireAppOnlyGraphTokenAsync();
+            bool sent = false;
+
+            if (appToken != null)
+            {
+                // ── Sender = the Checker's OWN mailbox. Requires Mail.Send
+                // (Application) permission with admin consent on the app
+                // registration, plus checkerEmail being a real mailbox in
+                // the tenant (it will be, since it's their own login email). ──
+                sent = await SendViaGraphAsync(checkerEmail, finalEmail, subject, html, appToken);
+                if (sent)
+                    _log.LogInformation("Immediate forward digest sent from {sender} → {to} ({count} proposals)",
+                        checkerEmail, finalEmail, proposals.Count);
+                else
+                    _log.LogWarning("Immediate Graph send failed from {sender} — trying SMTP fallback.", checkerEmail);
+            }
+            else
+            {
+                _log.LogWarning("Could not acquire app-only Graph token for immediate send — trying SMTP fallback.");
+            }
+
+            if (!sent)
+                sent = await SendViaSmtpFallbackAsync(finalEmail, subject, html);
+
+            if (!sent)
+            {
+                foreach (var p in proposals)
+                    p.DigestSendError = $"Immediate send failed (attempted by {checkerEmail} at {nowIst:HH:mm}). Will retry in nightly safety-net job.";
+                await db.SaveChangesAsync(ct);
+                return (false, "Could not send email via Graph or SMTP. It will be retried automatically tonight.");
+            }
+
+            foreach (var p in proposals)
+            {
+                p.DigestSent      = true;
+                p.DigestSentAt    = DateTime.UtcNow;
+                p.DigestSendError = null;
+            }
+            await db.SaveChangesAsync(ct);
+
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "SendForwardDigestNowAsync error (checker={checker})", checkerEmail);
+            return (false, ex.Message);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // NIGHTLY SAFETY-NET — only catches proposals that somehow never got an
+    // immediate send (e.g. Graph/SMTP were both down at the moment of
+    // forwarding). Uses a fixed sender since the original Checker's identity
+    // isn't tracked per-retry here; this should rarely fire in practice.
+    // ═══════════════════════════════════════════════════════════════════════
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        _log.LogInformation("DailyDigestService started — fires at {utc} UTC ({h}:{m} IST)",
-            DigestTimeUtc, (DigestTimeUtc.Hours + 5) % 24, (DigestTimeUtc.Minutes + 30) % 60);
+        _log.LogInformation("DailyDigestService (safety-net) started — fires at {utc} UTC (~midnight IST)", DigestTimeUtc);
 
         while (!ct.IsCancellationRequested)
         {
             var delay = TimeUntilNextFire();
-            _log.LogInformation("DailyDigest: next fire in {h}h {m}m", (int)delay.TotalHours, delay.Minutes);
+            _log.LogInformation("DailyDigest safety-net: next check in {h}h {m}m", (int)delay.TotalHours, delay.Minutes);
             await Task.Delay(delay, ct);
 
             if (!ct.IsCancellationRequested)
@@ -117,12 +202,13 @@ public class DailyDigestService : BackgroundService
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-            // IST window for "today"
             var istNow   = DateTime.UtcNow.AddHours(5).AddMinutes(30);
             var todayIst = istNow.Date;
             var startUtc = todayIst.AddHours(-5).AddMinutes(-30);
             var endUtc   = startUtc.AddDays(1);
 
+            // Only picks up proposals that were forwarded today but for some
+            // reason never got their immediate send (DigestSent still false).
             var proposals = await db.Proposals
                 .Where(p =>
                     p.CheckedByEmail != null &&
@@ -136,77 +222,69 @@ public class DailyDigestService : BackgroundService
 
             if (proposals.Count == 0)
             {
-                _log.LogInformation("Daily digest: no forwarded proposals today — no email sent.");
+                _log.LogInformation("Daily digest safety-net: nothing left un-sent today.");
                 return;
             }
 
-            var finalEmail = _cfg["Smtp:FinalApproverEmail"]
-                          ?? _cfg["FinalApproverEmail"]
-                          ?? "vijay.maurya@bgauss.com";
-            var portalUrl  = _cfg["Smtp:PortalBaseUrl"]
-                          ?? _cfg["PortalUrl"]
-                          ?? "https://44.210.115.237";
+            _log.LogWarning("Daily digest safety-net picked up {count} proposal(s) that were never immediately sent.", proposals.Count);
 
-            var subject = $"[BGauss BTL] Daily Forwarded Proposals Digest — " +
+            var finalEmail = _cfg["Smtp:FinalApproverEmail"] ?? _cfg["FinalApproverEmail"] ?? "durgesh.guptaa@bgauss.com";
+            var portalUrl  = _cfg["Smtp:PortalBaseUrl"]      ?? _cfg["PortalUrl"]          ?? "https://btl.bgauss.com";
+
+            var subject = $"[BGauss BTL] Daily Forwarded Proposals Digest (safety-net) — " +
                           $"{todayIst:dd MMM yyyy} ({proposals.Count} proposal{(proposals.Count != 1 ? "s" : "")})";
 
-            var html = BuildDigestHtml(proposals, todayIst, portalUrl);
+            // Group the safety-net retry by whoever forwarded each proposal,
+            // so even the fallback still sends "from" the right person when possible.
+            var byChecker = proposals.GroupBy(p => p.CheckedByEmail!);
 
-            // ── FIX: acquire a fresh app-only Graph token every time —
-            // no dependency on any Checker's session or its 55-minute window. ──
-            var appToken = await AcquireAppOnlyGraphTokenAsync();
-            bool sent = false;
-
-            if (appToken != null)
+            bool anyFailed = false;
+            foreach (var group in byChecker)
             {
-                var senderMailbox = _cfg["Smtp:DigestSenderMailbox"]
-                                 ?? _cfg["Smtp:ApproverEmail"]
-                                 ?? "mayank.maheshwari@bgauss.com";
-                sent = await SendViaGraphAsync(senderMailbox, finalEmail, subject, html, appToken);
+                var checkerEmail = group.Key;
+                var html = BuildDigestHtml(group.ToList(), todayIst, portalUrl, checkerEmail);
+
+                var appToken = await AcquireAppOnlyGraphTokenAsync();
+                bool sent = false;
+
+                if (appToken != null)
+                    sent = await SendViaGraphAsync(checkerEmail, finalEmail, subject, html, appToken);
+
+                if (!sent)
+                    sent = await SendViaSmtpFallbackAsync(finalEmail, subject, html);
+
                 if (sent)
-                    _log.LogInformation("Digest sent via app-only Graph API → {email}", finalEmail);
+                {
+                    foreach (var p in group)
+                    {
+                        p.DigestSent      = true;
+                        p.DigestSentAt    = DateTime.UtcNow;
+                        p.DigestSendError = null;
+                    }
+                }
                 else
-                    _log.LogWarning("App-only Graph send failed — trying SMTP fallback.");
-            }
-            else
-            {
-                _log.LogWarning("Could not acquire app-only Graph token — trying SMTP fallback.");
-            }
-
-            if (!sent)
-            {
-                sent = await SendViaSmtpFallbackAsync(finalEmail, subject, html);
+                {
+                    anyFailed = true;
+                    foreach (var p in group)
+                        p.DigestSendError = "Safety-net retry also failed (both Graph and SMTP).";
+                }
             }
 
-            if (!sent)
-            {
-                _log.LogError("Could not send digest — both app-only Graph and SMTP failed. Will retry tomorrow.");
-                foreach (var p in proposals) p.DigestSendError = "Both Graph and SMTP send attempts failed.";
-                await db.SaveChangesAsync(ct);
-                return;
-            }
-
-            // Mark digested — record when it succeeded and clear any prior error
-            foreach (var p in proposals)
-            {
-                p.DigestSent      = true;
-                p.DigestSentAt    = DateTime.UtcNow;
-                p.DigestSendError = null;
-            }
             await db.SaveChangesAsync(ct);
-            _log.LogInformation("Daily digest complete — {count} proposals marked digested.", proposals.Count);
+            if (anyFailed)
+                _log.LogError("Daily digest safety-net: some proposals still could not be sent.");
+            else
+                _log.LogInformation("Daily digest safety-net complete — {count} proposals sent.", proposals.Count);
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "DailyDigestService.SendDailyDigestAsync error");
+            _log.LogError(ex, "DailyDigestService.SendDailyDigestAsync (safety-net) error");
         }
     }
 
-    // ── Graph API send ──────────────────────────────────────────────────────────
+    // ── Graph API send ──────────────────────────────────────────────────────
     private async Task<bool> SendViaGraphAsync(
-        string senderEmail, string toEmail,
-        string subject, string htmlBody,
-        string graphToken)
+        string senderEmail, string toEmail, string subject, string htmlBody, string graphToken)
     {
         try
         {
@@ -216,10 +294,7 @@ public class DailyDigestService : BackgroundService
                 {
                     subject,
                     body = new { contentType = "HTML", content = htmlBody },
-                    toRecipients = new[]
-                    {
-                        new { emailAddress = new { address = toEmail } }
-                    }
+                    toRecipients = new[] { new { emailAddress = new { address = toEmail } } }
                 },
                 saveToSentItems = true
             };
@@ -228,30 +303,24 @@ public class DailyDigestService : BackgroundService
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
             var client = _httpClientFactory.CreateClient();
-            client.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", graphToken);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", graphToken);
 
             var url = $"https://graph.microsoft.com/v1.0/users/{senderEmail}/sendMail";
-            _log.LogInformation("Calling Graph sendMail: {url} (sender={sender}, to={to})", url, senderEmail, toEmail);
-
             var res = await client.PostAsync(url, content);
             var responseBody = await res.Content.ReadAsStringAsync();
 
-            _log.LogInformation("Graph sendMail response: {status} body={body}",
-                res.StatusCode, string.IsNullOrEmpty(responseBody) ? "(empty)" : responseBody);
-
             if (res.IsSuccessStatusCode) return true;
-            _log.LogWarning("Graph sendMail failed {status}: {err}", res.StatusCode, responseBody);
+            _log.LogWarning("Graph sendMail failed {status} (sender={sender}): {err}", res.StatusCode, senderEmail, responseBody);
             return false;
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "SendViaGraphAsync exception");
+            _log.LogWarning(ex, "SendViaGraphAsync exception (sender={sender})", senderEmail);
             return false;
         }
     }
 
-    // ── SMTP fallback ───────────────────────────────────────────────────────────
+    // ── SMTP fallback ────────────────────────────────────────────────────────
     private async Task<bool> SendViaSmtpFallbackAsync(string toEmail, string subject, string htmlBody)
     {
         try
@@ -280,7 +349,6 @@ public class DailyDigestService : BackgroundService
             msg.IsBodyHtml = true;
 
             await smtp.SendMailAsync(msg);
-            _log.LogInformation("Digest sent via SMTP → {email}", toEmail);
             return true;
         }
         catch (Exception ex)
@@ -290,13 +358,14 @@ public class DailyDigestService : BackgroundService
         }
     }
 
-    // ── HTML builder ────────────────────────────────────────────────────────────
+    // ── HTML builder — now shows the actual Checker's name/email who forwarded ──
     private static string BuildDigestHtml(
-        List<Proposal> proposals, DateTime date, string portalUrl)
+        List<Proposal> proposals, DateTime date, string portalUrl, string checkerEmail)
     {
         var totalBudget = proposals.Sum(p => p.TotalBudget);
         var proposalIds = string.Join(",", proposals.Select(p => p.Id));
         var reviewUrl   = $"{portalUrl}/approver?highlight={Uri.EscapeDataString(proposalIds)}";
+        var checkerName = proposals.FirstOrDefault(p => p.SubmittedByDisplayName != null)?.SubmittedByDisplayName ?? checkerEmail;
 
         return $"""
         <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;
@@ -306,7 +375,7 @@ public class DailyDigestService : BackgroundService
               📋 {proposals.Count} Proposal{(proposals.Count != 1 ? "s" : "")} Awaiting Your Review
             </div>
             <div style="color:#93c5fd;font-size:12px;margin-top:6px">
-              Forwarded by Checker · {date:dd MMM yyyy}
+              Forwarded by {checkerEmail} · {date:dd MMM yyyy}
             </div>
           </div>
           <div style="padding:24px 28px;text-align:center">
@@ -323,7 +392,7 @@ public class DailyDigestService : BackgroundService
           </div>
           <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:12px 28px;
                      font-size:11px;color:#94a3b8;text-align:center">
-            BGauss BTL Portal · Automated digest, do not reply.
+            BGauss BTL Portal · Sent immediately upon forwarding · Automated, do not reply.
           </div>
         </div>
         """;

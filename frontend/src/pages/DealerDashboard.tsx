@@ -1,9 +1,12 @@
 // src/pages/DealerDashboard.tsx
 // Full post-activity same as ApproverDashboard — Photos, Invoices, History panels.
 // Dealer-specific: JWT auth, revision edit, NeedsRevision banner.
+// My Team = Dealer Mapping (GET /api/dealer-team-mapping/my-team), fallback = latest proposal.
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchMyDealerProposals, type ProposalResponse } from "../services/proposalService";
+import { getDealerToken } from "../services/dealerAuthService";
+import * as XLSX from "xlsx";
 import "./DealerDashboard.css";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
@@ -16,12 +19,7 @@ const fmtDate = (iso: string | null | undefined) => {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" });
 };
-const API_BASE   = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
-const resolveUrl = (url: string | null | undefined): string => {
-  if (!url) return "";
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `${API_BASE}${url.startsWith("/") ? url : `/${url}`}`;
-};
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 // ─── GPS helper ───────────────────────────────────────────────────────────────
 function captureGeo(): Promise<{ lat: number; lng: number } | null> {
@@ -35,15 +33,69 @@ function captureGeo(): Promise<{ lat: number; lng: number } | null> {
   });
 }
 const mapsUrl = (lat: number, lng: number) => `https://maps.google.com/?q=${lat},${lng}`;
-// ── NEW: matches ApproverDashboard — Setup Count auto-fills Enquiry/TD plan ──
+// Setup Count auto-fills Enquiry/TD plan
 const DEFAULT_PLAN_PER_SETUP = 35;
-// ── NEW: bounds for Actual Start/End — current + next month, matches Approver ──
+// Bounds for Actual Start/End — current + next month, matches Approver (local date, no UTC shift)
+const isoLocal = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 function getActualDateRange() {
   const now = new Date();
   const min = new Date(now.getFullYear(), now.getMonth(), 1);
   const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);
-  const fmt = (d: Date) => d.toISOString().split("T")[0];
-  return { min: fmt(min), max: fmt(max) };
+  return { min: isoLocal(min), max: isoLocal(max) };
+}
+
+// ─── Dealer auth helpers ──────────────────────────────────────────────────────
+const dealerJwt = () => getDealerToken() ?? "";
+// ASSUMPTION: dealer login stores its profile (incl. email) in "bgauss_dealer_user".
+const dealerLoginEmail = (): string => {
+  try {
+    const raw = localStorage.getItem("bgauss_dealer_user");
+    if (raw) { const d = JSON.parse(raw); return (d?.email ?? "") as string; }
+  } catch {}
+  return "";
+};
+
+// Role comes from the local-login JWT itself ("role" claim: Dealer / RSM / TSM / Commando).
+// Fallback: localStorage profile. Missing → treated as Dealer.
+const STAFF_ROLES = ["rsm", "tsm", "commando"];
+const jwtClaims = (): Record<string, any> => {
+  try {
+    const t = getDealerToken();
+    if (!t) return {};
+    const b64 = t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const json = decodeURIComponent(atob(b64).split("").map(c => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2)).join(""));
+    return JSON.parse(json);
+  } catch { return {}; }
+};
+const loginRole = (): string => {
+  const c = jwtClaims();
+  const r = c.role ?? c["http://schemas.microsoft.com/ws/2008/06/identity/claims/role"];
+  if (r) return String(Array.isArray(r) ? r[0] : r);
+  try {
+    const raw = localStorage.getItem("bgauss_dealer_user");
+    if (raw) { const d = JSON.parse(raw); return String(d?.role ?? "Dealer"); }
+  } catch {}
+  return "Dealer";
+};
+// fetch with timeout — the page never spins forever; shows a clear error instead.
+async function fetchJsonWithTimeout<T>(url: string, ms = 45000): Promise<T> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${getDealerToken() ?? ""}` }, signal: ctrl.signal });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}${text ? ` — ${text.slice(0, 300)}` : ""}`);
+    try { return JSON.parse(text) as T; }
+    catch { throw new Error(`Server did not return JSON from ${url} — check VITE_API_BASE_URL.`); }
+  } catch (e) {
+    if ((e as any)?.name === "AbortError") throw new Error(`Timed out after ${ms / 1000}s loading ${url}.`);
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+interface MappedDealer {
+  dealerName: string; dealerCode?: string | null; city?: string | null; state?: string | null;
+  rsm?: string; tsm?: string | null; commando?: string | null; dealerEmail?: string | null;
 }
 
 // ─── Media helpers ────────────────────────────────────────────────────────────
@@ -91,7 +143,7 @@ interface ProofMedia {
   capturedAt:string; latitude?:number|null; longitude?:number|null;
 }
 interface DailyEntry {
-  date:string; setupCount:number;   // ← NEW: setupCount
+  date:string; setupCount:number;
   enquiryPlanned:number; enquiryActual:number;
   testDrivePlanned:number; testDriveActual:number;
   bookingActual:number; retailActual:number; leadsPunched:number;
@@ -105,6 +157,11 @@ interface ActualEntry {
   invoiceMedia:ProofMedia[];
   dailyEntries:DailyEntry[];
 }
+interface MappedTeam {
+  rsm?: string; rsmEmail?: string | null;
+  tsm?: string | null; tsmEmail?: string | null;
+  commando?: string | null; commandoEmail?: string | null;
+}
 
 function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[] {
   if (!start||!end) return [];
@@ -112,8 +169,8 @@ function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[]
   const s=new Date(start), e=new Date(end), today=new Date();
   const cap=e<today?e:today;
   for (const d=new Date(s);d<=cap;d.setDate(d.getDate()+1)) {
-    entries.push({ date:d.toISOString().split("T")[0],
-      setupCount:0,   // ← NEW
+    entries.push({ date:isoLocal(d),
+      setupCount:0,
       enquiryPlanned:0,enquiryActual:0,testDrivePlanned:0,testDriveActual:0,
       bookingActual:0,retailActual:0,leadsPunched:0 });
   }
@@ -163,11 +220,17 @@ export default function DealerDashboard() {
   const [loading,      setLoading]      = useState(true);
   const [fetchError,   setFetchError]   = useState<string|null>(null);
   const [toast,        setToast]        = useState<{msg:string;ok:boolean}|null>(null);
+  const [mappedTeam,   setMappedTeam]   = useState<MappedTeam|null>(null);
+  const [myDealers,    setMyDealers]    = useState<MappedDealer[]>([]);
+  // Staff login (RSM/TSM/Commando) sees ALL proposals of the dealers mapped to them.
+  const role    = useMemo(loginRole, []);
+  const isStaff = STAFF_ROLES.includes(role.trim().toLowerCase());
 
   // ── Filters ───────────────────────────────────────────────────────────────
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("All");
   const [monthFilter,  setMonthFilter]  = useState("All");
   const [yearFilter,   setYearFilter]   = useState("All");
+  const [dealerFilter, setDealerFilter] = useState("All");
   const [search,       setSearch]       = useState("");
 
   // ── Modal ─────────────────────────────────────────────────────────────────
@@ -176,7 +239,7 @@ export default function DealerDashboard() {
   const [sendBackNote, setSendBackNote] = useState("");
   const [sendBackLoading, setSendBackLoading] = useState(false);
 
-  // ── Post-Activity (mirrors ApproverDashboard exactly) ─────────────────────
+  // ── Post-Activity (mirrors ApproverDashboard) ─────────────────────────────
   const [actualsData,    setActualsData]    = useState<Record<string,ActualEntry>>({});
   const [actualsLoading, setActualsLoading] = useState(false);
   const [openActualsId,  setOpenActualsId]  = useState<string|null>(null);
@@ -184,43 +247,75 @@ export default function DealerDashboard() {
   const toggleActualsPanel = (activityId:string, panel:"photos"|"invoices"|"history") =>
     setOpenActualsPanel(prev => ({ ...prev, [activityId]: prev[activityId]===panel?undefined as any:panel }));
   const [mediaViewer, setMediaViewer] = useState<{url:string;name:string;type:string}|null>(null);
-
+  const [teamHistoryOpen, setTeamHistoryOpen] = useState<{ role: "RSM"|"TSM"|"Commando"; name: string } | null>(null);
   const showToast = (msg:string, ok:boolean) => {
     setToast({ msg, ok });
     setTimeout(() => setToast(null), 3500);
   };
 
-  // ── Load ──────────────────────────────────────────────────────────────────
+  // ── Load proposals ─────────────────────────────────────────────────────────
+  // Dealer login → all proposals of this dealership (whoever submitted).
+  // Staff login  → all proposals of every dealer mapped to this RSM/TSM/Commando.
   useEffect(() => {
     setLoading(true);
-    fetchMyDealerProposals()
+    const load: Promise<ProposalResponse[]> = isStaff
+      ? fetchJsonWithTimeout<ProposalResponse[]>(`${API_BASE}/api/proposals/my-team-proposals`)
+      : fetchMyDealerProposals();
+    load
       .then(setProposals)
       .catch(e => setFetchError(e instanceof Error ? e.message : "Failed to load."))
       .finally(() => setLoading(false));
-  }, []);
+  }, [isStaff]);
+
+  // ── Dealer login: My Team · Staff login: My Dealers (both from Dealer Mapping) ──
+  useEffect(() => {
+    const token = dealerJwt();
+    if (!token) return;
+    const url = isStaff
+      ? `${API_BASE}/api/dealer-team-mapping/my-dealers`
+      : `${API_BASE}/api/dealer-team-mapping/my-team`;
+    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (isStaff) setMyDealers(Array.isArray(d) ? d : []);
+        else setMappedTeam(d as MappedTeam | null);
+      })
+      .catch(() => { setMappedTeam(null); setMyDealers([]); });
+  }, [isStaff]);
 
   // ── Filters ───────────────────────────────────────────────────────────────
   const months = useMemo(() =>
     ["All", ...Array.from(new Set(proposals.map(p => p.month))).sort()], [proposals]);
   const years = useMemo(() =>
     ["All", ...Array.from(new Set(proposals.map(p => (p as any).year).filter(Boolean))).sort()], [proposals]);
+  const dealerNames = useMemo(() =>
+    ["All", ...Array.from(new Set([
+      ...proposals.map(p => p.dealerName),
+      ...myDealers.map(d => d.dealerName),
+    ].filter(Boolean))).sort((a, b) => a.localeCompare(b))], [proposals, myDealers]);
+  const showDealerCol = isStaff || new Set(proposals.map(p => p.dealerName)).size > 1;
+  const normName = (s?: string | null) => (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const editPath = (id: string) => isStaff ? `/rsm-form?edit=${id}` : `/dealer-proposal?edit=${id}`;
+  const newPath  = isStaff ? "/rsm-form" : "/dealer-proposal";
 
   const baseFiltered = useMemo(() => proposals.filter(p => {
     if (activeFilter !== "All" && p.status !== activeFilter) return false;
     if (monthFilter  !== "All" && p.month  !== monthFilter)  return false;
     if (yearFilter   !== "All" && (p as any).year !== yearFilter) return false;
+    if (dealerFilter !== "All" && normName(p.dealerName) !== normName(dealerFilter)) return false;
     return true;
-  }), [proposals, activeFilter, monthFilter, yearFilter]);
+  }), [proposals, activeFilter, monthFilter, yearFilter, dealerFilter]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
     if (!q) return baseFiltered;
     return baseFiltered.filter(p =>
-      [p.dealerName, p.month, p.location, p.status, p.tokenNumber].join(" ").toLowerCase().includes(q));
+      [p.dealerName, p.month, p.location, p.status, p.tokenNumber, p.rsmName, p.submittedByDisplayName]
+        .join(" ").toLowerCase().includes(q));
   }, [baseFiltered, search]);
 
-  const hasFilter = activeFilter !== "All" || monthFilter !== "All" || yearFilter !== "All";
-  const clearAll = () => { setActiveFilter("All"); setMonthFilter("All"); setYearFilter("All"); setSearch(""); };
+  const hasFilter = activeFilter !== "All" || monthFilter !== "All" || yearFilter !== "All" || dealerFilter !== "All";
+  const clearAll = () => { setActiveFilter("All"); setMonthFilter("All"); setYearFilter("All"); setDealerFilter("All"); setSearch(""); };
 
   // ── Stats ─────────────────────────────────────────────────────────────────
   const src = hasFilter ? baseFiltered : proposals;
@@ -233,6 +328,71 @@ export default function DealerDashboard() {
     budget:   src.reduce((s,p) => s + p.totalBudget, 0),
     retail:   src.reduce((s,p) => s + p.totalRetailTarget, 0),
   }), [src]);
+
+  // ── My Team — Dealer Mapping first (source of truth, has emails);
+  // fallback = names on the latest proposal (no emails). ──
+  const myTeam = useMemo(() => {
+    if (isStaff) return null;                // staff sees "My Dealers" instead
+    if (mappedTeam) {
+      return {
+        source: "mapping" as const,
+        rsmName:       mappedTeam.rsm       || "—",
+        tsmName:       mappedTeam.tsm       || "—",
+        commandoName:  mappedTeam.commando  || "—",
+        rsmEmail:      mappedTeam.rsmEmail      || null,
+        tsmEmail:      mappedTeam.tsmEmail      || null,
+        commandoEmail: mappedTeam.commandoEmail || null,
+      };
+    }
+    if (proposals.length === 0) return null;
+    const latest = [...proposals].sort((a, b) =>
+      new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())[0];
+    return {
+      source: "proposal" as const,
+      rsmName: latest.rsmName || "—",
+      tsmName: (latest as any).tsmName || "—",
+      commandoName: latest.commandoName || "—",
+      rsmEmail: null, tsmEmail: null, commandoEmail: null,
+    };
+  }, [proposals, mappedTeam, isStaff]);
+
+  const teamBudget = useMemo(() => ({
+    totalBudget:    proposals.reduce((s, p) => s + p.totalBudget, 0),
+    approvedBudget: proposals.filter(p => p.status === "Approved").reduce((s, p) => s + p.totalBudget, 0),
+    totalRetail:    proposals.reduce((s, p) => s + p.totalRetailTarget, 0),
+    totalLead:      proposals.reduce((s, p) => s + p.totalLeadTarget, 0),
+  }), [proposals]);
+
+  // ── Download Report — one row per activity ─────────────────────────────────
+  const handleDownloadReport = () => {
+    const rows: (string | number)[][] = [
+      ["Token", "Dealer", "Month", "Year", "Activity Name", "Category", "RSM", "TSM", "Commando", "Submitted By",
+       "Lead Target", "Retail Target", "Budget (₹)", "Status", "Submitted On"],
+    ];
+    for (const p of proposals) {
+      for (const a of p.activities) {
+        rows.push([
+          p.tokenNumber ?? "—", p.dealerName, p.month, (p as any).year ?? "—",
+          a.activityType, a.category ?? "—",
+          p.rsmName || "—", (p as any).tsmName || "—", p.commandoName || "—",
+          p.submittedByDisplayName || p.submittedBy || "—",
+          a.leadTarget, a.retailTarget, Math.round(a.budget + (a.additionalBudget || 0)),
+          p.status === "NeedsRevision" ? "Needs Revision" : p.status,
+          p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-IN") : "—",
+        ]);
+      }
+    }
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [
+      { wch: 14 }, { wch: 32 }, { wch: 12 }, { wch: 8 }, { wch: 24 }, { wch: 10 },
+      { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 24 }, { wch: 12 }, { wch: 12 },
+      { wch: 14 }, { wch: 14 }, { wch: 14 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "My Proposals");
+    const base = isStaff ? `My_Dealers_${role}` : (proposals[0]?.dealerName || "Dealer");
+    XLSX.writeFile(wb, `${base.replace(/[^a-z0-9]/gi, "_")}_BTL_Report.xlsx`);
+  };
 
   // ── Post-Activity: init actualsData when opening a proposal ───────────────
   const initActuals = useCallback((p:ProposalResponse) => {
@@ -282,7 +442,7 @@ export default function DealerDashboard() {
     setOpenActualsPanel({});
   };
 
-  // ── Post-Activity helpers (same as ApproverDashboard) ─────────────────────
+  // ── Post-Activity helpers ─────────────────────────────────────────────────
   const setActualField = (id:string, key:"actualStartDate"|"actualEndDate", v:string) =>
     setActualsData(prev => ({ ...prev, [id]: { ...prev[id], [key]:v } }));
 
@@ -303,8 +463,6 @@ export default function DealerDashboard() {
     setOpenActualsId(prev => prev===activityId ? null : activityId);
 
   // ── Upload via dealer JWT (no MSAL) ───────────────────────────────────────
-  const dealerJwt = () => localStorage.getItem("bgauss_dealer_token") ?? "";
-
   const uploadFileDealer = async (file:File): Promise<{url:string;fileName:string;fileType:string}> => {
     const fd = new FormData();
     fd.append("file", file);
@@ -313,7 +471,7 @@ export default function DealerDashboard() {
       headers:{ "Authorization":`Bearer ${dealerJwt()}` },
       body:fd,
     });
-    if (!resp.ok) throw new Error(await resp.text());
+    if (!resp.ok) throw new Error(await resp.text() || `Upload failed (${resp.status})`);
     const data = await resp.json();
     return { url:data.url||data.fileUrl, fileName:data.fileName||file.name, fileType:data.fileType||file.type };
   };
@@ -324,17 +482,13 @@ export default function DealerDashboard() {
       headers:{ "Content-Type":"application/json", "Authorization":`Bearer ${dealerJwt()}` },
       body:JSON.stringify(payload),
     });
-    if (!resp.ok) throw new Error(await resp.text());
+    if (!resp.ok) throw new Error(await resp.text() || `Save failed (${resp.status})`);
     return await resp.json();
   };
 
   // ── Proof upload (with GPS) ────────────────────────────────────────────────
   const handleProofUpload = async (activityId:string, files:FileList) => {
-    // ── FIX: call captureGeo() FIRST, before any other await — avoids the
-    // "Only request geolocation in response to a user gesture" console
-    // violation by keeping the call as close to the click's stack as possible.
-    const geoPromise = captureGeo();
-
+    const geoPromise = captureGeo();   // call first — keeps it inside the user gesture
     const proposalId = selected?.id;
     if (!proposalId) { showToast("No proposal selected.", false); return; }
     const fileArray = Array.from(files);
@@ -402,9 +556,7 @@ export default function DealerDashboard() {
     setActualsData(prev => ({ ...prev, [activityId]: { ...prev[activityId],
       invoiceMedia:prev[activityId].invoiceMedia.filter(m => m.id!==id) } }));
 
-  // ── NEW: date-wise photo upload — upload a photo tagged to a SPECIFIC
-  // history-table date, same feature as ApproverDashboard's inline 📷 button,
-  // but authenticated via dealerJwt() instead of MSAL. ──────────────────────
+  // ── Date-wise photo upload — tagged to a specific history-table date ──────
   const handleDateWiseUpload = async (activityId:string, entryDate:string, files:FileList) => {
     const geoPromise = captureGeo();
     const proposalId = selected?.id;
@@ -414,8 +566,6 @@ export default function DealerDashboard() {
       const geo = await geoPromise;
       for (const file of fileArray) {
         const uploaded = await uploadFileDealer(file);
-        // Stamp capturedAt with the specific history-row date (noon UTC),
-        // not "now" — so it groups correctly under that date in the table.
         const saved = await saveMediaToDb(proposalId, activityId, {
           fileUrl:uploaded.url, fileName:uploaded.fileName, fileType:uploaded.fileType,
           capturedAt:`${entryDate}T12:00:00.000Z`,
@@ -436,9 +586,9 @@ export default function DealerDashboard() {
     }
   };
 
-  // ── Save actuals (dealer JWT) ──────────────────────────────────────────────
+  // ── Save actuals (dealer JWT) — backend route is PATCH ────────────────────
   const saveActuals = async () => {
-    if (!selected) return;
+    if (!selected || actualsLoading) return;
     setActualsLoading(true);
     try {
       const payload = selected.activities.map(a => {
@@ -454,11 +604,11 @@ export default function DealerDashboard() {
         };
       });
       const resp = await fetch(`${API_BASE}/api/proposals/${selected.id}/actuals`, {
-        method:"PUT",
+        method:"PATCH",
         headers:{ "Content-Type":"application/json", "Authorization":`Bearer ${dealerJwt()}` },
         body:JSON.stringify(payload),
       });
-      if (!resp.ok) throw new Error(await resp.text());
+      if (!resp.ok) throw new Error(await resp.text() || `Save failed (${resp.status})`);
       const updated:ProposalResponse = await resp.json();
       setProposals(prev => prev.map(p => p.id===updated.id ? updated : p));
       setSelected(updated);
@@ -471,19 +621,24 @@ export default function DealerDashboard() {
     }
   };
 
-  // ── Send back revision note ────────────────────────────────────────────────
+  // ── Budget addition request — body matches backend DealerSendBackDto ──────
   const handleSendBack = async () => {
     if (!selected || !sendBackNote.trim()) {
       showToast("Enter a note for your request.", false); return;
     }
+    const dealerEmail = (selected.dealerEmail || dealerLoginEmail()).trim();
+    if (!dealerEmail) { showToast("Dealer email not found on your login. Contact admin.", false); return; }
     setSendBackLoading(true);
     try {
       const resp = await fetch(`${API_BASE}/api/proposals/${selected.id}/dealer-sendback`, {
         method:"POST",
         headers:{ "Content-Type":"application/json", "Authorization":`Bearer ${dealerJwt()}` },
-        body:JSON.stringify({ note:sendBackNote }),
+        body:JSON.stringify({ dealerEmail, requestNote:sendBackNote.trim() }),
       });
-      if (!resp.ok) throw new Error(await resp.text());
+      if (!resp.ok) throw new Error(await resp.text() || `Request failed (${resp.status})`);
+      const updated:ProposalResponse = await resp.json();
+      setProposals(prev => prev.map(p => p.id===updated.id ? updated : p));
+      setSelected(updated);
       showToast("Budget addition request sent to Checker.", true);
       setSendBackOpen(false);
       setSendBackNote("");
@@ -529,14 +684,131 @@ export default function DealerDashboard() {
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div className="dash-header">
         <div>
-          <h1 className="dash-title">My Proposals</h1>
+          <h1 className="dash-title">{isStaff ? `My Dealers' Proposals (${role})` : "My Proposals"}</h1>
           <p className="dash-subtitle">
             {proposals.length} proposal{proposals.length!==1?"s":""} · {proposals.filter(p=>p.status==="Approved").length} approved · {proposals.filter(p=>p.status==="Pending").length} pending
             {revisionCount > 0 && <span style={{ color:"#f59e0b",fontWeight:700 }}> · {revisionCount} need revision</span>}
           </p>
         </div>
-        <button className="dash-add-btn" onClick={() => navigate("/dealer-proposal")}>+ New Proposal</button>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+          <button onClick={handleDownloadReport} disabled={proposals.length === 0}
+            style={{ background:"#1e3a5f", color:"#fff", border:"none", borderRadius:8,
+              padding:"10px 18px", fontSize:13, fontWeight:700, cursor:proposals.length===0?"not-allowed":"pointer",
+              opacity:proposals.length===0?0.5:1 }}
+            title={proposals.length===0?"No proposals to export yet":"Download all your proposals as Excel"}>
+            ⬇ Download Report
+          </button>
+          <button className="dash-add-btn" onClick={() => navigate(newPath)}>+ New Proposal</button>
+        </div>
       </div>
+
+      {/* ── Staff: My Dealers (from Dealer Mapping) ─────────────────────────── */}
+      {isStaff && (
+        <div style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:12, padding:"16px 20px", marginBottom:16 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
+            <div style={{ fontWeight:700, fontSize:13, color:"#0a2540" }}>🏪 My Dealers</div>
+            <span style={{ fontSize:10, color:"#166534", background:"#dcfce7", padding:"2px 8px", borderRadius:10, fontWeight:600 }}>
+              {myDealers.length} mapped to you in Dealer Mapping
+            </span>
+            {dealerFilter !== "All" && (
+              <button onClick={() => setDealerFilter("All")}
+                style={{ marginLeft:"auto", background:"none", border:"none", color:"#2563eb", cursor:"pointer", fontSize:12, fontWeight:600 }}>
+                Show all dealers ✕
+              </button>
+            )}
+          </div>
+          {myDealers.length === 0 ? (
+            <div style={{ fontSize:12, color:"#92400e", background:"#fffbeb", border:"1px solid #fde68a", borderRadius:6, padding:"8px 12px" }}>
+              No dealer is mapped to you in Dealer Mapping. Proposals below are the ones that name you or that you submitted. Ask Admin to update Dealer Mapping.
+            </div>
+          ) : (
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))", gap:10, maxHeight:260, overflowY:"auto" }}>
+              {myDealers.map(dl => {
+                const dp = proposals.filter(p => normName(p.dealerName) === normName(dl.dealerName));
+                const active = normName(dealerFilter) === normName(dl.dealerName);
+                return (
+                  <div key={dl.dealerName} onClick={() => setDealerFilter(active ? "All" : dl.dealerName)}
+                    style={{ background:active?"#eff6ff":"#f8fafc", border:`1px solid ${active?"#3b82f6":"#e2e8f0"}`,
+                      borderRadius:8, padding:"10px 12px", cursor:"pointer" }}
+                    title="Click to filter proposals by this dealer">
+                    <div style={{ fontSize:13, fontWeight:700, color:"#0a2540" }}>{dl.dealerName}</div>
+                    <div style={{ fontSize:11, color:"#6b7280", marginTop:2 }}>
+                      {[dl.city, dl.state].filter(Boolean).join(", ") || "—"}{dl.dealerCode ? ` · ${dl.dealerCode}` : ""}
+                    </div>
+                    <div style={{ fontSize:11, marginTop:4, display:"flex", gap:8, flexWrap:"wrap" }}>
+                      <span style={{ color:"#0a2540", fontWeight:600 }}>{dp.length} proposal{dp.length!==1?"s":""}</span>
+                      <span style={{ color:"#16a34a" }}>{dp.filter(p=>p.status==="Approved").length} approved</span>
+                      <span style={{ color:"#f59e0b" }}>{dp.filter(p=>p.status==="Pending").length} pending</span>
+                    </div>
+                    <div style={{ fontSize:10, color:"#9ca3af", marginTop:4 }}>
+                      RSM {dl.rsm || "—"} · TSM {dl.tsm || "—"} · Commando {dl.commando || "—"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── My Team & Linked Budget ──────────────────────────────────────── */}
+      {myTeam && (
+        <div style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:12,
+          padding:"16px 20px", marginBottom:16 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+            <div style={{ fontWeight:700, fontSize:13, color:"#0a2540" }}>👥 My Team</div>
+            <span style={{ fontSize:10, color:myTeam.source==="mapping"?"#166534":"#92400e",
+              background:myTeam.source==="mapping"?"#dcfce7":"#fef3c7", padding:"2px 8px", borderRadius:10, fontWeight:600 }}>
+              {myTeam.source==="mapping" ? "From Dealer Mapping" : "From latest proposal"}
+            </span>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))", gap:14, marginBottom:16 }}>
+            {[
+              { label: "RSM" as const,      name: myTeam.rsmName,      email: myTeam.rsmEmail },
+              { label: "TSM" as const,      name: myTeam.tsmName,      email: myTeam.tsmEmail },
+              { label: "Commando" as const, name: myTeam.commandoName, email: myTeam.commandoEmail },
+            ].map((t) => {
+              const clickable = !!t.name && t.name !== "—";
+              return (
+                <div key={t.label}
+                  onClick={() => clickable && setTeamHistoryOpen({ role: t.label, name: t.name })}
+                  style={{ background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 14px",
+                    cursor: clickable ? "pointer" : "default", transition:"box-shadow 0.15s, border-color 0.15s" }}
+                  onMouseEnter={(e) => { if (clickable) { e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)"; e.currentTarget.style.borderColor = "#93c5fd"; } }}
+                  onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = "#e2e8f0"; }}
+                  title={clickable ? `View ${t.label} activity history` : undefined}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                    <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em" }}>{t.label}</div>
+                    {clickable && <span style={{ fontSize:11, color:"#2563eb" }}>View history →</span>}
+                  </div>
+                  <div style={{ fontSize:14, fontWeight:600, color:"#0a2540", marginTop:2 }}>{t.name}</div>
+                  {t.email && (
+                    <a href={`mailto:${t.email}`} onClick={(e) => e.stopPropagation()}
+                      style={{ fontSize:11, color:"#2563eb", textDecoration:"none" }}>{t.email}</a>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ height:1, background:"#f1f5f9", margin:"0 0 14px" }}/>
+          <div style={{ fontSize:11, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em", marginBottom:10 }}>
+            Budget linked to your team
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:10 }}>
+            {[
+              { label: "Total Budget",    value: inrCompact(teamBudget.totalBudget),    color: "#0a2540" },
+              { label: "Approved Budget", value: inrCompact(teamBudget.approvedBudget), color: "#16a34a" },
+              { label: "Retail Target",   value: String(teamBudget.totalRetail),        color: "#7c3aed" },
+              { label: "Lead Target",     value: String(teamBudget.totalLead),          color: "#0369a1" },
+            ].map((k) => (
+              <div key={k.label} style={{ borderTop:`3px solid ${k.color}`, background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 14px" }}>
+                <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em" }}>{k.label}</div>
+                <div style={{ fontSize:18, fontWeight:800, color:k.color, marginTop:2 }}>{k.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── NeedsRevision banner ────────────────────────────────────────────── */}
       {revisionCount > 0 && (
@@ -560,8 +832,114 @@ export default function DealerDashboard() {
         </div>
       )}
 
+      {/* ══ TEAM MEMBER HISTORY MODAL ══════════════════════════════════════════ */}
+      {teamHistoryOpen && (() => {
+        const norm = (s?: string | null) => (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const fieldForRole = (p: ProposalResponse) =>
+          teamHistoryOpen.role === "RSM"      ? p.rsmName :
+          teamHistoryOpen.role === "TSM"      ? (p as any).tsmName :
+          teamHistoryOpen.role === "Commando" ? p.commandoName : "";
+
+        const teamProposals = proposals.filter(p => norm(fieldForRole(p)) === norm(teamHistoryOpen.name));
+
+        const teamTotals = teamProposals.reduce((s, p) => ({
+          budget: s.budget + p.totalBudget,
+          retail: s.retail + p.totalRetailTarget,
+          lead:   s.lead   + p.totalLeadTarget,
+        }), { budget: 0, retail: 0, lead: 0 });
+
+        return (
+          <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.52)",
+            zIndex:1000,overflowY:"auto",padding:"20px 12px" }}
+            onClick={e => { if (e.target===e.currentTarget) setTeamHistoryOpen(null); }}>
+            <div style={{ background:"#fff",borderRadius:14,maxWidth:900,margin:"0 auto",
+              boxShadow:"0 20px 60px rgba(0,0,0,0.3)",overflow:"hidden" }}>
+
+              <div style={{ background:"#0a2540",padding:"18px 24px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap" }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ color:"rgba(255,255,255,0.5)",fontSize:10,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:2 }}>
+                    {teamHistoryOpen.role} — Activity History
+                  </div>
+                  <div style={{ color:"#fff",fontWeight:700,fontSize:16 }}>{teamHistoryOpen.name}</div>
+                </div>
+                <button onClick={() => setTeamHistoryOpen(null)} style={{ background:"rgba(255,255,255,0.12)",border:"none",color:"#fff",
+                  borderRadius:8,width:32,height:32,display:"flex",alignItems:"center",justifyContent:"center",
+                  cursor:"pointer",fontSize:16 }}>✕</button>
+              </div>
+
+              <div style={{ padding:"20px 24px 24px" }}>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
+                  {[
+                    { label: "Proposals",      value: String(teamProposals.length), color: "#0a2540" },
+                    { label: "Total Budget",   value: inrCompact(teamTotals.budget), color: "#16a34a" },
+                    { label: "Retail Target",  value: String(teamTotals.retail),     color: "#7c3aed" },
+                    { label: "Lead Target",    value: String(teamTotals.lead),       color: "#0369a1" },
+                  ].map((k) => (
+                    <div key={k.label} style={{ borderTop:`3px solid ${k.color}`, background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 14px" }}>
+                      <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em" }}>{k.label}</div>
+                      <div style={{ fontSize:18, fontWeight:800, color:k.color, marginTop:2 }}>{k.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {teamProposals.length === 0 ? (
+                  <div style={{ textAlign:"center", padding:"40px 20px", color:"#9ca3af" }}>
+                    <div style={{ fontSize:32, marginBottom:10 }}>📭</div>
+                    No proposal history found for this {teamHistoryOpen.role}.
+                  </div>
+                ) : (
+                  <div style={{ overflowX:"auto", border:"1px solid #e2e8f0", borderRadius:10 }}>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                      <thead>
+                        <tr style={{ background:"#0a2540" }}>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Token</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Month</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Year</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Status</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"right", fontSize:10 }}>Budget</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"right", fontSize:10 }}>Retail</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"right", fontSize:10 }}>Lead</th>
+                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...teamProposals].sort((a,b) => new Date(b.createdAt??0).getTime()-new Date(a.createdAt??0).getTime())
+                          .map((p, i) => (
+                          <tr key={p.id} style={{ background:i%2===0?"#fff":"#f8fafc", borderBottom:"1px solid #f1f5f9",
+                              cursor:"pointer" }}
+                            onClick={() => { setTeamHistoryOpen(null); openModal(p); }}>
+                            <td style={{ padding:"7px 10px", fontFamily:"monospace", color:"#1e3a5f", fontWeight:600 }}>{p.tokenNumber ?? "—"}</td>
+                            <td style={{ padding:"7px 10px" }}>{p.month}</td>
+                            <td style={{ padding:"7px 10px" }}>{(p as any).year ?? "—"}</td>
+                            <td style={{ padding:"7px 10px" }}><StatusPill status={p.status}/></td>
+                            <td style={{ padding:"7px 10px", textAlign:"right", fontWeight:600 }}>{inrCompact(p.totalBudget)}</td>
+                            <td style={{ padding:"7px 10px", textAlign:"right" }}>{p.totalRetailTarget}</td>
+                            <td style={{ padding:"7px 10px", textAlign:"right" }}>{p.totalLeadTarget}</td>
+                            <td style={{ padding:"7px 10px", fontSize:11, color:"#6b7280" }}>
+                              {p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}) : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p style={{ fontSize:11, color:"#9ca3af", marginTop:12 }}>
+                  Click any row to open that proposal's full detail.
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Filter bar ──────────────────────────────────────────────────────── */}
       <div className="dash-filter-bar">
+        {showDealerCol && (
+          <select className="dash-filter-select" value={dealerFilter} onChange={e => setDealerFilter(e.target.value)}>
+            {dealerNames.map(d => <option key={d} value={d}>{d==="All"?"All Dealers":d}</option>)}
+          </select>
+        )}
         <select className="dash-filter-select" value={activeFilter} onChange={e => setActiveFilter(e.target.value as ActiveFilter)}>
           <option value="All">All Statuses</option>
           <option value="Pending">Pending</option>
@@ -576,7 +954,7 @@ export default function DealerDashboard() {
           {years.map(y => <option key={y} value={y}>{y==="All"?"All Years":y}</option>)}
         </select>
         <div style={{ position:"relative",flex:"1 1 180px" }}>
-          <input className="dash-search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…"/>
+          <input className="dash-search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search dealer, token, month, RSM…"/>
           {search && <button onClick={() => setSearch("")} style={{ position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#94a3b8",fontSize:14 }}>✕</button>}
         </div>
         {hasFilter && <button className="dash-clear-btn" onClick={clearAll}>Clear all ✕</button>}
@@ -585,6 +963,7 @@ export default function DealerDashboard() {
       {hasFilter && (
         <div className="dash-filter-hint">
           <strong>Filtered:</strong>
+          {dealerFilter!=="All"&&<span>Dealer: <b>{dealerFilter}</b></span>}
           {monthFilter!=="All"&&<span>Month: <b>{monthFilter}</b></span>}
           {yearFilter!=="All"&&<span>Year: <b>{yearFilter}</b></span>}
           {activeFilter!=="All"&&<span>Status: <b>{activeFilter}</b></span>}
@@ -593,13 +972,13 @@ export default function DealerDashboard() {
 
       {/* ── KPI Cards ────────────────────────────────────────────────────────── */}
       <div className="dash-kpi-grid">
-        <KpiCard label="Total Proposals" value={String(stats.total)} sub={inrCompact(stats.budget)+" budget"} color="#0a2540" active={activeFilter==="All"} onClick={() => setActiveFilter(activeFilter==="All"?"All":"All")}/>
+        <KpiCard label="Total Proposals" value={String(stats.total)} sub={inrCompact(stats.budget)+" budget"} color="#0a2540" active={activeFilter==="All"} onClick={() => setActiveFilter("All")}/>
         <KpiCard label="⏳ Pending"      value={String(stats.pending)}  color="#f59e0b" active={activeFilter==="Pending"}  onClick={() => setActiveFilter(activeFilter==="Pending"?"All":"Pending")}/>
         <KpiCard label="✓ Approved"      value={String(stats.approved)} color="#16a34a" active={activeFilter==="Approved"} onClick={() => setActiveFilter(activeFilter==="Approved"?"All":"Approved")}/>
         <KpiCard label="✕ Rejected"      value={String(stats.rejected)} color="#dc2626" active={activeFilter==="Rejected"} onClick={() => setActiveFilter(activeFilter==="Rejected"?"All":"Rejected")}/>
         <KpiCard label="↩ Needs Revision" value={String(stats.revision)} color="#f59e0b" active={activeFilter==="NeedsRevision"} onClick={() => setActiveFilter(activeFilter==="NeedsRevision"?"All":"NeedsRevision")} hint="Checker sent back for changes"/>
-        <KpiCard label="🎯 Retail Target" value={String(stats.retail)} color="#7c3aed" onClick={() => setActiveFilter(activeFilter==="All"?"All":"All")} hint="Total retail target across all proposals"/>
-        <KpiCard label="₹ Total Budget"  value={inrCompact(stats.budget)} color="#0369a1" onClick={() => setActiveFilter(activeFilter==="All"?"All":"All")} hint="Total budget across all proposals"/>
+        <KpiCard label="🎯 Retail Target" value={String(stats.retail)} color="#7c3aed" hint="Total retail target across all proposals"/>
+        <KpiCard label="₹ Total Budget"  value={inrCompact(stats.budget)} color="#0369a1" hint="Total budget across all proposals"/>
       </div>
 
       {/* ── Proposals Table ──────────────────────────────────────────────────── */}
@@ -623,7 +1002,7 @@ export default function DealerDashboard() {
                 : "Try clearing your filters."}
             </div>
             {proposals.length===0 && (
-              <button className="dash-add-btn" style={{ marginTop:14 }} onClick={() => navigate("/dealer-proposal")}>
+              <button className="dash-add-btn" style={{ marginTop:14 }} onClick={() => navigate(newPath)}>
                 + Create Proposal
               </button>
             )}
@@ -633,8 +1012,10 @@ export default function DealerDashboard() {
             <table className="dash-table">
               <thead><tr>
                 <th>Token</th>
+                {showDealerCol && <th>Dealer</th>}
                 <th>Month</th>
                 <th>Year</th>
+                <th>Submitted By</th>
                 <th>Activities</th>
                 <th>Budget</th>
                 <th>Retail</th>
@@ -647,8 +1028,15 @@ export default function DealerDashboard() {
                   <tr key={p.id} style={{ cursor:"pointer", background:p.status==="NeedsRevision"?"#fffbeb":undefined }}
                     onClick={() => openModal(p)}>
                     <td style={{ fontFamily:"monospace",fontSize:11,color:"#1e3a5f",fontWeight:600 }}>{p.tokenNumber??"—"}</td>
+                    {showDealerCol && (
+                      <td>
+                        <div style={{ fontWeight:600,color:"#0a2540",fontSize:12 }}>{p.dealerName}</div>
+                        <div style={{ fontSize:10,color:"#6b7280" }}>{[p.location, p.state].filter(Boolean).join(", ")}</div>
+                      </td>
+                    )}
                     <td>{p.month}</td>
                     <td>{(p as any).year??"—"}</td>
+                    <td style={{ fontSize:11 }}>{p.submittedByDisplayName || p.submittedBy || "—"}</td>
                     <td style={{ fontSize:11 }}>
                       {p.activities.slice(0,2).map(a=>a.activityType).join(", ")}
                       {p.activities.length>2&&<span style={{ color:"#94a3b8" }}> +{p.activities.length-2}</span>}
@@ -658,7 +1046,7 @@ export default function DealerDashboard() {
                     <td>
                       <StatusPill status={p.status}/>
                       {p.status==="NeedsRevision"&&(
-                        <button onClick={e=>{e.stopPropagation();navigate(`/dealer-proposal?edit=${p.id}`);}}
+                        <button onClick={e=>{e.stopPropagation();navigate(editPath(p.id));}}
                           style={{ display:"block",marginTop:4,background:"#f59e0b",color:"#fff",
                             border:"none",borderRadius:5,padding:"2px 8px",fontSize:10,fontWeight:700,cursor:"pointer" }}>
                           ✏ Edit
@@ -724,7 +1112,7 @@ export default function DealerDashboard() {
                       <strong>Checker note:</strong> {(selected as any).checkerRemarks}
                     </p>
                   )}
-                  <button onClick={() => navigate(`/dealer-proposal?edit=${selected.id}`)}
+                  <button onClick={() => navigate(editPath(selected.id))}
                     style={{ background:"#f59e0b",color:"#fff",border:"none",padding:"10px 22px",
                       borderRadius:8,fontWeight:700,fontSize:14,cursor:"pointer" }}>
                     ✏ Edit &amp; Resubmit Proposal →
@@ -740,7 +1128,9 @@ export default function DealerDashboard() {
                   ["Month",         selected.month],
                   ["Year",          (selected as any).year??"—"],
                   ["RSM",           selected.rsmName],
-                  ["TSM",           selected.tsmName??"—"],
+                  ["TSM",           selected.tsmName||"—"],
+                  ["Commando",      selected.commandoName||"—"],
+                  ["Submitted By",  selected.submittedByDisplayName||selected.submittedBy||"—"],
                   ["Eligibility",   selected.eligibility],
                   ["Type",          selected.type],
                   ["Total Budget",  "₹"+Math.round(selected.totalBudget).toLocaleString("en-IN")],
@@ -761,12 +1151,11 @@ export default function DealerDashboard() {
                 </div>
               )}
 
-              {/* ── Activities + Post-Activity (same as ApproverDashboard) ───── */}
+              {/* ── Activities ────────────────────────────────────────────────── */}
               <div style={{ fontWeight:700,fontSize:13,color:"#0a2540",marginBottom:8 }}>
                 Activities ({selected.activities.length})
               </div>
 
-              {/* Activities full table — same columns as Approver view */}
               {selected.activities.length > 0 && (
                 <div style={{ overflowX:"auto",border:"1px solid #e2e8f0",borderRadius:10,marginBottom:16 }}>
                   <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:1100 }}>
@@ -842,7 +1231,7 @@ export default function DealerDashboard() {
                 </div>
               )}
 
-              {/* ══ POST-ACTIVITY ACCORDION v2 ══ */}
+              {/* ══ POST-ACTIVITY ACCORDION ══ */}
               {selected.status==="Approved"&&selected.activities.map((a)=>{
                 const d=actualsData[a.id];
                 if (openActualsId!==a.id||!d) return null;
@@ -857,7 +1246,7 @@ export default function DealerDashboard() {
                         <span style={{ fontSize:11,color:"#6b7280",marginLeft:"auto" }}>Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
                       </div>
 
-                      {/* ── Actual Dates + compact action bar in one row ── */}
+                      {/* Actual dates + action bar */}
                       <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
                         <div>
                           <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual Start</label>
@@ -876,7 +1265,6 @@ export default function DealerDashboard() {
                           <div style={{ fontSize:11,color:"#166534",fontWeight:600 }}>✓ {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</div>
                         )}
 
-                        {/* ── Toggle buttons ── */}
                         <div style={{ display:"flex",gap:7,marginLeft:"auto",flexWrap:"wrap",alignItems:"center" }}>
                           <button onClick={()=>toggleActualsPanel(a.id,"photos")}
                             style={{ display:"flex",alignItems:"center",gap:5,
@@ -1014,7 +1402,7 @@ export default function DealerDashboard() {
                         </div>
                       )}
 
-                      {/* ══ HISTORY PANEL — only when both dates selected ══ */}
+                      {/* ══ HISTORY PANEL ══ */}
                       {openActualsPanel[a.id]==="history"&&d.actualStartDate&&d.actualEndDate&&(
                         <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,overflow:"hidden",marginBottom:10 }}>
                           <div style={{ background:"#0a2540",padding:"9px 14px",display:"flex",alignItems:"center",gap:10 }}>
@@ -1048,31 +1436,30 @@ export default function DealerDashboard() {
                                     const photosOnDay=d.proofMedia.filter(m=>m.capturedAt.startsWith(entryDate));
                                     const invoicesOnDay=d.invoiceMedia.filter(m=>m.capturedAt.startsWith(entryDate));
                                     const hasAnyData=entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
+                                    const sc=entry.setupCount||0;
                                     return (
                                       <tr key={entry.date} style={{ background:ei%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",opacity:hasAnyData?1:0.5 }}>
                                         <td style={{ padding:"5px 10px",fontWeight:600,color:"#374151",whiteSpace:"nowrap",fontSize:11 }}>{entry.date}</td>
-                                        {/* Setup Count — auto-calcs Enquiry Plan & TD Plan (35 × count) */}
                                         <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                           <input type="number" min={0} max={20}
                                             style={{ width:40,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"2px",fontSize:11,outline:"none",background:"#fefce8",fontWeight:700 }}
-                                            value={(entry as any).setupCount||""}
-                                            placeholder="0"
+                                            value={sc||""} placeholder="0"
                                             title="Setup Count — Enquiry Plan & TD Plan = 35 × this value"
                                             onChange={(ev)=>{
-                                              const sc=parseInt(ev.target.value)||0;
-                                              setDailyField(a.id,entry.date,"setupCount" as any,sc);
-                                              setDailyField(a.id,entry.date,"enquiryPlanned",sc*DEFAULT_PLAN_PER_SETUP);
-                                              setDailyField(a.id,entry.date,"testDrivePlanned",sc*DEFAULT_PLAN_PER_SETUP);
+                                              const v=parseInt(ev.target.value)||0;
+                                              setDailyField(a.id,entry.date,"setupCount",v);
+                                              setDailyField(a.id,entry.date,"enquiryPlanned",v*DEFAULT_PLAN_PER_SETUP);
+                                              setDailyField(a.id,entry.date,"testDrivePlanned",v*DEFAULT_PLAN_PER_SETUP);
                                             }}/>
                                         </td>
                                         <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:(entry as any).setupCount>0?"#1e40af":"inherit",fontWeight:(entry as any).setupCount>0?700:400 }} value={entry.enquiryPlanned||""} placeholder="0" readOnly={(entry as any).setupCount>0} title={(entry as any).setupCount>0?"Auto-calculated (35 × Setup Count)":"Enter manually"} onChange={(e)=>!(entry as any).setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
+                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:sc>0?"#1e40af":"inherit",fontWeight:sc>0?700:400 }} value={entry.enquiryPlanned||""} placeholder="0" readOnly={sc>0} title={sc>0?"Auto-calculated (35 × Setup Count)":"Enter manually"} onChange={(e)=>!sc&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
                                         </td>
                                         <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                           <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.enquiryActual,entry.enquiryPlanned)||"#fff",fontWeight:entry.enquiryActual>0?700:400 }} value={entry.enquiryActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
                                         </td>
                                         <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.testDrivePlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)} readOnly/>
+                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:sc>0?"#1e40af":"inherit",fontWeight:sc>0?700:400 }} value={entry.testDrivePlanned||""} placeholder="0" readOnly={sc>0} onChange={(e)=>!sc&&setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
                                         </td>
                                         <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                           <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.testDriveActual,entry.testDrivePlanned)||"#fff",fontWeight:entry.testDriveActual>0?700:400 }} value={entry.testDriveActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
@@ -1086,7 +1473,6 @@ export default function DealerDashboard() {
                                         <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                           <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.leadsPunched>0?"#eef2ff":"#fff",fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#4338ca":"inherit" }} value={entry.leadsPunched||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"leadsPunched",parseInt(e.target.value)||0)}/>
                                         </td>
-                                        {/* Media thumbnails + date-wise upload for this date */}
                                         <td style={{ padding:"4px 8px",textAlign:"center" }}>
                                           <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
                                             {photosOnDay.slice(0,2).map(m=>{
@@ -1100,7 +1486,6 @@ export default function DealerDashboard() {
                                             {photosOnDay.length>2&&<span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-2}</span>}
                                             {invoicesOnDay.length>0&&<span style={{ fontSize:10,background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:3,padding:"1px 4px",color:"#374151",whiteSpace:"nowrap" }}>🧾{invoicesOnDay.length}</span>}
                                             {photosOnDay.length===0&&invoicesOnDay.length===0&&<span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
-                                            {/* ── NEW: date-wise upload — upload a photo tagged to THIS specific date ── */}
                                             <label title={`Upload photo for ${entryDate}`}
                                               style={{ cursor:"pointer",fontSize:11,color:"#60a5fa",marginLeft:2 }}>
                                               📷
@@ -1120,9 +1505,9 @@ export default function DealerDashboard() {
                                 <tfoot>
                                   <tr style={{ background:"#0a2540",borderTop:"2px solid #1e3a5f" }}>
                                     <td style={{ padding:"7px 10px",fontWeight:800,color:"#fbbf24",fontSize:11 }}>TOTAL</td>
-                                    <td></td>
+                                    <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+(e.setupCount||0),0)}</td>
                                     {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key,ki)=>(
-                                      <td key={key} style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:[0,2].includes(ki)?"#93c5fd":[1,3].includes(ki)?"#6ee7b7":ki===4?"#c4b5fd":ki===5?"#fbbf24":"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any)[key] as number),0)}</td>
+                                      <td key={key} style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:[0,2].includes(ki)?"#93c5fd":[1,3].includes(ki)?"#6ee7b7":ki===4?"#c4b5fd":ki===5?"#fbbf24":"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+(Number((e as any)[key])||0),0)}</td>
                                     ))}
                                     <td style={{ padding:"7px 8px",textAlign:"center" }}>
                                       <span style={{ fontSize:10,color:"#94a3b8" }}>
@@ -1146,42 +1531,51 @@ export default function DealerDashboard() {
               })}
 
               {/* ── Budget addition / send-back ────────────────────────────── */}
-              {selected.status==="Approved"&&(
+              {selected.status==="Approved"&&!isStaff&&(
                 <div style={{ background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,
                   padding:"14px 18px",marginTop:12 }}>
                   <div style={{ fontWeight:700,fontSize:13,color:"#0a2540",marginBottom:4 }}>
                     Need additional budget?
                   </div>
-                  <p style={{ fontSize:12,color:"#6b7280",margin:"0 0 10px" }}>
-                    Request a budget addition from the Checker. They will review and forward for re-approval.
-                  </p>
-                  {!sendBackOpen ? (
-                    <button onClick={() => setSendBackOpen(true)}
-                      style={{ background:"#1e3a5f",color:"#fff",border:"none",
-                        padding:"8px 18px",borderRadius:7,fontWeight:700,fontSize:12,cursor:"pointer" }}>
-                      Request Budget Addition
-                    </button>
-                  ) : (
-                    <div>
-                      <textarea value={sendBackNote} onChange={e => setSendBackNote(e.target.value)}
-                        placeholder="Describe what additional budget you need and why…"
-                        rows={3}
-                        style={{ width:"100%",border:"1.5px solid #e2e8f0",borderRadius:8,padding:"9px 12px",
-                          fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical",boxSizing:"border-box" as const,marginBottom:8 }}/>
-                      <div style={{ display:"flex",gap:8 }}>
-                        <button onClick={handleSendBack} disabled={sendBackLoading||!sendBackNote.trim()}
-                          style={{ background:sendBackLoading||!sendBackNote.trim()?"#9ca3af":"#1e3a5f",
-                            color:"#fff",border:"none",padding:"8px 18px",borderRadius:7,
-                            fontWeight:700,fontSize:12,cursor:"pointer" }}>
-                          {sendBackLoading?"Sending…":"Send Request"}
-                        </button>
-                        <button onClick={() => { setSendBackOpen(false); setSendBackNote(""); }}
-                          style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",
-                            padding:"8px 14px",borderRadius:7,fontSize:12,cursor:"pointer" }}>
-                          Cancel
-                        </button>
-                      </div>
+                  {(selected as any).dealerSentBack ? (
+                    <div style={{ background:"#fef9c3",border:"1px solid #fde68a",borderRadius:6,padding:"8px 12px",fontSize:12,color:"#92400e" }}>
+                      ✓ Request already sent{(selected as any).dealerSentBackAt?` on ${fmtDate((selected as any).dealerSentBackAt)}`:""} — the Checker will review it.
+                      {(selected as any).dealerSendBackNote&&<div style={{ marginTop:4,color:"#78350f" }}>“{(selected as any).dealerSendBackNote}”</div>}
                     </div>
+                  ) : (
+                    <>
+                      <p style={{ fontSize:12,color:"#6b7280",margin:"0 0 10px" }}>
+                        Request a budget addition from the Checker. They will review and forward for re-approval.
+                      </p>
+                      {!sendBackOpen ? (
+                        <button onClick={() => setSendBackOpen(true)}
+                          style={{ background:"#1e3a5f",color:"#fff",border:"none",
+                            padding:"8px 18px",borderRadius:7,fontWeight:700,fontSize:12,cursor:"pointer" }}>
+                          Request Budget Addition
+                        </button>
+                      ) : (
+                        <div>
+                          <textarea value={sendBackNote} onChange={e => setSendBackNote(e.target.value)}
+                            placeholder="Describe what additional budget you need and why…"
+                            rows={3}
+                            style={{ width:"100%",border:"1.5px solid #e2e8f0",borderRadius:8,padding:"9px 12px",
+                              fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical",boxSizing:"border-box" as const,marginBottom:8 }}/>
+                          <div style={{ display:"flex",gap:8 }}>
+                            <button onClick={handleSendBack} disabled={sendBackLoading||!sendBackNote.trim()}
+                              style={{ background:sendBackLoading||!sendBackNote.trim()?"#9ca3af":"#1e3a5f",
+                                color:"#fff",border:"none",padding:"8px 18px",borderRadius:7,
+                                fontWeight:700,fontSize:12,cursor:sendBackLoading||!sendBackNote.trim()?"not-allowed":"pointer" }}>
+                              {sendBackLoading?"Sending…":"Send Request"}
+                            </button>
+                            <button onClick={() => { setSendBackOpen(false); setSendBackNote(""); }}
+                              style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",
+                                padding:"8px 14px",borderRadius:7,fontSize:12,cursor:"pointer" }}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}

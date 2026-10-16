@@ -6,6 +6,7 @@ public class User
     public string? AzureObjectId { get; set; }
     public string Email { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
+    public string? EmployeeCode { get; set; }
     public string? FirstName { get; set; }
     public string? LastName { get; set; }
     public string? JobTitle { get; set; }

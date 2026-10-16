@@ -27,6 +27,16 @@ public class AppDbContext : DbContext
     public DbSet<BotKnowledge>    BotKnowledgeBase  => Set<BotKnowledge>();
     public DbSet<ProposalAiReview> ProposalAiReviews => Set<ProposalAiReview>();
     public DbSet<ProposalAiFlag>   ProposalAiFlags    => Set<ProposalAiFlag>();
+    public DbSet<LmsLeadRecord> LmsLeadRecords => Set<LmsLeadRecord>();
+    public DbSet<LeadChannelMapping> LeadChannelMappings => Set<LeadChannelMapping>();
+    public DbSet<LeadTarget> LeadTargets => Set<LeadTarget>();
+
+    // ── NEW: Activity Log (login/password-event audit trail) ──────────────────
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+
+    // ── NEW: Dealer Mapping (DB-backed replacement for dealerTeamMap.ts) ───────
+    public DbSet<DealerTeamMapping> DealerTeamMappings => Set<DealerTeamMapping>();
+
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -42,6 +52,7 @@ public class AppDbContext : DbContext
             e.Property(u => u.Email).HasMaxLength(255).IsRequired();
             e.HasIndex(u => u.Email).IsUnique();
             e.Property(u => u.DisplayName).HasMaxLength(255).IsRequired();
+            e.Property(u => u.EmployeeCode).HasMaxLength(50);
             e.Property(u => u.Role).HasMaxLength(50).HasDefaultValue("User");
             e.Property(u => u.AuthType).HasMaxLength(20).HasDefaultValue("AzureAD");
             e.Property(u => u.PasswordHash).HasMaxLength(255);
@@ -240,5 +251,203 @@ public class AppDbContext : DbContext
             e.HasOne(f => f.Review).WithMany(r => r.Flags)
              .HasForeignKey(f => f.ReviewId).OnDelete(DeleteBehavior.Cascade);
         }); 
+        
+        // ── LMS Lead Records ───────────────────────────────────────────────────
+        modelBuilder.Entity<LmsLeadRecord>(e =>
+        {
+            e.ToTable("LmsLeadRecords");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id)
+                .HasDefaultValueSql("NEWID()");
+            e.Property(x => x.ApplicationId)
+                .HasMaxLength(100);
+            e.Property(x => x.SrNo);
+            e.Property(x => x.UniqueLeadId)
+                .IsRequired();
+            e.HasIndex(x => x.UniqueLeadId)
+                .IsUnique()
+                .HasDatabaseName("UX_LmsLeadRecords_UniqueLeadId");
+            e.Property(x => x.ZH).HasMaxLength(150);
+            e.Property(x => x.RSM).HasMaxLength(150);
+            e.Property(x => x.TSM).HasMaxLength(150);
+            e.Property(x => x.Commando).HasMaxLength(150);
+            e.Property(x => x.DealerCode)
+                .HasMaxLength(50);
+            e.Property(x => x.OrganizationName)
+                .HasMaxLength(300);
+            e.Property(x => x.DealerPinCode)
+                .HasMaxLength(20);
+            e.Property(x => x.CustomerName)
+                .HasMaxLength(200);
+            e.Property(x => x.Mobile)
+                .HasMaxLength(20);
+            e.Property(x => x.Email)
+                .HasMaxLength(200);
+            e.Property(x => x.Source)
+                .HasMaxLength(100);
+            e.Property(x => x.SubSource)
+                .HasMaxLength(100);
+            e.Property(x => x.LeadOrigin)
+                .HasMaxLength(100);
+            e.Property(x => x.Make)
+                .HasMaxLength(100);
+            e.Property(x => x.Model)
+                .HasMaxLength(100);
+            e.Property(x => x.Version)
+                .HasMaxLength(100);
+            e.Property(x => x.LeadDate);
+            e.Property(x => x.City)
+                .HasMaxLength(150);
+            e.Property(x => x.State)
+                .HasMaxLength(100);
+            e.Property(x => x.CustomerPinCode)
+                .HasMaxLength(20);
+            e.Property(x => x.User)
+                .HasMaxLength(150);
+            e.Property(x => x.Stage)
+                .HasMaxLength(100);
+            e.Property(x => x.SubStage)
+                .HasMaxLength(100);
+            e.Property(x => x.QualifiedBy)
+                .HasMaxLength(150);
+            e.Property(x => x.LostClosedReason)
+                .HasMaxLength(200);
+            e.Property(x => x.LostClosedSubReason)
+                .HasMaxLength(200);
+            e.Property(x => x.LostClosedBy)
+                .HasMaxLength(150);
+            e.Property(x => x.LeadStatus)
+                .HasMaxLength(100);
+            e.Property(x => x.LeadStatusUpdationDate);
+            e.Property(x => x.Eagerness)
+                .HasMaxLength(50);
+            e.Property(x => x.LastCallComment)
+                .HasMaxLength(500);
+            e.Property(x => x.FollowUpDate);
+            e.Property(x => x.LastCallDate);
+            e.Property(x => x.ScheduleTR)
+                .HasMaxLength(10);
+            e.Property(x => x.NumberOfAttempts);
+            e.Property(x => x.CreatedAt)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+            e.Property(x => x.UpdatedAt);
+            e.HasIndex(x => new
+            {
+                x.State,
+                x.Source,
+                x.SubSource
+            })
+            .HasDatabaseName("IX_LmsLeadRecords_State_Source_SubSource");
+            e.HasIndex(x => x.LeadDate)
+                .HasDatabaseName("IX_LmsLeadRecords_LeadDate");
+        });
+
+
+        // ── Lead Channel Mappings ──────────────────────────────────────────────
+        modelBuilder.Entity<LeadChannelMapping>(e =>
+        {
+            e.ToTable("LeadChannelMappings");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id)
+                .HasDefaultValueSql("NEWID()");
+            e.Property(x => x.Source)
+                .HasMaxLength(100)
+                .IsRequired();
+            e.Property(x => x.SubSource)
+                .HasMaxLength(100);
+            e.Property(x => x.Channel)
+                .HasMaxLength(20)
+                .IsRequired();
+            e.Property(x => x.CreatedAt)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+            e.HasIndex(x => new
+            {
+                x.Source,
+                x.SubSource
+            })
+            .IsUnique()
+            .HasDatabaseName("UX_LeadChannelMappings");
+        });
+
+
+        // ── Lead Targets ───────────────────────────────────────────────────────
+        modelBuilder.Entity<LeadTarget>(e =>
+        {
+            e.ToTable("LeadTargets");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id)
+               .HasDefaultValueSql("NEWID()");
+            e.Property(x => x.State)
+                .HasMaxLength(100)
+                .IsRequired();
+            e.Property(x => x.Channel)
+                .HasMaxLength(20)
+                .IsRequired();
+            e.Property(x => x.Month)
+                .IsRequired();
+            e.Property(x => x.Year)
+                .IsRequired();
+            e.Property(x => x.TargetValue)
+                .HasDefaultValue(0)
+                .IsRequired();
+            e.Property(x => x.UpdatedBy)
+                .HasMaxLength(150);
+            e.Property(x => x.UpdatedAt)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+            e.HasIndex(x => new
+            {
+                x.State,
+                x.Channel,
+                x.Month,
+                x.Year
+            })
+            .IsUnique()
+            .HasDatabaseName("UX_LeadTargets");
+        });
+
+        // ── NEW: Audit Log ──────────────────────────────────────────────────────
+        modelBuilder.Entity<AuditLog>(e =>
+        {
+            e.ToTable("AuditLogs");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.ActorEmail).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ActorName).HasMaxLength(200).IsRequired();
+            e.Property(x => x.ActorRole).HasMaxLength(50).IsRequired();
+            e.Property(x => x.AuthType).HasMaxLength(20).IsRequired();
+            e.Property(x => x.Action).HasMaxLength(50).IsRequired();
+            e.Property(x => x.TargetEmail).HasMaxLength(200);
+            e.Property(x => x.Details).HasMaxLength(500);
+            e.Property(x => x.IpAddress).HasMaxLength(50);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            e.HasIndex(x => x.CreatedAt);
+            e.HasIndex(x => x.ActorEmail);
+            e.HasIndex(x => x.Action);
+        });
+
+        // ── NEW: Dealer Team Mapping (DB-backed replacement for dealerTeamMap.ts) ──
+        modelBuilder.Entity<DealerTeamMapping>(e =>
+        {
+            e.ToTable("DealerTeamMappings");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.DealerName).HasMaxLength(300).IsRequired();
+            e.HasIndex(x => x.DealerName).IsUnique();
+            e.Property(x => x.DealerCode).HasMaxLength(50);
+            e.Property(x => x.City).HasMaxLength(150);
+            e.Property(x => x.State).HasMaxLength(100);
+            e.Property(x => x.Rsm).HasMaxLength(200).IsRequired().HasDefaultValue("");
+            e.Property(x => x.RsmEmail).HasMaxLength(200);
+            e.Property(x => x.Tsm).HasMaxLength(200);
+            e.Property(x => x.TsmEmail).HasMaxLength(200);
+            e.Property(x => x.Commando).HasMaxLength(200);
+            e.Property(x => x.CommandoEmail).HasMaxLength(200);
+            e.Property(x => x.DealerEmail).HasMaxLength(200);
+            e.Property(x => x.IsEligible).HasDefaultValue(true);
+            e.Property(x => x.DealerType).HasMaxLength(20);
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            e.Property(x => x.UpdatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            e.Property(x => x.UpdatedByEmail).HasMaxLength(200);
+            e.HasIndex(x => x.DealerCode);
+            e.HasIndex(x => x.State);
+        });
     }
 }

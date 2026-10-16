@@ -47,6 +47,8 @@ public class Proposal
     public DateTimeOffset?  CheckedAt      { get; set; }
     public string?          DealerEmail    { get; set; }  // dealer's email for notification
     public bool             DealerNotified { get; set; } = false;
+    public bool             TeamNotified   { get; set; } = false;      // ← NEW
+    public DateTimeOffset?  TeamNotifiedAt { get; set; } 
     public string? DealerSendBackNote    { get; set; }
     public bool    DealerSentBack        { get; set; } = false;
     public DateTimeOffset? DealerSentBackAt { get; set; }

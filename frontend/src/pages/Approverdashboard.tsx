@@ -3,9 +3,11 @@ import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/authStore";
+import { useDealerTeamLookup, type DealerTeam } from "../hooks/useDealerTeamLookup";
 import {
   fetchProposals, fetchMyProposals, decideProposal, updateProposal,
   sendBackProposal, updateProposalActuals, uploadActivityMedia,
+  getGraphTokenForBulk,
   forwardProposalToApprover, forwardProposalsBulk, notifyDealer, addActivityMedia,
   type ActivityResponse, type ActivityMediaResponse, type ProposalResponse,
 } from "../services/proposalService";
@@ -23,8 +25,6 @@ const fmtDate = (iso: string | null | undefined) => {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 };
-const fmtDateTime = (iso: string) =>
-  new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", timeStyle: "short" });
 const eligClass   = (e: string) =>
   e === "Eligible" ? "ap-elig-yes" : e === "Not Eligible" ? "ap-elig-no" : "ap-elig-pend";
 const statusClass = (s: string) =>
@@ -46,8 +46,8 @@ const LOC_TYPES   = ["Old","New"];
 const BGAUSS_OPTS = ["100","70","50"];
 const CURRENT_YEAR = new Date().getFullYear();
 const YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
-// ── NEW: local-date ISO helper (matches RSMForm's fix — avoids the UTC
-// shift bug where toISOString() could roll a date back by one day) ──
+// ── local-date ISO helper (avoids the UTC shift bug where toISOString()
+// could roll a date back by one day) ──
 const isoDate = (d: Date) => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -84,6 +84,23 @@ function mediaIcon(t: string | null) {
   if (t.startsWith("video/")) return "🎬";
   return "📎";
 }
+
+// ── RSM/TSM/Commando emails for a proposal's dealer, from the live
+// DealerTeamMappings table. Used as "cc" when notifying the dealer.
+// Submitter and Checker are NOT cc'd (filtered on the backend). ──
+function makeGetTeamEmailsFor(
+  findDealerTeam: (dealerCode: string, dealerName: string) => DealerTeam | null,
+) {
+  return function getTeamEmailsFor(p: ProposalResponse): { rsmEmail: string; tsmEmail: string; commandoEmail: string } {
+    const team = findDealerTeam((p as any).dealerCode ?? "", p.dealerName);
+    return {
+      rsmEmail: team?.rsmEmail ?? "",
+      tsmEmail: team?.tsmEmail ?? "",
+      commandoEmail: team?.commandoEmail ?? "",
+    };
+  };
+}
+
 function isImage(t: string | null) { return !!t?.startsWith("image/"); }
 function isVideo(t: string | null) { return !!t?.startsWith("video/"); }
 
@@ -178,12 +195,19 @@ interface ProofMedia {
 const DEFAULT_ENQ_PLAN_PER_SETUP = 35; // Enquiry Plan = 35 × setupCount
 const DEFAULT_TD_PLAN_PER_SETUP  = 30; // Test Drive Plan = 30 × setupCount
 interface DailyEntry {
-  date:string; setupCount:number;
-  enquiryPlanned:number; enquiryActual:number; enquiryHot:number;
-  testDrivePlanned:number; testDriveActual:number; testDrivePerCanopy:number; // manual
+  date:string;
+  openingStock:number;
+  setupCount:number;          // "Canopy" column
+  enquiryPlanned:number; enquiryActual:number;
+  walkIn:number;
+  inLms:number;
+  enquiryGap:number;           // computed: inLms − enquiryActual
+  enquiryHot:number;
+  revisedHot:number;
+  testDrivePlanned:number; testDriveActual:number; testDrivePerCanopy:number;
   bookingActual:number; bookingInHand:number;
   retailActual:number; retailMtdActivity:number; closingStock:number;
-  retailMtd:number; retailRatePerCanopy:number; // ← NEW: now manual/open
+  retailMtd:number; retailRatePerCanopy:number;
   lmsLeads:number;
   leadsPunched:number;
 }
@@ -191,12 +215,38 @@ interface ActualEntry {
   actualStartDate:string; actualEndDate:string;
   mediaFile:File|null; mediaFileUrl:string|null;
   mediaFileName:string|null; mediaFileType:string|null;
-  uploading:boolean;       // invoice upload spinner (legacy single)
-  proofUploading:boolean;  // photo proof upload spinner
-  invoiceUploading:boolean; // multi-invoice upload spinner
+  uploading:boolean;
+  proofUploading:boolean;
+  invoiceUploading:boolean;
   proofMedia:ProofMedia[];
-  invoiceMedia:ProofMedia[]; // multiple invoices/bills
+  invoiceMedia:ProofMedia[];
   dailyEntries:DailyEntry[];
+}
+
+// Gap = In LMS − Enquiry Actual
+function recalcEnquiryGap(entries: DailyEntry[]): DailyEntry[] {
+  return entries.map((e) => ({ ...e, enquiryGap: (e.inLms || 0) - (e.enquiryActual || 0) }));
+}
+
+function recalcBookingInHand(entries: DailyEntry[]): DailyEntry[] {
+  let running = 0;
+  return entries.map((e) => {
+    const pending = (e.bookingActual || 0) - ((e as any).retailMtdActivity || 0);
+    running += pending;
+    return { ...e, bookingInHand: running } as DailyEntry;
+  });
+}
+
+function recalcRetailMtd(entries: DailyEntry[]): DailyEntry[] {
+  let running = 0;
+  return entries.map((e, i) => {
+    if (i === 0) {
+      running = e.retailMtd || 0;
+      return e;
+    }
+    running += (e.retailMtdActivity || 0);
+    return { ...e, retailMtd: running };
+  });
 }
 
 function toEditable(p: ProposalResponse): EditableProposal {
@@ -224,30 +274,14 @@ function toEditable(p: ProposalResponse): EditableProposal {
   };
 }
 
-// function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[] {
-//   if (!start||!end) return [];
-//   const entries:DailyEntry[]=[];
-//   const s=new Date(start), e=new Date(end), today=new Date();
-//   const cap=e<today?e:today;
-//   for (const d=new Date(s);d<=cap;d.setDate(d.getDate()+1)) {
-//     entries.push({ date:d.toISOString().split("T")[0],
-//       setupCount:0,enquiryPlanned:0,enquiryActual:0,enquiryHot:0,
-//       testDrivePlanned:0,testDriveActual:0,testDrivePerCanopy:0,
-//       bookingActual:0,bookingInHand:0,
-//       retailActual:0,retailMtdActivity:0,closingStock:0,
-//       retailMtd:0,retailRatePerCanopy:0,
-//       lmsLeads:0,leadsPunched:0 });
-//   }
-//   return entries;
-// }
-
 function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[] {
   if (!start||!end) return [];
   const entries:DailyEntry[]=[];
   const s=new Date(start), e=new Date(end);
   for (const d=new Date(s);d<=e;d.setDate(d.getDate()+1)) {
      entries.push({ date:d.toISOString().split("T")[0],
-      setupCount:0,enquiryPlanned:0,enquiryActual:0,enquiryHot:0,
+      openingStock:0, setupCount:0,
+      enquiryPlanned:0,enquiryActual:0,walkIn:0,inLms:0,enquiryGap:0,enquiryHot:0,revisedHot:0,
       testDrivePlanned:0,testDriveActual:0,testDrivePerCanopy:0,
       bookingActual:0,bookingInHand:0,
       retailActual:0,retailMtdActivity:0,closingStock:0,
@@ -260,24 +294,24 @@ function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[]
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
-// ── Date range helper for post-activity: current + next month ──────────────
 function getActualDateRange() {
   const now = new Date();
-  const min = new Date(now.getFullYear(), now.getMonth(), 1);       // first day of current month
-  const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);   // last day of next month
+  const min = new Date(now.getFullYear(), now.getMonth(), 1);
+  const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);
   return { min: isoDate(min), max: isoDate(max) };
 }
 export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
   const navigate  = useNavigate();
   const account   = accounts[0];
+  const { findDealerTeam } = useDealerTeamLookup(instance);
+  const getTeamEmailsFor = useMemo(() => makeGetTeamEmailsFor(findDealerTeam), [findDealerTeam]);
   const { user }  = useAuthStore();
   const isAdmin   = user?.role === "Admin" || user?.role === "Manager";
   const myEmail         = (account?.username ?? user?.email ?? "").toLowerCase();
-  const FINAL_APPROVER  = "vijay.maurya@bgauss.com";
-  // Checker = ApproverEmail or ApproverEmail2 (both see Forward + Notify Dealer bulk actions)
-  const CHECKER_EMAILS  = ["mayank.maheshwari@bgauss.com", "oat@bgauss.com"];
-  const isFinalApprover = myEmail === FINAL_APPROVER;
+  const FINAL_APPROVERS = ["vijay.maurya@bgauss.com", "durgesh.guptaa@bgauss.com"];
+  const CHECKER_EMAILS  = ["seema.shakya@bgauss.com", "shivam.khandelwal@bgauss.com"];
+  const isFinalApprover = FINAL_APPROVERS.includes(myEmail);
   const isChecker       = isAdmin && CHECKER_EMAILS.includes(myEmail);
   const isForwardOnly   = isAdmin && !isFinalApprover;
 
@@ -315,14 +349,15 @@ export default function ApproverDashboard() {
       [activityId]: prev[activityId] === panel ? undefined as any : panel
     }));
   const [mediaViewer,      setMediaViewer]      = useState<{url:string;name:string;type:string}|null>(null);
-  const [activityMasterList, setActivityMasterList] = useState<ActivityType[]>([]);
+  const [, setActivityMasterList] = useState<ActivityType[]>([]);
   const [activityGroups,     setActivityGroups]     = useState<ActivityGroup[]>([]);
   // Bulk approve
   const [selectedIds,       setSelectedIds]       = useState<Set<string>>(new Set());
   const [notifySelectedIds, setNotifySelectedIds] = useState<Set<string>>(new Set());
   const [bulkNotifying,     setBulkNotifying]     = useState(false);
   const [bulkForwarding,    setBulkForwarding]    = useState(false);
-  const [fwdDateFilter,     setFwdDateFilter]     = useState("");   // YYYY-MM-DD for date-wise filter
+  const [fwdDateFilter,     setFwdDateFilter]     = useState("");
+  const [submittedDateFilter, setSubmittedDateFilter] = useState(""); // ← NEW: filters by the "Submitted" column date (createdAt)
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkNote,      setBulkNote]      = useState("");
   const [showBulkPanel, setShowBulkPanel] = useState(false);
@@ -340,17 +375,14 @@ export default function ApproverDashboard() {
   const loadProposals = useCallback(async () => {
     setLoading(true); setFetchError(null);
     try {
-      // Retry once on failure (handles transient DB connection timeouts)
       let data: ProposalResponse[];
       try {
         data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
-      } catch (firstErr) {
-        // Wait 2s and retry once
+      } catch {
         await new Promise(r => setTimeout(r, 2000));
         data = isAdmin ? await fetchProposals(instance) : await fetchMyProposals(instance);
       }
       setProposals(data);
-      // Final Approver: auto-select all forwarded (checkedByEmail set) pending proposals
       if (isFinalApprover) {
         const forwarded = data.filter(
           (p: ProposalResponse) => p.checkedByEmail && p.status === "Pending"
@@ -374,19 +406,18 @@ export default function ApproverDashboard() {
     return ()=>{ document.body.style.overflow=""; };
   },[selected]);
   useEffect(() => {
-  const params = new URLSearchParams(window.location.search);
-  const highlightParam = params.get("highlight");
-  if (highlightParam && proposals.length > 0) {
-    const ids = highlightParam.split(",").filter(Boolean);
-    const validIds = ids.filter(id => proposals.some(p => p.id === id));
-    if (validIds.length > 0) {
-      setSelectedIds(new Set(validIds));
-      setHighlightedFromEmail(new Set(validIds));
-      // Clean the URL so refresh doesn't re-trigger
-      window.history.replaceState({}, "", window.location.pathname);
+    const params = new URLSearchParams(window.location.search);
+    const highlightParam = params.get("highlight");
+    if (highlightParam && proposals.length > 0) {
+      const ids = highlightParam.split(",").filter(Boolean);
+      const validIds = ids.filter(id => proposals.some(p => p.id === id));
+      if (validIds.length > 0) {
+        setSelectedIds(new Set(validIds));
+        setHighlightedFromEmail(new Set(validIds));
+        window.history.replaceState({}, "", window.location.pathname);
+      }
     }
-  }
-}, [proposals]);
+  }, [proposals]);
 
   // ── Computed ───────────────────────────────────────────────────────────────
   const months   = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],[proposals]);
@@ -395,18 +426,29 @@ export default function ApproverDashboard() {
     if (filterStatus!=="All"&&p.status!==filterStatus) return false;
     if (filterMonth!=="All"&&p.month!==filterMonth) return false;
     if (filterYear!=="All"&&(p as any).year!==filterYear) return false;
-    // ── NEW: filter by the date the proposal was forwarded (checkedAt) ──
     if (fwdDateFilter) {
       if (!p.checkedAt) return false;
-      const checkedDate = isoDate(new Date(p.checkedAt)); // "YYYY-MM-DD" local
+      const checkedDate = isoDate(new Date(p.checkedAt));
       if (checkedDate !== fwdDateFilter) return false;
+    }
+    // ── NEW: filters by the same date shown in the "Submitted" column
+    // (p.createdAt) — not the Forward Date (p.checkedAt). This is the
+    // actual submission day, so "30" here means "proposals the RSM
+    // submitted on the 30th", independent of when a Checker later forwarded it.
+    if (submittedDateFilter) {
+      if (!p.createdAt) return false;
+      const submittedDate = isoDate(new Date(p.createdAt));
+      if (submittedDate !== submittedDateFilter) return false;
     }
     if (search){ const q=search.toLowerCase();
       return p.dealerName.toLowerCase().includes(q)||p.rsmName.toLowerCase().includes(q)||
             p.location.toLowerCase().includes(q)||(p.tokenNumber??"").toLowerCase().includes(q); }
     return true;
-  }),[proposals,filterStatus,filterMonth,filterYear,search,fwdDateFilter]); // ← add fwdDateFilter here
+  }),[proposals,filterStatus,filterMonth,filterYear,search,fwdDateFilter,submittedDateFilter]);
   const pendingFiltered = useMemo(()=>filtered.filter((p)=>p.status==="Pending"),[filtered]);
+  // Approved AND not yet notified — the only rows the Checker can bulk-notify
+  const notifiableFiltered = useMemo(
+    ()=>filtered.filter((p)=>p.status==="Approved"&&!p.dealerNotified),[filtered]);
   const stats = useMemo(()=>{
     const approved=proposals.filter((p)=>p.status==="Approved");
     return { total:proposals.length, pending:proposals.filter((p)=>p.status==="Pending").length,
@@ -425,8 +467,6 @@ export default function ApproverDashboard() {
       cac:trt>0?tbg/trt:0,cpl:tlt>0?tbg/tlt:0,totalBgauss:tbg };
   },[editData]);
 
-  // ── NEW: activity dates in edit mode must fall within editData's
-  // Month + Year window — mirrors RSMForm's activityDateRange logic ──
   const editActivityDateRange = useMemo(() => {
     if (!editData) return { min: TODAY_ISO, max: "" };
     const monthIdx = MONTHS.indexOf(editData.month);
@@ -439,7 +479,6 @@ export default function ApproverDashboard() {
     return { min: isoDate(minDate), max: isoDate(lastDay) };
   }, [editData?.month, editData?.year]);
 
-  // ── initActuals ────────────────────────────────────────────────────────────
   const initActuals = useCallback((p:ProposalResponse)=>{
     const init:Record<string,ActualEntry>={};
     p.activities.forEach((a)=>{
@@ -451,7 +490,6 @@ export default function ApproverDashboard() {
         uploading:false,
         proofUploading:false,
         invoiceUploading:false,
-        // Load existing invoices from mediaFiles where fileType is pdf or non-image/video
         invoiceMedia:(a.mediaFiles??[])
           .filter((m)=>m.fileType?.includes("pdf")||
             (!m.fileType?.startsWith("image/")&&!m.fileType?.startsWith("video/")))
@@ -468,7 +506,6 @@ export default function ApproverDashboard() {
           latitude:m.latitude??null, longitude:m.longitude??null,
         })),
         dailyEntries:(()=>{
-          // Load saved daily data from server if available, else build blank entries
           const serverDaily = (a as any).dailyData;
           if (serverDaily) {
             try {
@@ -483,100 +520,64 @@ export default function ApproverDashboard() {
     setActualsData(init);
   },[]);
 
-  // ── initBudgetAdd ──────────────────────────────────────────────────────────
   const initBudgetAdd = useCallback((p:ProposalResponse)=>{
     const init:Record<string,string>={};
     p.activities.forEach((a)=>{ init[a.id]=String(a.additionalBudget??0); });
     setBudgetAddAmounts(init); setBudgetAddNote("");
   },[]);
 
-  // ── Daily entries helpers ──────────────────────────────────────────────────
   const setActualField=(id:string,key:"actualStartDate"|"actualEndDate",v:string)=>
     setActualsData((prev)=>({...prev,[id]:{...prev[id],[key]:v}}));
 
   const setDailyField=(activityId:string,date:string,key:keyof DailyEntry,v:number)=>
-    setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
-      dailyEntries:prev[activityId].dailyEntries.map((e)=>e.date===date?{...e,[key]:v}:e)}}));
+    setActualsData((prev)=>{
+      const acc=prev[activityId]; if(!acc) return prev;
+      let entries=acc.dailyEntries.map((e)=>e.date===date?{...e,[key]:v}:e);
+      if (key==="bookingActual" || (key as string)==="retailMtdActivity") {
+        entries=recalcBookingInHand(entries);
+      }
+      if (key==="inLms" || key==="enquiryActual") {
+        entries=recalcEnquiryGap(entries);
+      }
+      if ((key as string)==="retailMtdActivity" || (key as string)==="retailMtd") {
+        entries=recalcRetailMtd(entries);
+      }
+      return {...prev,[activityId]:{...acc,dailyEntries:entries}};
+  });
 
   const rebuildDailyEntries=(activityId:string,startDate:string,endDate:string)=>{
     const fresh=buildDailyEntries(startDate,endDate);
     setActualsData((prev)=>{
       const existing=prev[activityId]?.dailyEntries??[];
       const merged=fresh.map((ne)=>existing.find((e)=>e.date===ne.date)??ne);
-      return {...prev,[activityId]:{...prev[activityId],dailyEntries:merged}};
+      return {...prev,[activityId]:{...prev[activityId],
+        dailyEntries:recalcRetailMtd(recalcEnquiryGap(recalcBookingInHand(merged)))}};
     });
   };
 
-  // ── Proof upload with GPS ──────────────────────────────────────────────────
   const handleProofUpload=async(activityId:string,files:FileList)=>{
-    // ── DEBUG CHECKPOINT 1: function called ──────────────────────────────────
-    console.log("[PROOF-UPLOAD] ▶ handleProofUpload called", {
-      activityId,
-      fileCount: files.length,
-      fileNames: Array.from(files).map(f=>f.name),
-      selectedId: selected?.id ?? "NULL — selected is null!",
-    });
-
     const proposalId = selected?.id;
     if (!proposalId) {
-      console.error("[PROOF-UPLOAD] ✖ BLOCKED — selected?.id is null. Modal must be open with a proposal.");
       showToast("Error: No proposal selected. Please close and reopen.", false);
       return;
     }
-
-    // ── FIX: Copy FileList → plain Array IMMEDIATELY before any await ──────────
-    // FileList becomes empty after e.target.value="" clears the input.
-    // GPS capture takes 6-8s, by which time the FileList reference is stale.
     const fileArray = Array.from(files);
-    console.log("[PROOF-UPLOAD] 📋 Copied to array immediately:", fileArray.map(f=>f.name));
-
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],proofUploading:true}}));
-
     try {
-      // ── GPS captured AFTER copying files (so FileList invalidation doesn't matter) ──
-      console.log("[PROOF-UPLOAD] 📍 Capturing GPS…");
       const geo=await captureGeo();
       const capturedAt=new Date().toISOString();
-      console.log("[PROOF-UPLOAD] 📍 GPS result:", geo ?? "null (no GPS / denied)");
+      for (const file of fileArray){
+        const uploaded = await uploadActivityMedia(file, instance);
 
-      for (const file of fileArray){  // ← use fileArray, not Array.from(files)
-        // ── DEBUG CHECKPOINT 3: uploading file to storage ────────────────────
-        console.log("[PROOF-UPLOAD] ⬆ STEP 1 — uploading to /api/media/upload:", file.name, file.type, file.size, "bytes");
-        let uploaded: {url:string; fileName:string; fileType:string};
-        try {
-          uploaded = await uploadActivityMedia(file, instance);
-          console.log("[PROOF-UPLOAD] ✔ STEP 1 done — storage URL:", uploaded.url);
-        } catch(uploadErr) {
-          console.error("[PROOF-UPLOAD] ✖ STEP 1 FAILED — /api/media/upload error:", uploadErr);
-          throw uploadErr;
-        }
-
-        // ── DEBUG CHECKPOINT 4: saving to DB ────────────────────────────────
-        console.log("[PROOF-UPLOAD] 💾 STEP 2 — saving to DB via /api/proposals/.../media", {
-          proposalId, activityId,
+        const saved = await addActivityMedia(proposalId, activityId, {
           fileUrl: uploaded.url,
+          fileName: uploaded.fileName,
+          fileType: uploaded.fileType,
           capturedAt,
           latitude: geo?.lat ?? null,
           longitude: geo?.lng ?? null,
-        });
-        let saved: import("../services/proposalService").ActivityMediaResponse;
-        try {
-          saved = await addActivityMedia(proposalId, activityId, {
-            fileUrl: uploaded.url,
-            fileName: uploaded.fileName,
-            fileType: uploaded.fileType,
-            capturedAt,
-            latitude: geo?.lat ?? null,
-            longitude: geo?.lng ?? null,
-          }, instance);
-          console.log("[PROOF-UPLOAD] ✔ STEP 2 done — saved to DB with id:", saved.id);
-        } catch(dbErr) {
-          console.error("[PROOF-UPLOAD] ✖ STEP 2 FAILED — addActivityMedia DB error:", dbErr);
-          throw dbErr;
-        }
+        }, instance);
 
-        // ── DEBUG CHECKPOINT 5: adding to UI state ───────────────────────────
-        // ── DEBUG CHECKPOINT 5: adding to UI state ───────────────────────────
         const proof:ProofMedia={
           id: saved.id,
           fileUrl: saved.fileUrl,
@@ -586,16 +587,9 @@ export default function ApproverDashboard() {
           latitude: saved.latitude ?? geo?.lat ?? null,
           longitude: saved.longitude ?? geo?.lng ?? null,
         };
-        console.log("[PROOF-UPLOAD] ✔ STEP 3 — added to UI state:", proof);
         setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
           proofMedia:[...prev[activityId].proofMedia,proof]}}));
 
-        // ── FIX: also sync the new media into `proposals` + `selected` so
-        // that closing and reopening this modal doesn't rebuild proofMedia
-        // from a stale `mediaFiles` list. Without this, initActuals(p) on
-        // reopen uses the OLD proposals-array snapshot (which never learns
-        // about media added mid-session) and the upload silently "disappears"
-        // even though it's fully saved in the DB. ──
         const mediaEntry: ActivityMediaResponse = {
           id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
           fileType: saved.fileType, capturedAt: saved.capturedAt ?? capturedAt,
@@ -612,14 +606,11 @@ export default function ApproverDashboard() {
           ? { ...prev, activities: prev.activities.map(syncMedia) } : prev);
       }
 
-      console.log("[PROOF-UPLOAD] ✅ All files uploaded successfully");
       showToast(geo?"Photo(s) saved with GPS 📍":"Photo(s) saved (no GPS)",true);
 
     } catch(err){
-      console.error("[PROOF-UPLOAD] ✖ CAUGHT ERROR:", err);
       showToast(err instanceof Error ? err.message : "Upload failed.", false);
     } finally {
-      console.log("[PROOF-UPLOAD] 🔚 finally — resetting proofUploading to false");
       setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],proofUploading:false}}));
     }
   };
@@ -628,7 +619,6 @@ export default function ApproverDashboard() {
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
       proofMedia:prev[activityId].proofMedia.filter((m)=>m.id!==id)}}));
 
-  // ── Multi-invoice upload ───────────────────────────────────────────────────
   const handleInvoiceUpload=async(activityId:string,files:FileList)=>{
     const proposalId=selected?.id;
     if(!proposalId) return;
@@ -648,8 +638,6 @@ export default function ApproverDashboard() {
         setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
           invoiceMedia:[...prev[activityId].invoiceMedia,inv]}}));
 
-        // ── FIX: same sync as photos — keep `proposals`/`selected` in sync
-        // so closing/reopening the modal doesn't lose this invoice. ──
         const mediaEntry: ActivityMediaResponse = {
           id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
           fileType: saved.fileType, capturedAt: saved.capturedAt ?? new Date().toISOString(),
@@ -673,19 +661,6 @@ export default function ApproverDashboard() {
     setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],
       invoiceMedia:prev[activityId].invoiceMedia.filter((m)=>m.id!==id)}}));
 
-  const handleActualMedia=async(activityId:string,file:File)=>{
-    setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:true,mediaFile:file}}));
-    try {
-      const r=await uploadActivityMedia(file,instance);
-      setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:false,
-        mediaFileUrl:r.url,mediaFileName:r.fileName,mediaFileType:r.fileType,mediaFile:file}}));
-      showToast("File uploaded.",true);
-    } catch(err){
-      setActualsData((prev)=>({...prev,[activityId]:{...prev[activityId],uploading:false}}));
-      showToast(err instanceof Error?err.message:"Upload failed.",false);
-    }
-  };
-
   const handleEditMediaUpload=async(idx:number,files:FileList)=>{
     const actId=editData?.activities[idx]?.id??String(idx);
     setUploadingMedia((prev)=>({...prev,[actId]:true}));
@@ -706,7 +681,6 @@ export default function ApproverDashboard() {
     setEditData((d)=>d?{...d,activities:d.activities.map((a,i)=>
       i===idx?{...a,mediaFiles:a.mediaFiles.filter((m)=>m.id!==mediaId)}:a)}:d);
 
-  // ── Save actuals ───────────────────────────────────────────────────────────
   const saveActuals=async()=>{
     if (!selected) return;
     setActualsLoading(true);
@@ -725,19 +699,12 @@ export default function ApproverDashboard() {
       });
       const updated=await updateProposalActuals(selected.id,payload,instance);
       setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
-      // ── FIX: don't call initActuals(updated) here — it rebuilds proofMedia/
-      // invoiceMedia purely from `updated.activities[].mediaFiles`, and the
-      // /actuals PATCH endpoint's response doesn't eager-load that relation.
-      // That was wiping local media state to empty even though nothing was
-      // deleted in the DB. actualsData is already correct locally (it's what
-      // we just sent), so just refresh `selected` for display purposes.
       setSelected(updated);
       showToast("Actuals saved.",true);
     } catch(err){ showToast(err instanceof Error?err.message:"Failed.",false); }
     finally { setActualsLoading(false); }
   };
 
-  // ── Modal open/close ───────────────────────────────────────────────────────
   const openModal=(p:ProposalResponse)=>{
     setSelected(p); setEditData(toEditable(p)); setIsEditing(false); setShowSendBack(false);
     setNote(p.approverNote??""); setSendBackNote("");
@@ -752,14 +719,10 @@ export default function ApproverDashboard() {
     setShowBudgetAddPanel(false);
   };
 
-  // ── Edit helpers ───────────────────────────────────────────────────────────
   const setF=(key:keyof Omit<EditableProposal,"activities">,v:string)=>
     setEditData((d)=>{
       if (!d) return d;
       const next = { ...d, [key]: v };
-      // ── NEW: changing Month invalidates existing activity dates that may
-      // now fall outside the new Month+Year window — clear them so the
-      // Checker must re-pick dates within range, same as RSMForm.
       if (key === "month") {
         next.activities = next.activities.map((a) => ({ ...a, startDate: "", endDate: "" }));
       }
@@ -785,10 +748,8 @@ export default function ApproverDashboard() {
     setEditData((d)=>d?{...d,activities:d.activities.map((a,i)=>
       i===idx?{...a,subcategory,qty:"1"}:a)}:d);
 
-  // ── Save edits ─────────────────────────────────────────────────────────────
   const saveEdits=async()=>{
     if (!selected||!editData) return;
-    // ── Reject out-of-window dates before saving ──
     const { min, max } = editActivityDateRange;
     const outOfRange = editData.activities.find(a =>
       (a.startDate && a.startDate < min) ||
@@ -833,13 +794,11 @@ export default function ApproverDashboard() {
         })(),
       }));
       setEditData(editable); setIsEditing(false); showToast("Proposal updated.",true);
-      // Reload all proposals to ensure server state is in sync (prevents stale data)
       setTimeout(() => loadProposals(), 500);
     } catch(err){ showToast(err instanceof Error?err.message:"Save failed.",false); }
     finally { setSaveLoading(false); }
   };
 
-  // ── Decide / Send back / Forward / Notify ──────────────────────────────────
   const decide=async(action:"Approved"|"Rejected")=>{
     if (!selected) return; setActionLoading(true);
     try {
@@ -874,17 +833,22 @@ export default function ApproverDashboard() {
     finally { setForwardLoading(false); }
   };
 
+  // ── Notify Dealer — ONE-TIME. Once dealerNotified is true only the
+  // "✓ Dealer notified" status is shown; the backend also rejects repeats (409). ──
   const handleNotifyDealer=async()=>{
-    if (!selected||!dealerEmailInput.trim()) return; setNotifyLoading(true);
+    if (!selected||selected.dealerNotified||notifyLoading||!dealerEmailInput.trim()) return;
+    setNotifyLoading(true);
     try {
-      const updated=await notifyDealer(selected.id,dealerEmailInput.trim(),instance);
+      const teamEmails = getTeamEmailsFor(selected);
+      const updated=await notifyDealer(selected.id,dealerEmailInput.trim(),instance,teamEmails);
       setProposals((prev)=>prev.map((p)=>p.id===updated.id?updated:p));
-      setSelected(updated); setShowNotifyDealer(false); showToast("Dealer notified.",true);
+      setSelected(updated); setShowNotifyDealer(false);
+      const ccCount = [teamEmails.rsmEmail, teamEmails.tsmEmail, teamEmails.commandoEmail].filter(Boolean).length;
+      showToast(`Dealer notified${ccCount>0?` (cc'd ${ccCount} team member${ccCount>1?"s":""})`:""}.`,true);
     } catch(err){ showToast(err instanceof Error?err.message:"Notify failed.",false); }
     finally { setNotifyLoading(false); }
   };
 
-  // ── Budget Addition submit ─────────────────────────────────────────────────
   const handleBudgetAddSubmit=async()=>{
     if (!selected) return; setBudgetAddLoading(true);
     try {
@@ -930,10 +894,8 @@ export default function ApproverDashboard() {
     finally { setBudgetAddLoading(false); }
   };
 
-  // ── Bulk approve ───────────────────────────────────────────────────────────
   const toggleActuals=(activityId:string)=>
     setOpenActualsId((prev)=>prev===activityId?null:activityId);
-  // Only count un-forwarded pending proposals for select-all logic
   const forwardablePending  = pendingFiltered.filter(p=>!p.checkedByEmail);
   const allPendingSelected  = forwardablePending.length>0 && forwardablePending.every(p=>selectedIds.has(p.id));
   const somePendingSelected = forwardablePending.some(p=>selectedIds.has(p.id));
@@ -942,11 +904,15 @@ export default function ApproverDashboard() {
     else setSelectedIds(new Set(forwardablePending.map((p)=>p.id)));
   };
   const toggleOne=(id:string,isPending:boolean)=>{
-    // Don't allow selecting already-forwarded proposals
     const p = proposals.find(x=>x.id===id);
     if (p?.checkedByEmail) return;
     if (!isPending) return;
     setSelectedIds((prev)=>{ const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n; });
+  };
+  const allNotifySelected = notifiableFiltered.length>0 && notifiableFiltered.every(p=>notifySelectedIds.has(p.id));
+  const toggleNotifySelectAll=()=>{
+    if (allNotifySelected) setNotifySelectedIds(new Set());
+    else setNotifySelectedIds(new Set(notifiableFiltered.map(p=>p.id)));
   };
   const handleBulkApprove=async()=>{
     if (selectedIds.size===0) return; setBulkApproving(true);
@@ -961,31 +927,46 @@ export default function ApproverDashboard() {
     setSelectedIds(new Set()); setShowBulkPanel(false); setBulkNote("");
     showToast(fail===0?`✓ ${ok} proposal${ok>1?"s":""} approved.`:`${ok} approved, ${fail} failed.`,fail===0);
     setBulkApproving(false);
-  }
+  };
 
-
-  // ── Bulk Notify Dealer — same logic as individual modal Notify Dealer button ──
-  // For each selected proposal:
-  //   1. Use p.dealerEmail if already known
-  //   2. Otherwise auto-fetch from dealer accounts by matching DealerName
-  //   3. Call notifyDealer() — identical to clicking Notify Dealer in the modal
+  // ── Bulk Notify Dealer — same logic as the modal button, ONE-TIME per proposal.
+  // Already-notified proposals are skipped (and cannot be selected in the table).
   const handleBulkNotifyDealer = async () => {
-    if (notifySelectedIds.size === 0) return;
+    if (notifySelectedIds.size === 0 || bulkNotifying) return;
     setBulkNotifying(true);
-    let successCount = 0; let failCount = 0; let noEmailCount = 0;
-    // Pre-fetch dealer accounts once for proposals that need email lookup
+    let successCount = 0; let failCount = 0; let noEmailCount = 0; let alreadyCount = 0;
+    const failedDetails: string[] = [];
+
+    // Acquire the Graph token ONCE for the whole batch (avoids AAD throttling).
+    let graphToken = "";
+    try {
+      graphToken = await getGraphTokenForBulk(instance);
+    } catch {
+      showToast("Could not get Microsoft Graph token — sign-in may have expired. Please refresh and try again.", false);
+      setBulkNotifying(false);
+      return;
+    }
+    if (!graphToken) {
+      showToast("No Graph token available — grant mail permission and try again.", false);
+      setBulkNotifying(false);
+      return;
+    }
+
     let dealerAccounts: Awaited<ReturnType<typeof fetchDealerUsers>> = [];
     const needsFetch = Array.from(notifySelectedIds).some(id => {
       const p = proposals.find(x => x.id === id);
-      return p && !p.dealerEmail;
+      return p && !p.dealerNotified && !p.dealerEmail;
     });
     if (needsFetch) {
       try { dealerAccounts = await fetchDealerUsers(instance); } catch {}
     }
-    for (const id of Array.from(notifySelectedIds)) {
+
+    const ids = Array.from(notifySelectedIds);
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
       const p = proposals.find(x => x.id === id);
       if (!p) continue;
-      // Same email priority as modal: existing stored email → dealer account match
+      if (p.dealerNotified) { alreadyCount++; continue; }
       let email = p.dealerEmail ?? "";
       if (!email) {
         const match = dealerAccounts.find(d =>
@@ -996,18 +977,31 @@ export default function ApproverDashboard() {
       }
       if (!email) { noEmailCount++; continue; }
       try {
-        const updated = await notifyDealer(id, email, instance);
+        const teamEmails = getTeamEmailsFor(p);
+        const updated = await notifyDealer(id, email, instance, teamEmails, graphToken);
         setProposals(prev => prev.map(x => x.id === updated.id ? updated : x));
         successCount++;
-      } catch { failCount++; }
+      } catch (err) {
+        failCount++;
+        const msg = err instanceof Error ? err.message : String(err);
+        failedDetails.push(`${p.tokenNumber ?? id}: ${msg}`);
+        console.error(`[BULK-NOTIFY] Failed for ${p.tokenNumber ?? id}:`, err);
+      }
+      // Gap between Graph sendMail calls (per-mailbox rate limit).
+      if (i < ids.length - 1) await new Promise(r => setTimeout(r, 300));
     }
+
     setNotifySelectedIds(new Set());
     setBulkNotifying(false);
     const parts: string[] = [];
     if (successCount > 0) parts.push(`✓ ${successCount} dealer${successCount > 1 ? "s" : ""} notified`);
     if (failCount    > 0) parts.push(`${failCount} failed`);
     if (noEmailCount > 0) parts.push(`${noEmailCount} skipped (no email found)`);
-    showToast(parts.join(" · "), failCount === 0 && noEmailCount === 0);
+    if (alreadyCount > 0) parts.push(`${alreadyCount} skipped (already notified)`);
+    showToast(parts.join(" · ") || "Nothing to send.", failCount === 0 && noEmailCount === 0);
+    if (failedDetails.length > 0) {
+      console.warn("[BULK-NOTIFY] Failure details:\n" + failedDetails.join("\n"));
+    }
   };
 
   const dealerSentBack    =(p:ProposalResponse)=>(p as any).dealerSentBack;
@@ -1015,13 +1009,9 @@ export default function ApproverDashboard() {
   const calcBgAmt=(budget:number,add:number,share:number|null)=>
     Math.round((budget+add)*((share&&share>0?share:100)/100));
 
-  // Live additional budget for an activity:
-  // when Budget Addition panel is open → use what Mayank typed
-  // otherwise → use the saved server value
   const liveAdd = (activityId: string, savedAdd: number): number =>
     showBudgetAddPanel ? num(budgetAddAmounts[activityId] ?? String(savedAdd)) : savedAdd;
 
-  // Live totals for the footer/CAC banner that respond to Budget Addition panel
   const liveBudgetTotals = () => {
     const acts = selected?.activities ?? [];
     const tBudget = acts.reduce((s, a) => s + a.budget + liveAdd(a.id, a.additionalBudget), 0);
@@ -1053,7 +1043,6 @@ export default function ApproverDashboard() {
         {!loading&&fetchError&&(<div className="ap-error-state"><p className="ap-error-msg">⚠ {fetchError}</p><button className="ap-retry-btn" onClick={loadProposals}>Retry</button></div>)}
         {!loading&&!fetchError&&(
           <>
-            {/* Final Approver: forwarded proposals banner */}
             {isFinalApprover&&proposals.filter(p=>p.checkedByEmail&&p.status==="Pending").length>0&&(
               <div style={{ background:"#f0fdf4",border:"2px solid #bbf7d0",borderRadius:10,
                 padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",
@@ -1098,7 +1087,15 @@ export default function ApproverDashboard() {
                 {years.map((y)=><option key={y} value={y}>{y==="All"?"All years":y}</option>)}
               </select>
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
-              {/* Date-wise filter for forwarded proposals */}
+              <div style={{ display:"flex",alignItems:"center",gap:6 }}>
+                <label style={{ fontSize:12,color:"#64748b",fontWeight:600 }}>Submitted Date:</label>
+                <input type="date" value={submittedDateFilter}
+                  onChange={e=>setSubmittedDateFilter(e.target.value)}
+                  style={{ height:32,padding:"0 8px",border:"1px solid #e2e8f0",borderRadius:6,fontSize:12 }}
+                  title="Filter proposals by the date shown in the Submitted column (when the RSM submitted it)"/>
+                {submittedDateFilter&&<button onClick={()=>setSubmittedDateFilter("")}
+                  style={{ background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:12 }}>✕</button>}
+              </div>
               <div style={{ display:"flex",alignItems:"center",gap:6 }}>
                 <label style={{ fontSize:12,color:"#64748b",fontWeight:600 }}>Forward Date:</label>
                 <input type="date" value={fwdDateFilter}
@@ -1109,12 +1106,11 @@ export default function ApproverDashboard() {
                   style={{ background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:12 }}>✕</button>}
               </div>
             </div>
-            {/* Bulk Forward — for Checker (Manager) who is not the final approver */}
             {isAdmin&&!isFinalApprover&&selectedIds.size>0&&(
               <div style={{ background:"#1e3a5f",borderRadius:10,padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
                 <span style={{ color:"#e2e8f0",fontSize:13,fontWeight:600 }}>{selectedIds.size} proposal{selectedIds.size>1?"s":""} selected</span>
                 <span style={{ color:"#93c5fd",fontSize:11 }}>📧 Final Approver receives 1 digest email at midnight</span>
-                <button onClick={async()=>{
+                <button disabled={bulkForwarding} onClick={async()=>{
                   setBulkForwarding(true);
                   try {
                     const result = await forwardProposalsBulk(Array.from(selectedIds), instance);
@@ -1131,13 +1127,12 @@ export default function ApproverDashboard() {
                   } finally {
                     setBulkForwarding(false);
                   }
-                }} style={{ background:"#fff",color:"#1e3a5f",border:"none",borderRadius:7,padding:"8px 20px",fontWeight:700,fontSize:13,cursor:"pointer" }}>
-                  📤 Forward Selected to Final Approver
+                }} style={{ background:"#fff",color:"#1e3a5f",border:"none",borderRadius:7,padding:"8px 20px",fontWeight:700,fontSize:13,cursor:bulkForwarding?"not-allowed":"pointer",opacity:bulkForwarding?0.7:1 }}>
+                  {bulkForwarding?"Forwarding…":"📤 Forward Selected to Final Approver"}
                 </button>
                 <button onClick={()=>setSelectedIds(new Set())} style={{ background:"rgba(255,255,255,0.1)",color:"#e2e8f0",border:"1px solid rgba(255,255,255,0.2)",borderRadius:7,padding:"8px 16px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
               </div>
             )}
-            {/* Bulk Notify Dealer — for Checker when approved proposals are selected in 2nd row */}
             {isChecker&&notifySelectedIds.size>0&&(
               <div style={{ background:"#166534",borderRadius:10,padding:"12px 18px",marginBottom:12,
                 display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
@@ -1150,7 +1145,7 @@ export default function ApproverDashboard() {
                     cursor:bulkNotifying?"not-allowed":"pointer",opacity:bulkNotifying?0.7:1 }}>
                   {bulkNotifying?`Notifying ${notifySelectedIds.size}…`:"📧 Notify Dealers"}
                 </button>
-                <button onClick={()=>setNotifySelectedIds(new Set())}
+                <button onClick={()=>setNotifySelectedIds(new Set())} disabled={bulkNotifying}
                   style={{ background:"rgba(255,255,255,0.15)",color:"#dcfce7",
                     border:"1px solid rgba(255,255,255,0.25)",borderRadius:7,
                     padding:"8px 14px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
@@ -1201,33 +1196,25 @@ export default function ApproverDashboard() {
                       </div>
                     </th>
                   )}
-                  {/* 2nd checkbox col: Notify Dealer — Checker only, between col1 and Action */}
                   {isChecker&&(
                     <th style={{ width:44,textAlign:"center",padding:"8px 6px" }}>
                       <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
                         <input type="checkbox"
-                          checked={
-                            filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).length>0 &&
-                            filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).every(p=>notifySelectedIds.has(p.id))
-                          }
-                          onChange={()=>{
-                            const notifiable = filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified);
-                            const allSel = notifiable.length>0 && notifiable.every(p=>notifySelectedIds.has(p.id));
-                            if(allSel) setNotifySelectedIds(new Set());
-                            else setNotifySelectedIds(new Set(notifiable.map(p=>p.id)));
-                          }}
-                          style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
-                          title="Select all Approved (un-notified) for bulk dealer notification"/>
-                        {filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).length>0&&(
+                          checked={allNotifySelected}
+                          disabled={notifiableFiltered.length===0}
+                          onChange={toggleNotifySelectAll}
+                          style={{ width:15,height:15,cursor:notifiableFiltered.length?"pointer":"not-allowed",accentColor:"#16a34a" }}
+                          title="Select all Approved proposals not yet notified"/>
+                        {notifiableFiltered.length>0&&(
                           <span style={{ fontSize:9,color:"#64748b",whiteSpace:"nowrap" }}>
-                            {filtered.filter(p=>p.status==="Approved"&&!p.dealerNotified).length} appr.
+                            {notifiableFiltered.length} to notify
                           </span>
                         )}
                       </div>
                     </th>
                   )}
-                  <th>Action</th><th>Token</th><th>Submitted</th>
-                  {isAdmin&&<th>RSM / TSM</th>}
+                  <th>Action</th><th>Token</th><th>Submitted</th><th>Vendor</th>
+                    {isAdmin&&<th>RSM / TSM</th>}
                   <th>Dealer &amp; location</th><th>Month</th><th>Year</th><th>Activities</th>
                   <th className="ap-num">Budget</th><th className="ap-num">Lead</th><th className="ap-num">Retail</th>
                   <th className="ap-num">CAC</th><th className="ap-num">CPL</th>
@@ -1235,7 +1222,7 @@ export default function ApproverDashboard() {
                   <th>Status</th>
                 </tr></thead>
                 <tbody>
-                  {filtered.length===0&&(<tr><td colSpan={isAdmin?16:12} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
+                  {filtered.length===0&&(<tr><td colSpan={isAdmin?(isChecker?17:16):12} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
                   {filtered.map((p)=>{
                     const isPending=p.status==="Pending"; const isChecked=selectedIds.has(p.id);
                     return (
@@ -1266,25 +1253,26 @@ export default function ApproverDashboard() {
                             )}
                           </td>
                         )}
-                        {/* 2nd TD: Notify Dealer checkbox — Checker only, Approved only */}
+                        {/* Notify Dealer column — Checker only. Approved + not notified → checkbox.
+                            Already notified → "✓ Sent" only (one-time, no resend). */}
                         {isChecker&&(
                           <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>
-                            {p.status==="Approved"?(
-                              p.dealerNotified?(
-                                <span title="Already notified — disabled" style={{ fontSize:11,color:"#16a34a",fontWeight:700,cursor:"not-allowed",opacity:0.5 }}>✓</span>
-                              ):(
-                                <input type="checkbox"
-                                  checked={notifySelectedIds.has(p.id)}
-                                  onChange={()=>setNotifySelectedIds(prev=>{
-                                    const next=new Set(prev);
-                                    next.has(p.id)?next.delete(p.id):next.add(p.id);
-                                    return next;
-                                  })}
-                                  style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
-                                  title="Select to bulk notify dealer"/>
-                              )
-                            ):(
+                            {p.status!=="Approved" ? (
                               <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>
+                            ) : p.dealerNotified ? (
+                              <span title={`Dealer already notified${p.dealerEmail?` (${p.dealerEmail})`:""}`}
+                                style={{ fontSize:10,color:"#16a34a",fontWeight:700,whiteSpace:"nowrap" }}>✓ Sent</span>
+                            ) : (
+                              <input type="checkbox"
+                                checked={notifySelectedIds.has(p.id)}
+                                disabled={bulkNotifying}
+                                onChange={()=>setNotifySelectedIds(prev=>{
+                                  const next=new Set(prev);
+                                  next.has(p.id)?next.delete(p.id):next.add(p.id);
+                                  return next;
+                                })}
+                                style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
+                                title="Select to bulk notify dealer"/>
                             )}
                           </td>
                         )}
@@ -1295,6 +1283,7 @@ export default function ApproverDashboard() {
                         </td>
                         <td><span className="ap-id-chip">{p.tokenNumber??p.id.split("-").slice(-1)[0]}</span></td>
                         <td><span className="ap-cell-p">{fmtDate(p.createdAt)}</span>{isAdmin&&<span className="ap-cell-m">{p.submittedByDisplayName??p.submittedBy}</span>}</td>
+                        <td><span className="ap-cell-p">{p.vendorName || <span style={{color:"#cbd5e1"}}>—</span>}</span></td>
                         {isAdmin&&<td><span className="ap-cell-p">{p.rsmName}</span><span className="ap-cell-m">{(p as any).tsmName||p.commandoName}</span></td>}
                         <td><span className="ap-cell-p">{p.dealerName}</span><span className="ap-cell-m">{p.location}, {p.state}</span></td>
                         <td>{p.month}</td><td>{p.year}</td>
@@ -1332,7 +1321,7 @@ export default function ApproverDashboard() {
               <div style={{ minWidth:0 }}>
                 {isEditing?<input style={{ background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",borderRadius:6,padding:"4px 10px",fontSize:15,fontWeight:600,width:200 }} value={editData.dealerName} onChange={(e)=>setF("dealerName",e.target.value)}/>
                   :<span style={{ fontWeight:700,fontSize:16,color:"#fff" }}>{selected.dealerName}</span>}
-                <span style={{ color:"#94a3b8",fontSize:12,marginLeft:12 }}>{selected.location}, {selected.state} · {selected.month}{selected.checkedByEmail&&<span style={{ marginLeft:8,color:"#86efac",fontSize:11 }}>✓ Forwarded</span>}</span>
+                <span style={{ color:"#94a3b8",fontSize:12,marginLeft:12 }}>{selected.location}, {selected.state} · {selected.month}{selected.checkedByEmail&&<span style={{ marginLeft:8,color:"#86efac",fontSize:11 }}>✓ Forwarded</span>}{selected.dealerNotified&&<span style={{ marginLeft:8,color:"#86efac",fontSize:11 }}>✓ Dealer notified</span>}</span>
               </div>
             </div>
             <div style={{ display:"flex",alignItems:"center",gap:8,flexShrink:0 }}>
@@ -1374,9 +1363,6 @@ export default function ApproverDashboard() {
                   <div key={key} style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,padding:"10px 12px" }}>
                     <div style={{ fontSize:10,color:"#6b7280",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:4 }}>{label}</div>
                     {isAdmin&&isEditing&&key==="year"?(
-                      // ── NEW: Year is locked in edit mode — it's fixed at
-                      // submission time and shouldn't be changed by the Checker,
-                      // since RSMForm already enforces year on the Maker side.
                       <div style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",
                         border:"1.5px solid #e2e8f0",borderRadius:6,padding:"6px 8px",fontSize:13,
                         color:"#0a2540",minHeight:30 }}>
@@ -1560,12 +1546,10 @@ export default function ApproverDashboard() {
                       {!isEditing&&selected.status==="Approved"&&selected.activities.map((a)=>{
                         const d=actualsData[a.id];
                         if (openActualsId!==a.id||!d) return null;
-                        const pctColor=(actual:number,planned:number)=>{ if(!actual) return ""; const r=planned>0?actual/planned:1; return r>=0.9?"#d1fae5":r>=0.6?"#fef3c7":"#fee2e2"; };
                         return (
                           <tr key={`actuals-${a.id}`}>
                             <td colSpan={14} style={{ padding:0,background:"#f0fdf4",borderBottom:"2px solid #bbf7d0" }}>
                               <div style={{ padding:"14px 20px" }}>
-                                {/* Header row */}
                                 <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap" }}>
                                   <span style={{ background:"#16a34a",color:"#fff",borderRadius:4,padding:"2px 8px",fontSize:11,fontWeight:700 }}>📋 Post-Activity</span>
                                   <span style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>{a.activityType}</span>
@@ -1573,26 +1557,19 @@ export default function ApproverDashboard() {
                                   <span style={{ fontSize:11,color:"#6b7280",marginLeft:"auto" }}>Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
                                 </div>
 
-                                {/* ── LMS / Retail Conv% badges — computed live from daily entries ── */}
                                 {(()=>{
                                   const totalLmsLeads = d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
                                   const totalPunched = d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0);
-                                  const lastMtdActivity = [...d.dailyEntries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any;
-                                  const mtdRetailActivity = lastMtdActivity?.retailMtdActivity ?? 0;
                                   const lmsGap = totalLmsLeads - totalPunched;
-                                  const retailConvPct = totalLmsLeads > 0 ? Math.round((mtdRetailActivity/totalLmsLeads)*100) : 0;
                                   return (
                                     <div style={{ display:"flex",gap:8,flexWrap:"wrap",marginBottom:12 }}>
                                       <span style={{ fontSize:11,background:"#eef2ff",color:"#4338ca",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Leads: {totalLmsLeads}</span>
                                       <span style={{ fontSize:11,background:"#eef2ff",color:"#4338ca",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Punched: {totalPunched}</span>
                                       <span style={{ fontSize:11,background:lmsGap>0?"#fef2f2":"#f0fdf4",color:lmsGap>0?"#b91c1c":"#166534",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>LMS Gap: {lmsGap}</span>
-                                      {/* <span style={{ fontSize:11,background:"#fffbeb",color:"#92400e",padding:"3px 9px",borderRadius:5,fontWeight:600 }}>MTD Retail (Activity): {mtdRetailActivity}</span> */}
-                                      {/* <span style={{ fontSize:11,background:retailConvPct>=10?"#f0fdf4":"#fef9c3",color:retailConvPct>=10?"#166534":"#854d0e",padding:"3px 9px",borderRadius:5,fontWeight:700 }}>Retail Conv%: {retailConvPct}%</span> */}
                                     </div>
                                   );
                                 })()}
 
-                                {/* ── Actual Dates + compact action bar in one row ── */}
                                 <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
                                   <div>
                                     <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual Start</label>
@@ -1609,7 +1586,6 @@ export default function ApproverDashboard() {
                                     <div style={{ fontSize:11,color:"#166534",fontWeight:600 }}>✓ {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</div>
                                   )}
 
-                                  {/* ── Toggle buttons ── */}
                                   <div style={{ display:"flex",gap:7,marginLeft:"auto",flexWrap:"wrap",alignItems:"center" }}>
                                     <button onClick={()=>toggleActualsPanel(a.id,"photos")}
                                       style={{ display:"flex",alignItems:"center",gap:5,
@@ -1656,7 +1632,6 @@ export default function ApproverDashboard() {
                                   </div>
                                 </div>
 
-                                {/* ══ PHOTOS PANEL ══ */}
                                 {openActualsPanel[a.id]==="photos"&&(
                                   <div style={{ background:"#fff",border:"1px solid #bbf7d0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
                                     <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
@@ -1670,7 +1645,6 @@ export default function ApproverDashboard() {
                                         fontSize:12,fontWeight:700,whiteSpace:"nowrap" }}>
                                         {d.proofUploading?"⏳ Uploading…":"＋ Add Photos"}
                                         <input type="file" multiple accept="image/*,video/*,.pdf" style={{ display:"none" }} disabled={d.proofUploading} onChange={(e)=>{
-                                          console.log("[PROOF-INPUT] onChange fired, files:", e.target.files?.length ?? 0, "activityId:", a.id);
                                           if(e.target.files&&e.target.files.length) handleProofUpload(a.id,e.target.files);
                                           e.target.value="";
                                         }}/>
@@ -1706,7 +1680,6 @@ export default function ApproverDashboard() {
                                   </div>
                                 )}
 
-                                {/* ══ INVOICES PANEL ══ */}
                                 {openActualsPanel[a.id]==="invoices"&&(
                                   <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
                                     <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
@@ -1748,7 +1721,6 @@ export default function ApproverDashboard() {
                                   </div>
                                 )}
 
-                                {/* ══ HISTORY PANEL — only when both dates selected ══ */}
                                 {openActualsPanel[a.id]==="history"&&d.actualStartDate&&d.actualEndDate&&(
                                   <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,overflow:"hidden",marginBottom:10 }}>
                                     <div style={{ background:"#0a2540",padding:"9px 14px",display:"flex",alignItems:"center",gap:10 }}>
@@ -1764,125 +1736,146 @@ export default function ApproverDashboard() {
                                           <thead>
                                             <tr style={{ background:"#1e293b" }}>
                                               <th style={{ padding:"8px 10px",textAlign:"left",color:"#e2e8f0",fontSize:10,fontWeight:700,width:95 }}>Date</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Setup<br/>Count</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Enq<br/>Plan</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Enq<br/>Actual</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a7f3d0",fontSize:10,fontWeight:700 }}> Enq Per<br/>Canopy</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fca5a5",fontSize:10,fontWeight:700 }}>Enq Hot</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Test Rides<br/>Plan</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Test Rides<br/>Actual</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#d8b4fe",fontSize:10,fontWeight:700 }}>Test Rides<br/>/Canopy</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Opening<br/>Stock</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Canopy</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Planned</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Actual</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a7f3d0",fontSize:10,fontWeight:700 }}>Walk in</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a7f3d0",fontSize:10,fontWeight:700 }}>In LMS</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fca5a5",fontSize:10,fontWeight:700 }}>Gap</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fca5a5",fontSize:10,fontWeight:700 }}>Hot</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fca5a5",fontSize:10,fontWeight:700 }}>Revised<br/>Hot</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>TD<br/>Planned</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>TD<br/>Actual</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking<br/>Today</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking<br/>In Hand</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700 }}>Retail<br/>Today</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fcd34d",fontSize:10,fontWeight:700 }}>MTD Retail<br/>(Activity)</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Retail<br/>MTD</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fdba74",fontSize:10,fontWeight:700 }}>Retail Rate<br/>Per Canopy</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#94a3b8",fontSize:10,fontWeight:700 }}>Activity<br/>Day</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Closing<br/>Stock</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#c7d2fe",fontSize:10,fontWeight:700 }}>LMS<br/>Leads</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#a5b4fc",fontSize:10,fontWeight:700 }}>LMS<br/>Punched</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fecaca",fontSize:10,fontWeight:700 }}>LMS<br/>Gap</th>
-                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#67e8f9",fontSize:10,fontWeight:700 }}>Retail<br/>Conv%</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700 }}>Retail</th>
+                                              <th style={{ padding:"8px 8px",textAlign:"center",color:"#fcd34d",fontSize:10,fontWeight:700 }}>MTD<br/>Retail</th>
                                               <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Media</th>
                                             </tr>
                                           </thead>
                                           <tbody>
                                             {d.dailyEntries.map((entry,ei)=>{
-                                              const pctC=(actual:number,planned:number)=>{ if(!actual) return ""; const r=planned>0?actual/planned:1; return r>=0.9?"#d1fae5":r>=0.6?"#fef3c7":"#fee2e2"; };
                                               const entryDate=entry.date;
                                               const photosOnDay=d.proofMedia.filter(m=>m.capturedAt.startsWith(entryDate));
                                               const invoicesOnDay=d.invoiceMedia.filter(m=>m.capturedAt.startsWith(entryDate));
-                                              const hasAnyData=entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
-                                              const setupCount=(entry as any).setupCount||0;
-                                              const enqPerCanopy=setupCount>0?Math.round(entry.enquiryActual/setupCount):0;
-                                              //const enqPerCanopy=setupCount>0?Math.round((entry.enquiryActual/setupCount)*10)/10:0;
-                                              const activityDay=ei+1; // auto-locked — sequential day count
-                                              const lmsLeads=(entry as any).lmsLeads||0;
-                                              const lmsGap=lmsLeads-(entry.leadsPunched||0);
-                                              const retailMtdActivity=(entry as any).retailMtdActivity||0;
-                                              const retailConvPct=lmsLeads>0?Math.round((retailMtdActivity/lmsLeads)*100):0;
+                                              const hasAnyData=entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||photosOnDay.length>0||invoicesOnDay.length>0;
+                                              const setupCount=entry.setupCount||0;
+                                              const gapColor = entry.enquiryGap < 0 ? "#dc2626" : entry.enquiryGap > 0 ? "#16a34a" : "#64748b";
                                               return (
                                                 <tr key={entry.date} style={{ background:ei%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",opacity:hasAnyData?1:0.5 }}>
                                                   <td style={{ padding:"5px 10px",fontWeight:600,color:"#374151",whiteSpace:"nowrap",fontSize:11 }}>{entry.date}</td>
-                                                  {/* Canopy/Mela — auto-calcs Enquiry Plan (35×) & TD Plan (30×) */}
+
+                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }}
+                                                      value={entry.openingStock||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"openingStock",parseInt(e.target.value)||0)}/>
+                                                  </td>
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
                                                     <input type="number" min={0} max={20}
                                                       style={{ width:40,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"2px",fontSize:11,outline:"none",background:"#fefce8",fontWeight:700 }}
-                                                      value={setupCount||""}
-                                                      placeholder="0"
-                                                      title="Canopy/Mela — Enquiry Plan = 35 × count, Test Rides Plan = 30 × count"
+                                                      value={setupCount||""} placeholder="0"
+                                                      title="Canopy — Enquiry Plan = 35 × count, TD Plan = 30 × count"
                                                       onChange={(ev)=>{
                                                         const sc=parseInt(ev.target.value)||0;
-                                                        setDailyField(a.id,entry.date,"setupCount" as any,sc);
+                                                        setDailyField(a.id,entry.date,"setupCount",sc);
                                                         setDailyField(a.id,entry.date,"enquiryPlanned",sc*DEFAULT_ENQ_PLAN_PER_SETUP);
                                                         setDailyField(a.id,entry.date,"testDrivePlanned",sc*DEFAULT_TD_PLAN_PER_SETUP);
                                                       }}/>
                                                   </td>
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:setupCount>0?"#1e40af":"inherit",fontWeight:setupCount>0?700:400 }} value={entry.enquiryPlanned||""} placeholder="0" readOnly={setupCount>0} title={setupCount>0?"Auto-calculated (35 × Canopy/Mela)":"Enter manually"} onChange={(e)=>!setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:setupCount>0?"#1e40af":"inherit",fontWeight:setupCount>0?700:400 }}
+                                                      value={entry.enquiryPlanned||""} placeholder="0" readOnly={setupCount>0}
+                                                      onChange={(e)=>!setupCount&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
                                                   </td>
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.enquiryActual,entry.enquiryPlanned)||"#fff",fontWeight:entry.enquiryActual>0?700:400 }} value={entry.enquiryActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",fontWeight:entry.enquiryActual>0?700:400 }}
+                                                      value={entry.enquiryActual||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* Per Canopy — computed, read-only */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,color:"#059669",fontWeight:600 }}>{enqPerCanopy||"—"}</td>
-                                                  {/* Hot */}
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:(entry as any).enquiryHot>0?"#fef2f2":"#fff",fontWeight:(entry as any).enquiryHot>0?700:400,color:(entry as any).enquiryHot>0?"#b91c1c":"inherit" }} value={(entry as any).enquiryHot||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryHot" as any,parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #a7f3d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.walkIn>0?"#ecfdf5":"#fff" }}
+                                                      value={entry.walkIn||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"walkIn",parseInt(e.target.value)||0)}/>
                                                   </td>
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={entry.testDrivePlanned||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #a7f3d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.inLms>0?"#ecfdf5":"#fff",fontWeight:entry.inLms>0?700:400 }}
+                                                      value={entry.inLms||""} placeholder="0" title="Manual — drives Gap = In LMS − Actual"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"inLms",parseInt(e.target.value)||0)}/>
                                                   </td>
+
+                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,fontWeight:700,color:gapColor }}>
+                                                    {entry.enquiryGap ?? 0}
+                                                  </td>
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.testDriveActual,entry.testDrivePlanned)||"#fff",fontWeight:entry.testDriveActual>0?700:400 }} value={entry.testDriveActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.enquiryHot>0?"#fef2f2":"#fff",fontWeight:entry.enquiryHot>0?700:400,color:entry.enquiryHot>0?"#b91c1c":"inherit" }}
+                                                      value={entry.enquiryHot||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"enquiryHot",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* TD Per Canopy — manual entry (not auto-derived) */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,color:"#7c3aed",fontWeight:600 }}>
-                                                    {setupCount>0?Math.round(entry.testDriveActual/setupCount):"—"}
-                                                  </td>
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.bookingActual>0?"#fdf4ff":"#fff",fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#7c3aed":"inherit" }} value={entry.bookingActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"bookingActual",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:44,textAlign:"center",border:"1px solid #fecaca",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.revisedHot>0?"#fef2f2":"#fff",fontWeight:entry.revisedHot>0?700:400,color:entry.revisedHot>0?"#b91c1c":"inherit" }}
+                                                      value={entry.revisedHot||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"revisedHot",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* Booking In Hand */}
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:(entry as any).bookingInHand>0?"#fdf4ff":"#fff",fontWeight:(entry as any).bookingInHand>0?700:400,color:(entry as any).bookingInHand>0?"#7c3aed":"inherit" }} value={(entry as any).bookingInHand||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"bookingInHand" as any,parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }}
+                                                      value={entry.testDrivePlanned||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
                                                   </td>
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.retailActual>0?"#fef9c3":"#fff",fontWeight:entry.retailActual>0?700:400,color:entry.retailActual>0?"#92400e":"inherit" }} value={entry.retailActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"retailActual",parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",fontWeight:entry.testDriveActual>0?700:400 }}
+                                                      value={entry.testDriveActual||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* MTD Retail (Activity) — manual cumulative figure dealer reports */}
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #fcd34d",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb" }} value={retailMtdActivity||""} placeholder="0" title="Manual — cumulative MTD as reported by dealer" onChange={(e)=>setDailyField(a.id,entry.date,"retailMtdActivity" as any,parseInt(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.bookingActual>0?"#fdf4ff":"#fff",fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#7c3aed":"inherit" }}
+                                                      value={entry.bookingActual||""} placeholder="0"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"bookingActual",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* Retail MTD — now manual/open, not auto-computed */}
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb",fontWeight:(entry as any).retailMtd>0?700:400,color:(entry as any).retailMtd>0?"#92400e":"inherit" }} value={(entry as any).retailMtd||""} placeholder="0" title="Manual — enter Retail MTD" onChange={(e)=>setDailyField(a.id,entry.date,"retailMtd" as any,parseInt(e.target.value)||0)}/>
+                                                    <div title="Auto: running (Booking Today − Retail)"
+                                                      style={{ width:48,margin:"0 auto",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,
+                                                        background:(entry.bookingInHand>0)?"#fdf4ff":"#fff",
+                                                        fontWeight:(entry.bookingInHand>0)?700:400,
+                                                        color:(entry.bookingInHand>0)?"#7c3aed":"#9ca3af" }}>
+                                                      {entry.bookingInHand ?? 0} 🔒
+                                                    </div>
                                                   </td>
-                                                  {/* Retail Rate Per Canopy — now manual/open, not auto-computed */}
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} step="0.1" style={{ width:50,textAlign:"center",border:"1px solid #fdba74",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fff7ed",fontWeight:(entry as any).retailRatePerCanopy>0?700:400,color:(entry as any).retailRatePerCanopy>0?"#c2410c":"inherit" }} value={(entry as any).retailRatePerCanopy||""} placeholder="0.0" title="Manual — enter Retail Rate Per Canopy" onChange={(e)=>setDailyField(a.id,entry.date,"retailRatePerCanopy" as any,parseFloat(e.target.value)||0)}/>
+                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #fcd34d",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb",fontWeight:entry.retailMtdActivity>0?700:400,color:entry.retailMtdActivity>0?"#92400e":"inherit" }}
+                                                      value={entry.retailMtdActivity||""} placeholder="0" title="Manual — MTD Retail Activity"
+                                                      onChange={(e)=>setDailyField(a.id,entry.date,"retailMtdActivity",parseInt(e.target.value)||0)}/>
                                                   </td>
-                                                  {/* Activity Day — auto-locked sequential counter */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,color:"#64748b" }}>
-                                                    <span title="Auto-locked — sequential day count">{activityDay} 🔒</span>
-                                                  </td>
-                                                  {/* Closing Stock — manual */}
+
                                                   <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:50,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc" }} value={(entry as any).closingStock||""} placeholder="0" title="Manual — inventory closing stock" onChange={(e)=>setDailyField(a.id,entry.date,"closingStock" as any,parseInt(e.target.value)||0)}/>
+                                                    {ei===0 ? (
+                                                      <input type="number" min={0}
+                                                        style={{ width:50,textAlign:"center",border:"1px solid #f59e0b",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#fffbeb",fontWeight:700,color:"#92400e" }}
+                                                        value={entry.retailMtd||""} placeholder="0" title="Starting MTD Retail — this seeds the running total for all following days"
+                                                        onChange={(e)=>setDailyField(a.id,entry.date,"retailMtd",parseInt(e.target.value)||0)}/>
+                                                    ) : (
+                                                      <div title="Auto: previous day's MTD Retail + today's Retail"
+                                                        style={{ width:50,margin:"0 auto",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,
+                                                          background:(entry.retailMtd>0)?"#fffbeb":"#fff",
+                                                          fontWeight:(entry.retailMtd>0)?700:400,
+                                                          color:(entry.retailMtd>0)?"#92400e":"#9ca3af" }}>
+                                                        {entry.retailMtd ?? 0} 🔒
+                                                      </div>
+                                                    )}
                                                   </td>
-                                                  {/* LMS Leads — manual, per-day leads generated */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:lmsLeads>0?"#eef2ff":"#fff",fontWeight:lmsLeads>0?700:400,color:lmsLeads>0?"#3730a3":"inherit" }} value={lmsLeads||""} placeholder="0" title="Manual — leads generated this day" onChange={(e)=>setDailyField(a.id,entry.date,"lmsLeads" as any,parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                                    <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.leadsPunched>0?"#eef2ff":"#fff",fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#4338ca":"inherit" }} value={entry.leadsPunched||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"leadsPunched",parseInt(e.target.value)||0)}/>
-                                                  </td>
-                                                  {/* LMS Gap — computed = Leads − Punched */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,fontWeight:700,color:lmsGap>0?"#b91c1c":lmsGap<0?"#166534":"#64748b" }}>{lmsGap}</td>
-                                                  {/* Retail Conv% — computed = (MTD Retail (Activity) / LMS Leads) × 100 */}
-                                                  <td style={{ padding:"4px 5px",textAlign:"center",fontSize:11,fontWeight:700,color:retailConvPct>=10?"#166534":retailConvPct>0?"#854d0e":"#94a3b8",background:retailConvPct>=10?"#f0fdf4":retailConvPct>0?"#fefce8":"transparent" }}>{retailConvPct}%</td>
-                                                  {/* Media thumbnails for this date */}
+
                                                   <td style={{ padding:"4px 8px",textAlign:"center" }}>
                                                     <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
                                                       {photosOnDay.slice(0,2).map(m=>{
@@ -1896,9 +1889,7 @@ export default function ApproverDashboard() {
                                                       {photosOnDay.length>2&&<span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-2}</span>}
                                                       {invoicesOnDay.length>0&&<span style={{ fontSize:10,background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:3,padding:"1px 4px",color:"#374151",whiteSpace:"nowrap" }}>🧾{invoicesOnDay.length}</span>}
                                                       {photosOnDay.length===0&&invoicesOnDay.length===0&&<span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
-                                                      {/* Date-wise upload: upload photo/invoice for this specific date */}
-                                                      <label title={`Upload photo for ${entryDate}`}
-                                                        style={{ cursor:"pointer",fontSize:11,color:"#60a5fa",marginLeft:2 }}>
+                                                      <label title={`Upload photo for ${entryDate}`} style={{ cursor:"pointer",fontSize:11,color:"#60a5fa",marginLeft:2 }}>
                                                         📷
                                                         <input type="file" accept="image/*,video/*" multiple style={{ display:"none" }}
                                                           onChange={async(ev)=>{
@@ -1908,12 +1899,6 @@ export default function ApproverDashboard() {
                                                             for (const file of Array.from(files)) {
                                                               try {
                                                                 const data = await uploadActivityMedia(file, instance);
-                                                                // ── FIX: also persist to DB via addActivityMedia — the
-                                                                // previous version only uploaded the raw file and stored
-                                                                // it in local actualsData, never saving an association
-                                                                // in the DB. That meant it "disappeared" on modal reopen
-                                                                // because nothing in the DB actually linked it to this
-                                                                // activity yet. ──
                                                                 const capturedAtIso = `${entryDate}T12:00:00.000Z`;
                                                                 const saved = await addActivityMedia(selected!.id, a.id, {
                                                                   fileUrl: data.url, fileName: data.fileName || file.name,
@@ -1921,33 +1906,16 @@ export default function ApproverDashboard() {
                                                                   capturedAt: capturedAtIso,
                                                                   latitude: geo?.lat ?? null, longitude: geo?.lng ?? null,
                                                                 }, instance);
-                                                                const proof:ProofMedia={
-                                                                  id:saved.id,
-                                                                  fileUrl:saved.fileUrl,
-                                                                  fileName:saved.fileName,
-                                                                  fileType:saved.fileType,
-                                                                  capturedAt:saved.capturedAt ?? capturedAtIso,
-                                                                  latitude:saved.latitude ?? geo?.lat ?? null,
-                                                                  longitude:saved.longitude ?? geo?.lng ?? null,
-                                                                };
+                                                                const proof:ProofMedia={ id:saved.id, fileUrl:saved.fileUrl, fileName:saved.fileName, fileType:saved.fileType,
+                                                                  capturedAt:saved.capturedAt ?? capturedAtIso, latitude:saved.latitude ?? geo?.lat ?? null, longitude:saved.longitude ?? geo?.lng ?? null };
                                                                 setActualsData(prev=>({...prev,[a.id]:{...prev[a.id],proofMedia:[...prev[a.id].proofMedia,proof]}}));
-                                                                const mediaEntry: ActivityMediaResponse = {
-                                                                  id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
+                                                                const mediaEntry: ActivityMediaResponse = { id: saved.id, fileUrl: saved.fileUrl, fileName: saved.fileName,
                                                                   fileType: saved.fileType, capturedAt: saved.capturedAt ?? capturedAtIso,
-                                                                  latitude: saved.latitude ?? geo?.lat ?? null,
-                                                                  longitude: saved.longitude ?? geo?.lng ?? null,
-                                                                };
-                                                                const syncMedia = (act: ActivityResponse) =>
-                                                                  act.id === a.id
-                                                                    ? { ...act, mediaFiles: [...(act.mediaFiles ?? []), mediaEntry] }
-                                                                    : act;
-                                                                setProposals(prev => prev.map(pr =>
-                                                                  pr.id === selected!.id ? { ...pr, activities: pr.activities.map(syncMedia) } : pr));
-                                                                setSelected(prev => prev
-                                                                  ? { ...prev, activities: prev.activities.map(syncMedia) } : prev);
-                                                              } catch (err) {
-                                                                console.error("Date-wise photo upload failed:", err);
-                                                              }
+                                                                  latitude: saved.latitude ?? geo?.lat ?? null, longitude: saved.longitude ?? geo?.lng ?? null };
+                                                                const syncMedia = (act: ActivityResponse) => act.id === a.id ? { ...act, mediaFiles: [...(act.mediaFiles ?? []), mediaEntry] } : act;
+                                                                setProposals(prev => prev.map(pr => pr.id === selected!.id ? { ...pr, activities: pr.activities.map(syncMedia) } : pr));
+                                                                setSelected(prev => prev ? { ...prev, activities: prev.activities.map(syncMedia) } : prev);
+                                                              } catch (err) { console.error("Date-wise photo upload failed:", err); }
                                                             }
                                                           }}/>
                                                       </label>
@@ -1960,49 +1928,62 @@ export default function ApproverDashboard() {
                                           <tfoot>
                                             <tr style={{ background:"#0a2540",borderTop:"2px solid #1e3a5f" }}>
                                               <td style={{ padding:"7px 10px",fontWeight:800,color:"#fbbf24",fontSize:11 }}>TOTAL</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).setupCount||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#e2e8f0" }}>—</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+(e.setupCount||0),0)}</td>
                                               <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#93c5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryPlanned||0),0)}</td>
                                               <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#6ee7b7" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryActual||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:9,color:"#94a3b8" }}>avg</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fca5a5" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).enquiryHot||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c4b5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDrivePlanned||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fbbf24" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#7c3aed",fontWeight:700 }}>
-                                                {(()=>{ const totalSetup=d.dailyEntries.reduce((s,e)=>s+((e as any).setupCount||0),0); const totalTdAct=d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0); return totalSetup>0?Math.round(totalTdAct/totalSetup):"—"; })()}
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a7f3d0" }}>{d.dailyEntries.reduce((s,e)=>s+(e.walkIn||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a7f3d0" }}>{d.dailyEntries.reduce((s,e)=>s+(e.inLms||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fca5a5" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryGap||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fca5a5" }}>{d.dailyEntries.reduce((s,e)=>s+(e.enquiryHot||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fca5a5" }}>{d.dailyEntries.reduce((s,e)=>s+(e.revisedHot||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#93c5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDrivePlanned||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#6ee7b7" }}>{d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c4b5fd" }}>{d.dailyEntries.reduce((s,e)=>s+(e.bookingActual||0),0)}</td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c4b5fd" }}>
+                                                {d.dailyEntries.length ? (d.dailyEntries[d.dailyEntries.length-1].bookingInHand ?? 0) : 0}
                                               </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+(e.bookingActual||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).bookingInHand||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+(e.retailActual||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#fcd34d" }}>
-                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).retailMtdActivity||0)>0) as any; return last?.retailMtdActivity ?? 0; })()}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#fde68a" }}>
-                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).retailMtd||0)>0) as any; return last?.retailMtd ?? 0; })()}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#fdba74" }}>
-                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).retailRatePerCanopy||0)>0) as any; return last?.retailRatePerCanopy ?? "0.0"; })()}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#94a3b8" }}>{d.dailyEntries.length}d 🔒</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontSize:11,color:"#e2e8f0" }}>
-                                                {(()=>{ const last=[...d.dailyEntries].reverse().find(e=>((e as any).closingStock||0)>0) as any; return last?.closingStock ?? 0; })()}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#c7d2fe" }}>{d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0)}</td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fecaca" }}>
-                                                {d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0) - d.dailyEntries.reduce((s,e)=>s+(e.leadsPunched||0),0)}
-                                              </td>
-                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#67e8f9" }}>
-                                                {(()=>{
-                                                  const totalLeads=d.dailyEntries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
-                                                  const totalMtdAct=d.dailyEntries.reduce((s,e)=>s+((e as any).retailMtdActivity||0),0);
-                                                  return totalLeads>0?Math.round((totalMtdAct/totalLeads)*100):0;
-                                                })()}%
-                                              </td>
+                                              <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fbbf24" }}>{d.dailyEntries.reduce((s,e)=>s+(e.retailMtdActivity||0),0)}</td>
+                                              <td></td>
                                               <td style={{ padding:"7px 8px",textAlign:"center" }}>
                                                 <span style={{ fontSize:10,color:"#94a3b8" }}>
                                                   {d.proofMedia.length>0&&`📸${d.proofMedia.length} `}{d.invoiceMedia.length>0&&`🧾${d.invoiceMedia.length}`}
                                                 </span>
                                               </td>
+                                            </tr>
+
+                                            <tr style={{ background:"#fef9c3" }}>
+                                              <td style={{ padding:"6px 10px",fontWeight:700,color:"#92400e",fontSize:11 }}>Avg Per Canopy</td>
+                                              <td/><td/>
+                                              {(()=>{
+                                                const totalCanopy = d.dailyEntries.reduce((s,e)=>s+(e.setupCount||0),0);
+                                                const totalPlanned = d.dailyEntries.reduce((s,e)=>s+(e.enquiryPlanned||0),0);
+                                                const totalActual = d.dailyEntries.reduce((s,e)=>s+(e.enquiryActual||0),0);
+                                                const totalWalkIn = d.dailyEntries.reduce((s,e)=>s+(e.walkIn||0),0);
+                                                const totalHot = d.dailyEntries.reduce((s,e)=>s+(e.enquiryHot||0),0);
+                                                const totalRevisedHot = d.dailyEntries.reduce((s,e)=>s+(e.revisedHot||0),0);
+                                                const totalTdActual = d.dailyEntries.reduce((s,e)=>s+(e.testDriveActual||0),0);
+                                                const totalBookToday = d.dailyEntries.reduce((s,e)=>s+(e.bookingActual||0),0);
+                                                const totalRetail = d.dailyEntries.reduce((s,e)=>s+(e.retailMtdActivity||0),0);
+                                                const avg=(v:number)=> totalCanopy>0 ? (Math.round((v/totalCanopy)*10)/10) : 0;
+                                                const td=(v:number|string,c="#92400e")=>(<td style={{ padding:"6px",textAlign:"center",fontWeight:700,fontSize:11,color:c,background:"#fef9c3" }}>{v}</td>);
+                                                return (<>
+                                                  {td(avg(totalPlanned))}
+                                                  {td(avg(totalActual))}
+                                                  {td(avg(totalWalkIn))}
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  {td(avg(totalHot))}
+                                                  {td(avg(totalRevisedHot))}
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  {td(avg(totalTdActual))}
+                                                  {td(avg(totalBookToday))}
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  {td(avg(totalRetail))}
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                  <td style={{ background:"#fef9c3" }}/>
+                                                </>);
+                                              })()}
                                             </tr>
                                           </tfoot>
                                         </table>
@@ -2195,52 +2176,64 @@ export default function ApproverDashboard() {
                 </div>
               )}
 
-              {/* Notify Dealer */}
+              {/* Notify Dealer — ONE-TIME. After sending, only the status is shown. */}
               {isAdmin&&selected.status==="Approved"&&(
                 <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:10,padding:"20px",marginBottom:20 }}>
                   <p style={{ fontWeight:700,fontSize:14,color:"#0a2540",marginBottom:8 }}>Notify Dealer</p>
-                  {selected.dealerNotified&&<div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534",marginBottom:12 }}>✓ Dealer notified{selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}</div>}
-                  {!showNotifyDealer?(<button onClick={async()=>{
-                    setShowNotifyDealer(true);
-                    // Priority: previously used email → look up by DealerName from dealer logins
-                    if(selected.dealerEmail){
-                      setDealerEmailMode("dealer"); setDealerEmailInput(selected.dealerEmail);
-                    } else {
-                      setDealerEmailMode("custom"); setDealerEmailInput("");
-                      // Auto-fetch from dealer accounts by matching DealerName
-                      setDealerEmailFetching(true);
-                      try {
-                        const dealers = await fetchDealerUsers(instance);
-                        const match = dealers.find(d =>
-                          d.dealerName?.trim().toLowerCase() === selected.dealerName?.trim().toLowerCase()
-                          || d.dealerCode === (selected as any).dealerCode
-                        );
-                        if (match?.email) {
-                          setDealerEmailInput(match.email);
-                          setDealerEmailMode("dealer");
-                        }
-                      } catch {} finally { setDealerEmailFetching(false); }
-                    }
-                  }} style={{ background:selected.dealerNotified?"#6b7280":"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:selected.dealerNotified?"not-allowed":"pointer",opacity:selected.dealerNotified?0.6:1 }} disabled={selected.dealerNotified} title={selected.dealerNotified?"Dealer already notified — use table checkbox to resend":"Send activity details to dealer"}>{selected.dealerNotified?"✓ Notified":"📧 Notify Dealer"}</button>):(
+                  {selected.dealerNotified ? (
+                    <div style={{ background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:6,padding:"8px 14px",fontSize:13,color:"#166534" }}>
+                      ✓ Dealer notified{selected.dealerEmail&&<span style={{ color:"#6b7280" }}> ({selected.dealerEmail})</span>}
+                    </div>
+                  ) : !showNotifyDealer ? (
+                    <button onClick={async()=>{
+                      setShowNotifyDealer(true);
+                      if(selected.dealerEmail){
+                        setDealerEmailMode("dealer"); setDealerEmailInput(selected.dealerEmail);
+                      } else {
+                        setDealerEmailMode("custom"); setDealerEmailInput("");
+                        setDealerEmailFetching(true);
+                        try {
+                          const dealers = await fetchDealerUsers(instance);
+                          const match = dealers.find(d =>
+                            d.dealerName?.trim().toLowerCase() === selected.dealerName?.trim().toLowerCase()
+                            || d.dealerCode === (selected as any).dealerCode
+                          );
+                          if (match?.email) { setDealerEmailInput(match.email); setDealerEmailMode("dealer"); }
+                        } catch {} finally { setDealerEmailFetching(false); }
+                      }
+                    }} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:"pointer" }}
+                      title="Send activity details to dealer">📧 Notify Dealer</button>
+                  ) : (
                     <div style={{ background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:16 }}>
+                      {(() => {
+                        const team = getTeamEmailsFor(selected);
+                        const names = [
+                          team.rsmEmail && `RSM (${selected.rsmName})`,
+                          team.tsmEmail && `TSM (${(selected as any).tsmName})`,
+                          team.commandoEmail && `Commando (${selected.commandoName})`,
+                        ].filter(Boolean);
+                        return names.length > 0 ? (
+                          <div style={{ fontSize:11,color:"#6b7280",marginBottom:12,background:"#f5f3ff",border:"1px solid #ddd6fe",borderRadius:6,padding:"6px 10px" }}>
+                            Will also cc: {names.join(", ")}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize:11,color:"#92400e",marginBottom:12,background:"#fffbeb",border:"1px solid #fde68a",borderRadius:6,padding:"6px 10px" }}>
+                            No RSM/TSM/Commando email found in Dealer Mapping for this dealer — only the dealer will be notified.
+                          </div>
+                        );
+                      })()}
                       <div style={{ display:"flex",flexDirection:"column",gap:8,marginBottom:14 }}>
-                        {selected.dealerEmail&&(<label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="dealer"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="dealer"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="dealer" checked={dealerEmailMode==="dealer"} onChange={()=>{setDealerEmailMode("dealer");setDealerEmailInput(selected.dealerEmail??"");}}/><div><span style={{ fontWeight:600,color:"#0a2540" }}>Dealer (previously used)</span> <span style={{ color:"#6b7280",fontSize:12 }}>{selected.dealerEmail}</span></div></label>)}
+                        {selected.dealerEmail&&(<label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="dealer"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="dealer"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="dealer" checked={dealerEmailMode==="dealer"} onChange={()=>{setDealerEmailMode("dealer");setDealerEmailInput(selected.dealerEmail??"");}}/><div><span style={{ fontWeight:600,color:"#0a2540" }}>Dealer (on file)</span> <span style={{ color:"#6b7280",fontSize:12 }}>{selected.dealerEmail}</span></div></label>)}
                         <label style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:dealerEmailMode==="custom"?"#eff6ff":"#fff",border:`1px solid ${dealerEmailMode==="custom"?"#3b82f6":"#e2e8f0"}`,borderRadius:8,cursor:"pointer",fontSize:13 }}><input type="radio" name="emailMode" value="custom" checked={dealerEmailMode==="custom"} onChange={()=>{setDealerEmailMode("custom");setDealerEmailInput("");}}/><span style={{ fontWeight:600,color:"#0a2540" }}>Enter email manually</span></label>
                       </div>
-                      {dealerEmailFetching && (
-                        <div style={{ fontSize:12,color:"#2563eb",padding:"6px 0",marginBottom:6 }}>
-                          ⏳ Looking up dealer email…
-                        </div>
-                      )}
-                      <input type="email" value={dealerEmailInput} onChange={(e)=>setDealerEmailInput(e.target.value)} placeholder="recipient@example.com" style={{ width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${dealerEmailInput?"#16a34a":"#d1d5db"}`,fontSize:13,boxSizing:"border-box" as const,marginBottom:14 }}/>
-                      {dealerEmailInput && !dealerEmailFetching && (
-                        <div style={{ fontSize:11,color:"#16a34a",marginBottom:10,fontWeight:500 }}>
-                          ✓ Email auto-fetched from dealer account
-                        </div>
-                      )}
+                      {dealerEmailFetching&&<div style={{ fontSize:12,color:"#2563eb",padding:"6px 0",marginBottom:6 }}>⏳ Looking up dealer email…</div>}
+                      <input type="email" value={dealerEmailInput} onChange={(e)=>setDealerEmailInput(e.target.value)} placeholder="recipient@example.com"
+                        style={{ width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${dealerEmailInput?"#16a34a":"#d1d5db"}`,fontSize:13,boxSizing:"border-box" as const,marginBottom:14 }}/>
                       <div style={{ display:"flex",gap:10 }}>
-                        <button onClick={handleNotifyDealer} disabled={notifyLoading||!dealerEmailInput.trim()} style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:notifyLoading||!dealerEmailInput.trim()?"not-allowed":"pointer",opacity:notifyLoading||!dealerEmailInput.trim()?0.6:1 }}>{notifyLoading?"Sending…":"📧 Send to Dealer"}</button>
-                        <button onClick={()=>setShowNotifyDealer(false)} style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"10px 20px",borderRadius:8,fontWeight:500,fontSize:14,cursor:"pointer" }}>Cancel</button>
+                        <button onClick={handleNotifyDealer} disabled={notifyLoading||!dealerEmailInput.trim()}
+                          style={{ background:"#0a2540",color:"#fff",border:"none",padding:"10px 22px",borderRadius:8,fontWeight:600,fontSize:14,cursor:notifyLoading||!dealerEmailInput.trim()?"not-allowed":"pointer",opacity:notifyLoading||!dealerEmailInput.trim()?0.6:1 }}>
+                          {notifyLoading?"Sending…":"📧 Send to Dealer"}</button>
+                        <button onClick={()=>setShowNotifyDealer(false)} disabled={notifyLoading} style={{ background:"#f1f5f9",color:"#374151",border:"1px solid #e2e8f0",padding:"10px 20px",borderRadius:8,fontWeight:500,fontSize:14,cursor:"pointer" }}>Cancel</button>
                       </div>
                     </div>
                   )}

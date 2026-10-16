@@ -10,6 +10,20 @@ async function getAzureToken(instance: IPublicClientApplication): Promise<string
   return result.accessToken;
 }
 
+// ── Shared error parser — backend errors come back as JSON like
+// {"message":"Invalid email or password."}. Without this, the raw JSON
+// string was being shown to the user verbatim in the login form. ─────────────
+async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
+  const text = await res.text().catch(() => "");
+  if (!text) return fallback;
+  try {
+    const parsed = JSON.parse(text);
+    return (parsed && typeof parsed.message === "string" && parsed.message) || fallback;
+  } catch {
+    return text || fallback;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BULK IMPORT TYPES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,10 +91,28 @@ export async function dealerLogin(email: string, password: string): Promise<Deal
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ email, password }),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || "Login failed.");
-  }
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Login failed."));
+  const data: DealerLoginResponse = await res.json();
+  localStorage.setItem(DEALER_TOKEN_KEY, data.token);
+  localStorage.setItem(DEALER_USER_KEY, JSON.stringify(data));
+  return data;
+}
+
+/**
+ * Staff (RSM/TSM/ZSM/Commando) login — separate backend endpoint
+ * (/api/employee-auth/login) but shares the SAME local storage keys as
+ * dealerLogin so the rest of the app (getDealerToken/getDealerUser/
+ * dealerLogout, and any authenticated fetch calls that read
+ * DEALER_TOKEN_KEY) works identically regardless of which account type
+ * actually signed in.
+ */
+export async function staffLogin(email: string, password: string): Promise<DealerLoginResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/employee-auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Login failed."));
   const data: DealerLoginResponse = await res.json();
   localStorage.setItem(DEALER_TOKEN_KEY, data.token);
   localStorage.setItem(DEALER_USER_KEY, JSON.stringify(data));
@@ -96,7 +128,7 @@ export async function bulkPreviewDealers(
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
+  if (!res.ok) throw new Error(await extractErrorMessage(res, `Failed (${res.status})`));
   return res.json();
 }
 
@@ -109,7 +141,7 @@ export async function bulkImportDealers(
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
+  if (!res.ok) throw new Error(await extractErrorMessage(res, `Failed (${res.status})`));
   return res.json();
 }
 
@@ -121,7 +153,7 @@ export async function getBulkImportStatus(
   const res = await fetch(`${API_BASE_URL}/api/dealer-auth/bulk-status`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
+  if (!res.ok) throw new Error(await extractErrorMessage(res, `Failed (${res.status})`));
   return res.json();
 }
 
@@ -146,10 +178,7 @@ export async function forgotDealerPassword(email: string): Promise<{ message: st
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ email }),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || "Failed to send reset link.");
-  }
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to send reset link."));
   return res.json();
 }
 
@@ -161,10 +190,7 @@ export async function resetDealerPassword(
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ email, token, newPassword }),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || "Failed to reset password.");
-  }
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Failed to reset password."));
   return res.json();
 }
 
@@ -180,10 +206,7 @@ export async function adminResetDealerPassword(
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body:    JSON.stringify({ newPassword }),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Failed to reset password (${res.status})`);
-  }
+  if (!res.ok) throw new Error(await extractErrorMessage(res, `Failed to reset password (${res.status})`));
   return res.json();
 }
 
@@ -205,10 +228,7 @@ export async function createDealerUser(
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body:    JSON.stringify(payload),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Failed to create dealer user (${res.status})`);
-  }
+  if (!res.ok) throw new Error(await extractErrorMessage(res, `Failed to create dealer user (${res.status})`));
   return res.json();
 }
 
@@ -217,10 +237,7 @@ export async function fetchDealerUsers(instance: IPublicClientApplication): Prom
   const res = await fetch(`${API_BASE_URL}/api/dealer-auth/list`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Failed to load dealer users (${res.status})`);
-  }
+  if (!res.ok) throw new Error(await extractErrorMessage(res, `Failed to load dealer users (${res.status})`));
   return res.json();
 }
 
@@ -232,10 +249,7 @@ export async function toggleDealerActive(
     method:  "PATCH",
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Failed to toggle dealer status (${res.status})`);
-  }
+  if (!res.ok) throw new Error(await extractErrorMessage(res, `Failed to toggle dealer status (${res.status})`));
   return res.json();
 }
 
@@ -251,8 +265,5 @@ export async function changeMyPassword(
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ currentPassword, newPassword }),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Failed (${res.status})`);
-  }
+  if (!res.ok) throw new Error(await extractErrorMessage(res, `Failed (${res.status})`));
 }

@@ -8,6 +8,19 @@
 //   6. YEARS = current + next only (no previous year)
 //   7. monthOptions = no past months for current year
 //   8. activityDateRange = dates constrained to selected month+year
+//   9. FIX: date-to-string conversion now uses toLocalISODate() (local date parts)
+//      instead of .toISOString() (UTC) — fixes 31-day-month / leap-year Feb 29
+//      end dates silently showing as the 30th / 28th for users in IST (UTC+5:30)
+//  10. NEW: ProposalHeader carries dealerEmail/rsmEmail/commandoEmail, auto-filled
+//      from dealerTeamMap.ts on dealer select and sent in the submit payload, so
+//      the backend can send "activity sheet updated" notifications after submit
+//  11. TEMP (till Diwali): Eligibility criteria switched off via
+//      ELIGIBILITY_CHECK_ENABLED = false — the Eligibility field/badge is
+//      hidden, no longer required, and a "Not Eligible" dealer is no longer
+//      blocked from getting a proposal (both eligible and non-eligible
+//      dealers can be imported/submitted now). The CAC ₹/vehicle limit is a
+//      separate rule and is UNCHANGED — still fetched and still enforced.
+//      Flip ELIGIBILITY_CHECK_ENABLED back to true after Diwali to restore it.
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
@@ -24,7 +37,8 @@ import {
 import { fetchVendors, type VendorOption } from "../services/vendorService";
 import SearchableSelect from "../components/SearchableSelect";
 import type { StateOption, CityOption } from "../types/location";
-import { findDealerTeam, DEALER_TEAM_MAP } from "../data/dealerTeamMap";
+// import { findDealerTeam, DEALER_TEAM_MAP } from "../data/dealerTeamMap";
+import { useDealerTeamLookup } from "../hooks/useDealerTeamLookup";
 import * as XLSX from "xlsx";
 import "./RSMForm.css";
 import {
@@ -35,6 +49,25 @@ import {
 
 const DEALER_TYPES         = ["Old", "New"];
 const ELIGIBILITY_OPTIONS  = ["Eligible", "Not Eligible", "Pending Approval"];
+// ── TEMP: Eligibility criteria switched off till Diwali ─────────────────────
+// While this is false: the Eligibility field/badge is hidden from the form,
+// it's no longer required to continue, and a dealer marked "Not Eligible" in
+// ERP is NOT blocked from having a proposal created for them (both eligible
+// and non-eligible dealers can be imported/submitted). The CAC ₹/vehicle
+// budget-cap check is a SEPARATE rule and is untouched by this flag — it
+// still fetches eligibility.baseCacPerVehicle in the background and still
+// blocks over-limit CAC as before.
+// To restore eligibility gating after Diwali, just flip this back to true —
+// nothing else needs to change.
+const ELIGIBILITY_CHECK_ENABLED = false;
+// ── TEMP: CAC ₹/vehicle budget-cap check switched off till Diwali ──────────
+// While this is false: exceeding the allowed CAC no longer disables
+// Continue/Submit. The warning banner still shows (so the over-limit amount
+// stays visible to the RSM and to reviewers), it just no longer blocks —
+// wording changes to make clear it's informational, not a hard stop.
+// To restore CAC blocking after Diwali, just flip this back to true —
+// nothing else needs to change.
+const CAC_LIMIT_CHECK_ENABLED = false;
 const BGAUSS_SHARE_OPTIONS = ["100", "70", "50"];
 const MONTHS = [
   "January","February","March","April","May","June",
@@ -44,10 +77,23 @@ const CURRENT_MONTH = MONTHS[new Date().getMonth()];
 const CURRENT_YEAR  = new Date().getFullYear();
 // ── FIX: only current year + next year (no previous year) ────────────────────
 const YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1].map(String);
-const isoDate = (d: Date) => d.toISOString().split("T")[0];
+// ── toLocalISODate: format a Date as YYYY-MM-DD using LOCAL date parts ──────
+// Never use .toISOString() here: it converts to UTC first, and for any
+// timezone ahead of UTC (IST is UTC+5:30) local midnight rolls back to the
+// previous day once converted — so the last day of a 31-day month (or 29 Feb
+// in a leap year) was silently coming back as the 30th / 28th. Reading
+// getFullYear/getMonth/getDate keeps everything in the browser's own
+// calendar, so 31-day months, 30-day months, and leap years are all correct
+// automatically — Date's month-overflow arithmetic already handles them.
+function toLocalISODate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+const isoDate = toLocalISODate;
 const TODAY_ISO = isoDate(new Date());
 const DEFAULT_END_ISO = isoDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
-const MIN_ACTIVITY_DATE = TODAY_ISO;
 
 interface ActivityRow {
   id: string; activityType: string; category: string;
@@ -64,6 +110,8 @@ interface ProposalHeader {
   state: string; stateId: number | null; location: string; type: string;
   rsmName: string; tsmName: string; commandoName: string; month: string; year: string;
   eligibility: string; remarks: string;
+  // ── notification recipients, auto-filled from dealerTeamMap.ts on dealer select ──
+  dealerEmail: string; rsmEmail: string; commandoEmail: string;
 }
 interface FieldErrors {
   dealerName?: string; state?: string; location?: string; type?: string;
@@ -111,6 +159,7 @@ const emptyHeader = (): ProposalHeader => ({
   state: "", stateId: null, location: "", type: "",
   rsmName: "", tsmName: "", commandoName: "", month: CURRENT_MONTH, year: String(CURRENT_YEAR),
   eligibility: "", remarks: "",
+  dealerEmail: "", rsmEmail: "", commandoEmail: "",
 });
 
 function validateDetails(h: ProposalHeader): FieldErrors {
@@ -121,7 +170,8 @@ function validateDetails(h: ProposalHeader): FieldErrors {
   if (!h.type.trim())        e.type        = "Location type is required.";
   if (!h.month.trim())       e.month       = "Month is required.";
   if (!h.year.trim())        e.year        = "Year is required.";
-  if (!h.eligibility.trim()) e.eligibility = "Eligibility is required.";
+  // ── TEMP: eligibility no longer required while ELIGIBILITY_CHECK_ENABLED is false ──
+  if (ELIGIBILITY_CHECK_ENABLED && !h.eligibility.trim()) e.eligibility = "Eligibility is required.";
   return e;
 }
 function validateActivities(rows: ActivityRow[]): ActivityErrors {
@@ -134,8 +184,11 @@ function validateActivities(rows: ActivityRow[]): ActivityErrors {
     if (!a.startDate)                                   rowErr.startDate    = "Required";
     if (!a.endDate)                                     rowErr.endDate      = "Required";
     if (a.startDate && a.endDate && a.endDate < a.startDate) rowErr.endDate = "End must be after start";
-    if (!rowErr.startDate && a.startDate < MIN_ACTIVITY_DATE) rowErr.startDate = "Cannot select a date in the past.";
-    if (!rowErr.endDate   && a.endDate   < MIN_ACTIVITY_DATE) rowErr.endDate   = "Cannot select a date in the past.";
+    // ── FIX: no longer rejects dates before "today" — a whole-month activity
+    // plan (e.g. imported from Excel) can legitimately start earlier in the
+    // month than the day it's uploaded/reviewed. Dates are still constrained
+    // to the selected month/year (see goToSummary + activityDateRange), and
+    // the month picker itself already excludes past months.
     if (!a.budget || num(a.budget) <= 0)               rowErr.budget       = "Required";
     if (Object.keys(rowErr).length) e[a.id] = rowErr;
   });
@@ -150,6 +203,7 @@ export default function RSMProposalForm() {
   const navigate       = useNavigate();
   const [searchParams] = useSearchParams();
   const account        = accounts[0];
+  const { findDealerTeam, teamRows: dealerTeamRows } = useDealerTeamLookup(instance);
 
   const dealerUser = (() => {
     try {
@@ -158,6 +212,18 @@ export default function RSMProposalForm() {
     } catch { return null; }
   })();
   const isDealerUser = !!(dealerUser?.role === "Dealer");
+  // ── NEW: Staff (RSM/TSM/Commando) local-login scoping ──────────────────────
+  // When a TSM/RSM/Commando is signed in (not Dealer, not Azure staff), the
+  // dealer list should only show dealers assigned to THEM in the team map —
+  // otherwise every TSM sees every dealer in the country. dealerTeamMap.ts
+  // only supports dealer→team lookups today (findDealerTeam), so below we do
+  // the reverse: for every dealer, look up its team row, then keep only the
+  // ones whose rsm/tsm/commando field matches the signed-in staff member's
+  // display name.
+  const staffRole = dealerUser?.role as string | undefined;
+  const staffScopedRoles = new Set(["RSM", "TSM", "Commando"]);
+  const isStaffScopedUser = !!staffRole && staffScopedRoles.has(staffRole);
+  const staffNameLower = (dealerUser?.displayName as string | undefined)?.toLowerCase().trim() ?? "";
   const xlsxRef = useRef<HTMLInputElement>(null);
 
   const editId   = searchParams.get("edit");
@@ -174,7 +240,7 @@ export default function RSMProposalForm() {
   const [revisionNote,     setRevisionNote]     = useState<string | null>(null);
   const [loadingEdit,      setLoadingEdit]      = useState(false);
   const [dealerAutoFilled, setDealerAutoFilled] = useState(false);
-
+  const [dealerTypeOverridden, setDealerTypeOverridden] = useState(false);
   const [fieldErrors,    setFieldErrors]    = useState<FieldErrors>({});
   const [activityErrors, setActivityErrors] = useState<ActivityErrors>({});
   const [showDetailErr,  setShowDetailErr]  = useState(false);
@@ -258,6 +324,11 @@ export default function RSMProposalForm() {
           month: p.month,
           year: (p as any).year ? String((p as any).year) : String(CURRENT_YEAR),
           eligibility: p.eligibility, remarks: p.remarks ?? "",
+          // ── notification recipients — backend DTO may not carry these yet, so
+          // fall back to "" until ProposalResponseDto exposes them (see backend scaffold) ──
+          dealerEmail: (p as any).dealerEmail ?? "",
+          rsmEmail: (p as any).rsmEmail ?? "",
+          commandoEmail: (p as any).commandoEmail ?? "",
         });
         setActivities(p.activities.map((a) => ({
           id: crypto.randomUUID(), activityType: a.activityType, category: a.category ?? "",
@@ -304,6 +375,16 @@ export default function RSMProposalForm() {
           `Proposal will be submitted for deviation approval.`
         );
         setCacBlocking(false);
+      } else if (!CAC_LIMIT_CHECK_ENABLED) {
+        // ── TEMP: CAC cap no longer blocks till Diwali — see CAC_LIMIT_CHECK_ENABLED.
+        // Still shown as a warning so the over-limit amount stays visible, but
+        // Continue/Submit are not disabled and no Special Approval entry is required.
+        setCacWarning(
+          `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ` +
+          `₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle for ${eligibility.dealerType} dealer ` +
+          `(CAC limit temporarily not enforced — proceeding is allowed).`
+        );
+        setCacBlocking(false);
       } else {
         setCacWarning(
           `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ` +
@@ -348,11 +429,15 @@ export default function RSMProposalForm() {
     }
     const firstDay  = new Date(year, monthIdx, 1);
     const lastDay   = new Date(year, monthIdx + 1, 0);
-    const todayDate = new Date();
-    const minDate   = firstDay > todayDate ? firstDay : todayDate;
+    // ── FIX: bound only by the selected month, never by "today" ──────────────
+    // Previously min was max(firstDay, today), which blocked legitimate whole-
+    // month activity plans (e.g. imported from Excel) whose Start Date fell
+    // earlier in the month than the day the sheet happens to be uploaded on.
+    // Month selection already excludes past months (see YEARS/monthOptions),
+    // so within an allowed month any day of that month is a valid activity date.
     return {
-      min: minDate.toISOString().split("T")[0],
-      max: lastDay.toISOString().split("T")[0],
+      min: toLocalISODate(firstDay),
+      max: toLocalISODate(lastDay),
     };
   }, [header.month, header.year]);
 
@@ -364,6 +449,7 @@ export default function RSMProposalForm() {
     setHeader(emptyHeader());
     setCities([]);
     setDealerAutoFilled(false);
+    setDealerTypeOverridden(false);
 
     if (dealer) {
       setDealerAutoFilled(true);
@@ -377,7 +463,16 @@ export default function RSMProposalForm() {
         location:      titleCase(dealer.city ?? ""),
         rsmName:       titleCase(csvTeam?.rsm || dealer.rsmName || dealer.rsmCode || ""),
         tsmName:       titleCase(csvTeam?.tsm || dealer.tsmName || dealer.tsmCode || ""),
-        commandoName:  titleCase(csvTeam?.commando || dealer.commandoName || ""),
+        // ── FIX: Commando comes ONLY from the Excel team-map (dealerTeamMap.ts).
+        // Do NOT fall back to ERP's dealer.commandoName — most dealers have no
+        // Commando assigned yet in the Excel, and falling back to ERP was showing
+        // a Commando name (e.g. from a different/stale ERP field) for dealers that
+        // should show blank. If the Excel has nothing, this stays empty.
+        commandoName:  csvTeam?.commando ? titleCase(csvTeam.commando) : "",
+        // ── notification recipients — silent fields, no UI, used after submit ──
+        dealerEmail:   csvTeam?.dealerEmail ?? "",
+        rsmEmail:      csvTeam?.rsmEmail ?? "",
+        commandoEmail: csvTeam?.commandoEmail ?? "",
         month:         h.month || CURRENT_MONTH,
         year:          h.year || String(CURRENT_YEAR),
         vendorId:      h.vendorId,
@@ -401,7 +496,7 @@ export default function RSMProposalForm() {
         .then(setDealerHistory).catch(() => {}).finally(() => setLoadingDealerHistory(false));
     } else {
       setDealerAutoFilled(false);
-      setHeader((h) => ({ ...h, dealerId:"", dealerName:"", state:"", stateId:null, location:"", rsmName:"", tsmName:"", commandoName:"", type:"", eligibility:"" }));
+      setHeader((h) => ({ ...h, dealerId:"", dealerName:"", state:"", stateId:null, location:"", rsmName:"", tsmName:"", commandoName:"", type:"", eligibility:"", dealerEmail:"", rsmEmail:"", commandoEmail:"" }));
     }
   };
 
@@ -490,7 +585,10 @@ export default function RSMProposalForm() {
   }, []);
 
   const goToActivities = () => {
-    if (eligibility && !eligibility.isEligible) {
+    // ── TEMP: "Not Eligible" no longer blocks proceeding while
+    // ELIGIBILITY_CHECK_ENABLED is false — both eligible and non-eligible
+    // dealers can have a proposal created for them till Diwali.
+    if (ELIGIBILITY_CHECK_ENABLED && eligibility && !eligibility.isEligible) {
       setFieldErrors({ dealerName: "This dealer is not eligible for BTL this month." });
       setShowDetailErr(true); window.scrollTo({ top: 0, behavior: "smooth" }); return;
     }
@@ -509,7 +607,8 @@ export default function RSMProposalForm() {
       const dateErrors: ActivityErrors = {};
       activities.forEach((a) => {
         const rowErr: ActivityErrors[string] = {};
-        if (a.startDate && a.startDate < min) rowErr.startDate = "Start date cannot be before today.";
+        // min is now the 1st of the selected month (not "today") — see activityDateRange fix
+        if (a.startDate && a.startDate < min) rowErr.startDate = `Must be within ${header.month} ${header.year}.`;
         if (max && a.startDate && a.startDate > max) rowErr.startDate = `Must be within ${header.month} ${header.year}.`;
         if (max && a.endDate && a.endDate > max) rowErr.endDate = `Must be within ${header.month} ${header.year}.`;
         if (Object.keys(rowErr).length) { dateErrors[a.id] = { ...(errs[a.id] ?? {}), ...rowErr }; hasDateError = true; }
@@ -523,7 +622,8 @@ export default function RSMProposalForm() {
     }
     if (Object.keys(errs).length) { setActivityErrors(errs); setShowActErr(true); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
     setActivityErrors({}); setShowActErr(false);
-    if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
+    // ── TEMP: CAC cap no longer blocks proceeding to Summary till Diwali — see CAC_LIMIT_CHECK_ENABLED ──
+    if (CAC_LIMIT_CHECK_ENABLED && eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
       setCacWarning(
         `CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ` +
         `₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle for ${eligibility.dealerType} dealer. ` +
@@ -549,7 +649,7 @@ export default function RSMProposalForm() {
     if (dmyMatch) { const [,d,m,y] = dmyMatch; return `${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`; }
     const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (isoMatch) return str.substring(0, 10);
-    const native = new Date(str); if (!isNaN(native.getTime())) return native.toISOString().split("T")[0];
+    const native = new Date(str); if (!isNaN(native.getTime())) return toLocalISODate(native);
     return "";
   };
   const isSkippableRow = (rawType: string) => {
@@ -841,7 +941,8 @@ export default function RSMProposalForm() {
   };
 
   const handleSubmit = async () => {
-    if (eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
+    // ── TEMP: CAC cap no longer blocks Submit till Diwali — see CAC_LIMIT_CHECK_ENABLED ──
+    if (CAC_LIMIT_CHECK_ENABLED && eligibility && cac > eligibility.baseCacPerVehicle && totals.totalRetailTarget > 0 && !hasSpecialApproval) {
       setCacBlocking(true);
       setCacWarning(`CAC ₹${Math.round(cac).toLocaleString("en-IN")} exceeds allowed ₹${eligibility.baseCacPerVehicle.toLocaleString("en-IN")}/vehicle. Cannot submit.`);
       return;
@@ -866,7 +967,12 @@ export default function RSMProposalForm() {
         dealerName: header.dealerName, dealerCode: header.dealerId || null,
         vendorId: header.vendorId ? Number(header.vendorId) : null, vendorName: header.vendorName || null,
         rsmName: header.rsmName, tsmName: header.tsmName, commandoName: header.commandoName || null,
-        month: header.month, year: header.year, eligibility: header.eligibility, remarks: header.remarks,
+        month: header.month, year: header.year, eligibility: header.eligibility,
+        remarks: header.remarks + (dealerTypeOverridden
+          ? `\n[Dealer type manually overridden to "${header.type}" — ERP shows a different classification. Verify onboarding date.]`
+          : ""),
+        // ── notification recipients — sent so the backend can email "activity sheet updated" ──
+        dealerEmail: header.dealerEmail || null, rsmEmail: header.rsmEmail || null, commandoEmail: header.commandoEmail || null,
         submittedBy: account?.username ?? null, docNumber: generateDocNumber(),
         activities: activityPayload,
         totalBudget, totalLeadTarget: Math.round(totalLeadTarget),
@@ -883,9 +989,9 @@ export default function RSMProposalForm() {
   // Dealers not in the sheet have no RSM/TSM assigned and should not appear in the form.
   const dealerOptions = dealers
     .filter((d) => {
-      // Check if this dealer exists in the Excel mapping (by name fuzzy match)
+      // Check if this dealer exists in the DB-backed mapping (by name fuzzy match)
       const nameNorm = d.customerName.toLowerCase().trim().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ");
-      return DEALER_TEAM_MAP.some((m) => {
+      return dealerTeamRows.some((m) => {
         const mapNorm = m.dealerName.toLowerCase().trim().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ");
         return mapNorm === nameNorm || mapNorm.includes(nameNorm) || nameNorm.includes(mapNorm);
       });
@@ -1068,8 +1174,8 @@ export default function RSMProposalForm() {
               </div>
             </div>
 
-            {/* Row 2 — State, City, Dealer Type, Eligibility */}
-            <div className="rsm-form-row1" style={{ gridTemplateColumns:"repeat(4,1fr)", marginTop:0 }}>
+            {/* Row 2 — State, City, Dealer Type[, Eligibility while ELIGIBILITY_CHECK_ENABLED] */}
+            <div className="rsm-form-row1" style={{ gridTemplateColumns:`repeat(${ELIGIBILITY_CHECK_ENABLED?4:3},1fr)`, marginTop:0 }}>
               <div className="rsm-field">
                 <Label text="State" required/>
                 {dealerAutoFilled && !editMode ? <LockedField value={header.state}/> :
@@ -1109,27 +1215,51 @@ export default function RSMProposalForm() {
 
               <div className="rsm-field">
                 <Label text="Dealer Type" required/>
-                {dealerAutoFilled && !editMode ? <LockedField value={header.type}/> : (
-                  <select className={`rsm-select${fieldErrors.type?" rsm-input--error":""}`}
-                    value={header.type} onChange={(e) => setField("type", e.target.value)}>
-                    <option value="">{eligibilityLoading?"Loading…":"Select type"}</option>
-                    {DEALER_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
+                {dealerAutoFilled && !editMode && !dealerTypeOverridden ? (
+                  <>
+                    <LockedField value={header.type}/>
+                    {eligibility && (
+                      <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>
+                        From ERP onboarding date · <button type="button"
+                          style={{ fontSize:10,color:"#2563eb",background:"none",border:"none",cursor:"pointer",padding:0 }}
+                          onClick={() => setDealerTypeOverridden(true)}>
+                          Wrong? Override manually
+                        </button>
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <select className={`rsm-select${fieldErrors.type?" rsm-input--error":""}`}
+                      value={header.type} onChange={(e) => setField("type", e.target.value)}>
+                      <option value="">{eligibilityLoading?"Loading…":"Select type"}</option>
+                      {DEALER_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                    {dealerTypeOverridden && (
+                      <span style={{ fontSize:10,color:"#f59e0b",marginTop:2,display:"block" }}>
+                        ⚠ Overriding ERP's classification — this will be flagged in the proposal
+                        remarks for the checker to verify against ERP onboarding records.
+                      </span>
+                    )}
+                  </>
                 )}
                 {fieldErrors.type && <span className="rsm-field-error">{fieldErrors.type}</span>}
               </div>
 
-              <div className="rsm-field">
-                <Label text="Eligibility" required/>
-                {dealerAutoFilled && !editMode ? <LockedField value={header.eligibility}/> : (
-                  <select className={`rsm-select${fieldErrors.eligibility?" rsm-input--error":""}`}
-                    value={header.eligibility} onChange={(e) => setField("eligibility", e.target.value)}>
-                    <option value="">{eligibilityLoading?"Checking…":"Select eligibility"}</option>
-                    {ELIGIBILITY_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-                  </select>
-                )}
-                {fieldErrors.eligibility && <span className="rsm-field-error">{fieldErrors.eligibility}</span>}
-              </div>
+              {/* ── TEMP: Eligibility field hidden till Diwali — see ELIGIBILITY_CHECK_ENABLED ── */}
+              {ELIGIBILITY_CHECK_ENABLED && (
+                <div className="rsm-field">
+                  <Label text="Eligibility" required/>
+                  {dealerAutoFilled && !editMode ? <LockedField value={header.eligibility}/> : (
+                    <select className={`rsm-select${fieldErrors.eligibility?" rsm-input--error":""}`}
+                      value={header.eligibility} onChange={(e) => setField("eligibility", e.target.value)}>
+                      <option value="">{eligibilityLoading?"Checking…":"Select eligibility"}</option>
+                      {ELIGIBILITY_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  )}
+                  {fieldErrors.eligibility && <span className="rsm-field-error">{fieldErrors.eligibility}</span>}
+                </div>
+              )}
             </div>
 
             {!editMode && showDealerPanel && selectedDealer && (
@@ -1189,8 +1319,11 @@ export default function RSMProposalForm() {
               </div>
             )}
 
-            {eligibilityLoading && <div className="rsm-elig-loading"><div className="rsm-spinner-sm"/><span>Checking eligibility…</span></div>}
-            {!eligibilityLoading && eligibility && (
+            {/* ── TEMP: Eligible/Not-Eligible banner hidden till Diwali — see ELIGIBILITY_CHECK_ENABLED.
+                The CAC ₹/vehicle limit itself is a separate rule and still shows later
+                (in the CAC warning banner on Activities/Summary) when it's actually relevant. ── */}
+            {ELIGIBILITY_CHECK_ENABLED && eligibilityLoading && <div className="rsm-elig-loading"><div className="rsm-spinner-sm"/><span>Checking eligibility…</span></div>}
+            {ELIGIBILITY_CHECK_ENABLED && !eligibilityLoading && eligibility && (
               <div className={`rsm-elig-banner ${eligibility.isEligible?"rsm-elig-banner--ok":"rsm-elig-banner--no"}`}>
                 <span className="rsm-elig-icon">{eligibility.isEligible?"✓":"✕"}</span>
                 <div style={{ flex:1 }}>
@@ -1539,7 +1672,8 @@ export default function RSMProposalForm() {
                 <ReviewRow label="Type"         value={header.type||"—"}/>
                 <ReviewRow label="Year"         value={header.year||"—"}/>
                 <ReviewRow label="Month"        value={header.month||"—"}/>
-                <ReviewRow label="Eligibility"  value={header.eligibility||"—"}/>
+                {/* ── TEMP: Eligibility hidden till Diwali — see ELIGIBILITY_CHECK_ENABLED ── */}
+                {ELIGIBILITY_CHECK_ENABLED && <ReviewRow label="Eligibility"  value={header.eligibility||"—"}/>}
                 <ReviewRow label="RSM Name"     value={header.rsmName||"—"}/>
                 <ReviewRow label="TSM Name"     value={header.tsmName||"—"}/>
                 <ReviewRow label="Commando"     value={header.commandoName||"—"}/>

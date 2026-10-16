@@ -18,7 +18,7 @@ public class SmtpSettings
     public string ApproverEmail           { get; set; } = string.Empty;
     public string ApproverEmail2          { get; set; } = string.Empty;
     public string FinalApproverEmail      { get; set; } = string.Empty;
-    public string PortalBaseUrl           { get; set; } = "https://44.210.115.237";
+    public string PortalBaseUrl           { get; set; } = "https://btl.bgauss.com";
 
     public string ApproverFirstName =>
         FirstName(ApproverEmail);
@@ -41,17 +41,20 @@ public class GraphEmailService : IEmailService
     private readonly SmtpSettings              _settings;
     private readonly ILogger<GraphEmailService> _logger;
     private readonly IConfiguration            _config;
+    private readonly GraphAppTokenService _appToken;
 
     public GraphEmailService(
         HttpClient http,
         IOptions<SmtpSettings> settings,
         ILogger<GraphEmailService> logger,
-        IConfiguration config)
+        IConfiguration config,
+        GraphAppTokenService appToken)
     {
         _http     = http;
         _settings = settings.Value;
         _logger   = logger;
         _config   = config;
+        _appToken = appToken;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -68,11 +71,22 @@ public class GraphEmailService : IEmailService
         SendAsync(graphToken, _settings.FinalApproverEmail, _settings.ApproverEmail,
             BuildSubject("Forwarded for Approval", p), BuildCheckerForwardBody(p));
 
-    // Step 3a: Final Approver decides → Checker + CC RSM
+    // Step 3a: Final Approver decides → To: Checker, Cc: RSM (submitter) + RSM/TSM/Commando (Dealer Mapping, on Approved)
     public Task<(bool Sent, string? Error)> SendDecisionMailAsync(
-        Proposal p, ApprovalDecision decision, string graphToken) =>
-        SendAsync(graphToken, _settings.ApproverEmail, p.SubmittedBy,
+        Proposal p, ApprovalDecision decision, string graphToken, IEnumerable<string>? teamCc = null)
+    {
+        var to = _settings.ApproverEmail;
+        var cc = new[] { p.SubmittedBy }
+            .Concat(teamCc ?? Enumerable.Empty<string>())
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .Where(e => !string.Equals(e, to, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return SendAsync(graphToken, to, cc.Length > 0 ? string.Join(",", cc) : null,
             BuildSubject($"Re: Proposal {decision.Status}", p), BuildDecisionBody(p, decision));
+    }
 
     // Step 3b: Send back for revision → Checker + CC RSM
     public Task<(bool Sent, string? Error)> SendRevisionRequestMailAsync(
@@ -85,16 +99,31 @@ public class GraphEmailService : IEmailService
         SendAsync(graphToken, _settings.ApproverEmail, null,
             BuildSubject("Resubmitted for Review", p), BuildResubmissionBody(p));
 
-    // Step 4: Notify Dealer (after approval) → Dealer + CC Seema + RSM
+    // Step 4: Notify Dealer (after approval) → To: Dealer, Cc: RSM + TSM + Commando (from Dealer Mapping)
+    // NOT cc'd: Checker (ApproverEmail — she is the sender, copy is in her Sent Items)
+    //           Submitter (p.SubmittedBy — already received Submission + Decision mails)
     public Task<(bool Sent, string? Error)> SendDealerNotificationMailAsync(
-        Proposal p, string dealerEmail, string graphToken)
+        Proposal p, string dealerEmail, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken)
     {
         if (string.IsNullOrWhiteSpace(dealerEmail))
             return Task.FromResult<(bool, string?)>((false, "No dealer email provided."));
-        return SendAsync(graphToken, dealerEmail,
-            $"{_settings.ApproverEmail},{p.SubmittedBy}",
+
+        var to = dealerEmail.Trim();
+        var excluded = new[] { to, _settings.ApproverEmail, p.SubmittedBy }
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var cc = new[] { rsmEmail, tsmEmail, commandoEmail }
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .Where(e => !excluded.Contains(e))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return SendAsync(graphToken, to, cc.Length > 0 ? string.Join(",", cc) : null,
             BuildSubject("Activity Proposal Approved — Your Action Required", p),
-            BuildDealerNotificationBody(p));
+            BuildDealerNotificationBody(p, rsmEmail, tsmEmail, commandoEmail));
     }
 
     // Step 5: Dealer requests budget addition → Checker (Seema) + CC RSM
@@ -105,6 +134,54 @@ public class GraphEmailService : IEmailService
             cc:      p.SubmittedBy,
             subject: BuildSubject("Budget Add-On Request from Dealer", p),
             body:    BuildDealerSendBackBody(p, dealerEmail, requestNote));
+
+    // Step 1b: RSM submits → Dealer + RSM + Commando (CC Seema), separate from the Checker mail above
+    public Task<(bool Sent, string? Error)> SendActivitySheetSubmittedMailAsync(
+        Proposal p, string? dealerEmail, string? rsmEmail, string? commandoEmail, string graphToken)
+    {
+        var to = new[] { dealerEmail, rsmEmail, commandoEmail }
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var toJoined = string.Join(",", to);
+        if (string.IsNullOrWhiteSpace(toJoined))
+            return Task.FromResult<(bool, string?)>((false, "No dealer/RSM/commando email on file."));
+
+        return SendAsync(graphToken, toJoined, _settings.ApproverEmail,
+            BuildSubject("Activity Sheet Submitted", p), BuildActivitySheetSubmittedBody(p));
+    }
+
+    // Step 4b: Notify RSM/TSM/Commando (after approval) — sends dealer portal login
+    public Task<(bool Sent, string? Error)> SendTeamNotificationMailAsync(
+        Proposal p, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken)
+    {
+        var to = new[] { rsmEmail, tsmEmail, commandoEmail }
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var toJoined = string.Join(",", to);
+        if (string.IsNullOrWhiteSpace(toJoined))
+            return Task.FromResult<(bool, string?)>((false, "No RSM/TSM/Commando email provided."));
+
+        return SendAsync(graphToken, toJoined, _settings.ApproverEmail,
+            BuildSubject("Dealer Portal Access — Team Notification", p),
+            BuildTeamNotificationBody(p));
+    }
+
+    private string BuildActivitySheetSubmittedBody(Proposal p)
+    {
+        var sender = p.SubmittedByDisplayName ?? p.RsmName ?? p.SubmittedBy;
+        return Shell("#0a2540", "Your Activity Sheet Was Submitted", p.TokenNumber ?? "",
+            $"""
+            <p style="margin:0 0 12px;font-size:13px;">Hi,<br/>
+              The BTL activity sheet for <strong>{p.DealerName}</strong> ({p.Month} {p.Year})
+              has been submitted by {sender} and is now awaiting Checker review.</p>
+            {BuildProposalInfoTable(p)}
+            {BuildActivityTable(p)}
+            <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">— BGauss BTL · BGauss Auto Pvt. Ltd.</p>
+            """);
+    }
 
     // Step 6: Checker forwards → Final Approver
     // When Email:SuppressIndividualForwardMails = "true", this method is a NO-OP.
@@ -196,6 +273,89 @@ public class GraphEmailService : IEmailService
         await SendEmailAsync(to: makerEmail, subject: subject, body: body);
     }
 
+    // Sends via an APP-ONLY Graph token (client credentials), not the
+    // delegated/interactive token the rest of this class uses. This is what
+    // makes it work from a public, unauthenticated endpoint like forgot-password
+    // — there's no signed-in user to borrow a token from, so this mints its own.
+    //
+    // Uses /users/{mailbox}/sendMail (application-permission endpoint), NOT
+    // /me/sendMail (which only exists for delegated/interactive tokens).
+    public async Task<(bool Sent, string? Error)> SendPasswordResetEmailAsync(
+        string toEmail, string displayName, string resetLink)
+    {
+        if (string.IsNullOrWhiteSpace(toEmail))
+            return (false, "No recipient.");
+
+        try
+        {
+            var appToken = await _appToken.GetAppOnlyTokenAsync();
+
+            // The mailbox that will appear as the sender — must be a real mailbox
+            // in your tenant, and the app registration must have Mail.Send
+            // (Application) permission with admin consent to send as it.
+            var senderMailbox = _settings.ApproverEmail;
+
+            var body = $"""
+                <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:520px;margin:0 auto;
+                            border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+                  <div style="background:#0a2540;padding:18px 24px">
+                    <div style="color:#fff;font-size:16px;font-weight:700">BGauss BTL Portal</div>
+                    <div style="color:rgba(255,255,255,0.6);font-size:12px;margin-top:2px">Password Reset Request</div>
+                  </div>
+                  <div style="padding:22px 24px">
+                    <p style="margin:0 0 14px;font-size:14px;color:#374151">Hi {displayName},</p>
+                    <p style="margin:0 0 18px;font-size:13px;color:#374151">
+                      Click the button below to reset your BGauss BTL portal password.
+                      This link is valid for <strong>1 hour</strong>.</p>
+                    <div style="text-align:center;margin-bottom:18px">
+                      <a href="{resetLink}" style="background:#1e3a5f;color:#fff;text-decoration:none;
+                        padding:11px 28px;border-radius:7px;font-weight:600;font-size:13px;display:inline-block">
+                        Reset Password
+                      </a>
+                    </div>
+                    <p style="margin:0;font-size:11px;color:#9ca3af;word-break:break-all">
+                      Or copy this link: <a href="{resetLink}" style="color:#64748b">{resetLink}</a></p>
+                    <p style="margin:16px 0 0;font-size:12px;color:#9ca3af">
+                      If you didn't request this, you can safely ignore this email.</p>
+                  </div>
+                </div>
+                """;
+
+            var payload = new
+            {
+                message = new
+                {
+                    subject      = "Reset your BGauss BTL portal password",
+                    body         = new { contentType = "HTML", content = body },
+                    toRecipients = new[] { new { emailAddress = new { address = toEmail } } },
+                },
+                saveToSentItems = true,
+            };
+
+            using var req = new HttpRequestMessage(
+                HttpMethod.Post, $"https://graph.microsoft.com/v1.0/users/{senderMailbox}/sendMail")
+            { Content = JsonContent.Create(payload) };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", appToken);
+
+            var resp = await _http.SendAsync(req);
+            if (resp.IsSuccessStatusCode)
+            {
+                _logger.LogInformation("Password reset email sent to {To}", toEmail);
+                return (true, null);
+            }
+
+            var err = await resp.Content.ReadAsStringAsync();
+            _logger.LogError("App-only Graph sendMail failed for {To}: {Status} {Err}", toEmail, resp.StatusCode, err);
+            return (false, $"Graph {resp.StatusCode}: {err}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Password reset email failed for {To}", toEmail);
+            return (false, ex.Message);
+        }
+    }
+
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CORE SEND
     // ═══════════════════════════════════════════════════════════════════════════
@@ -210,12 +370,26 @@ public class GraphEmailService : IEmailService
             return (false, "No Graph token.");
         }
 
-        var toList = to.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                       .Select(a => new { emailAddress = new { address = a } }).ToArray();
-        var ccList = string.IsNullOrWhiteSpace(cc)
-            ? Array.Empty<object>()
-            : cc.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(a => (object)new { emailAddress = new { address = a } }).ToArray();
+        static bool IsEmail(string a) =>
+            System.Text.RegularExpressions.Regex.IsMatch(a, @"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$");
+
+        var toAddrs = to.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var ccAddrs = string.IsNullOrWhiteSpace(cc)
+            ? Array.Empty<string>()
+            : cc.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var skipped = toAddrs.Concat(ccAddrs).Where(a => !IsEmail(a)).ToArray();
+        if (skipped.Length > 0)
+            _logger.LogWarning("Skipped invalid recipient(s) for '{Subject}': {Bad}", subject, string.Join(", ", skipped));
+
+        var toList = toAddrs.Where(IsEmail).Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Select(a => new { emailAddress = new { address = a } }).ToArray();
+        if (toList.Length == 0) return (false, $"No valid recipient in '{to}'.");
+
+        var ccList = ccAddrs.Where(IsEmail)
+                            .Where(a => !toAddrs.Contains(a, StringComparer.OrdinalIgnoreCase))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Select(a => (object)new { emailAddress = new { address = a } }).ToArray();
 
         var payload = new
         {
@@ -612,10 +786,21 @@ public class GraphEmailService : IEmailService
             """);
     }
 
-    // 4. Dealer notification (cross-tab) → Dealer + CC Seema + RSM
-    private string BuildDealerNotificationBody(Proposal p)
+        // 4. Dealer notification (cross-tab) → To: Dealer, Cc: Approver + RSM + TSM + Commando
+    private string BuildDealerNotificationBody(Proposal p, string? rsmEmail, string? tsmEmail, string? commandoEmail)
     {
         var approver = _settings.ApproverFirstName;
+
+        var ccNames = new[]
+        {
+            !string.IsNullOrWhiteSpace(rsmEmail)       ? $"RSM ({p.RsmName})"       : null,
+            !string.IsNullOrWhiteSpace(tsmEmail)       ? $"TSM ({p.TsmName})"       : null,
+            !string.IsNullOrWhiteSpace(commandoEmail)  ? $"Commando ({p.CommandoName})" : null,
+        }.Where(n => n != null);
+        var ccLine = string.Join(", ", ccNames);
+        var ccNote = string.IsNullOrWhiteSpace(ccLine) ? "" :
+            $"<p style=\"margin:0 0 10px;font-size:11px;color:#6b7280;\">Also cc'd: {ccLine}</p>";
+
         return Shell("#0a2540", "Approved BTL Activity Plan — Action Required", p.TokenNumber ?? "",
             $"""
             <p style="margin:0 0 10px;font-size:13px;">Dear <strong>{p.DealerName}</strong> Team,<br/>
@@ -624,6 +809,7 @@ public class GraphEmailService : IEmailService
               <li style="margin-bottom:4px;"><strong>Approve</strong> — reply "Approved" to confirm alignment.</li>
               <li><strong>Request budget addition</strong> — reply with your request &amp; justification.</li>
             </ul>
+            {ccNote}
             {BuildProposalInfoTable(p)}
             {BuildCrossTabActivityTable(p)}
             <div style="background:#eff6ff;border-left:3px solid #3b82f6;border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:12px;color:#1e40af;">
@@ -632,6 +818,43 @@ public class GraphEmailService : IEmailService
             <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">
               Thanks &amp; Regards · <strong>{approver}</strong> · BGauss Auto Pvt. Ltd.<br/>
               <span style="color:#9ca3af;">RSM contact: {p.RsmName} ({p.SubmittedBy})</span></p>
+            """);
+    }
+
+    // 4b. RSM/TSM/Commando notification → dealer portal login details
+    private string BuildTeamNotificationBody(Proposal p)
+    {
+        var approver     = _settings.ApproverFirstName;
+        var portalUrl    = _settings.PortalBaseUrl;
+        var dealerEmail  = string.IsNullOrWhiteSpace(p.DealerEmail)
+            ? "(dealer email not on file — contact admin)"
+            : p.DealerEmail;
+        const string dealerPassword = "Dealer@123";
+
+        return Shell("#7c3aed", "Dealer Portal Access — Team Notification", p.TokenNumber ?? "",
+            $"""
+            <p style="margin:0 0 12px;font-size:13px;">Hi Team,<br/>
+              The BTL activity proposal for <strong>{p.DealerName}</strong> ({p.Location}, {p.State})
+              has been <strong>Approved</strong>. The dealer has portal access to view activity details
+              and submit post-activity updates.</p>
+            {BuildProposalInfoTable(p)}
+            <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-left:3px solid #7c3aed;
+                        border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:13px;">
+              <strong style="color:#5b21b6;">Dealer Portal Login</strong>
+              <table cellpadding="0" cellspacing="0" style="margin-top:6px;font-size:12px;">
+                <tr><td style="padding:2px 10px 2px 0;color:#6b7280;">Portal</td>
+                    <td style="font-weight:600;"><a href="{portalUrl}" style="color:#5b21b6;">{portalUrl}</a></td></tr>
+                <tr><td style="padding:2px 10px 2px 0;color:#6b7280;">Login Email</td>
+                    <td style="font-weight:600;color:#0a2540;">{dealerEmail}</td></tr>
+                <tr><td style="padding:2px 10px 2px 0;color:#6b7280;">Password</td>
+                    <td style="font-weight:600;color:#0a2540;font-family:monospace;">{dealerPassword}</td></tr>
+              </table>
+            </div>
+            <p style="margin:0 0 10px;font-size:12px;color:#374151;">
+              Please coordinate with the dealer for activity execution and make sure post-activity
+              data (photos, daily entries) is kept updated in the portal.</p>
+            {LinkBtn(portalUrl, "🔗 Open Portal", "#7c3aed")}
+            <p style="margin:8px 0 0;font-size:12px;color:#6b7280;">Regards · <strong>{approver}</strong> · BGauss Auto Pvt. Ltd.</p>
             """);
     }
 

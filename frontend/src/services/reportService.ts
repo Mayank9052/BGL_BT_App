@@ -21,7 +21,13 @@ async function getToken(instance: IPublicClientApplication): Promise<string> {
 }
 
 export interface ReportFilters {
-  period?: "daily" | "weekly" | "monthly";
+  // FIX: "custom" added — previously this type only allowed daily/weekly/monthly,
+  // so ReportsPage.tsx had no valid value to send when the user picked a custom
+  // date range and was sending `period: undefined` instead. With no `period` at
+  // all, the backend had nothing to branch on and fell back to its default
+  // period, silently ignoring `from`/`to` — exactly why a custom range (e.g.
+  // "yesterday") never returned the expected proposals.
+  period?: "daily" | "weekly" | "monthly" | "custom";
   from?:   string;
   to?:     string;
   state?:  string;

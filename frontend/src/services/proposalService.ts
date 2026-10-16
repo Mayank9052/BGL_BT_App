@@ -20,7 +20,7 @@ export interface ActivityResponse {
   category:         string | null;
   subcategory:      string | null;
   qty:              number;
-  salesPercent:     number | null;    // ← NEW
+  salesPercent:     number | null;
   leadTarget:       number;
   retailTarget:     number;
   startDate:        string | null;
@@ -47,10 +47,10 @@ export interface ProposalResponse {
   vendorId:               number | null;
   vendorName:             string | null;
   rsmName:                string;
-  tsmName:                string;   // TSM (Territory Sales Manager)
-  commandoName:           string | null; // Sales Commando (DesignationId=26)
+  tsmName:                string;
+  commandoName:           string | null;
   month:                  string;
-  year:                   string;   // ← NEW
+  year:                   string;
   eligibility:            string;
   remarks:                string | null;
   totalBudget:            number;
@@ -72,6 +72,8 @@ export interface ProposalResponse {
   checkedAt:              string | null;
   dealerNotified:         boolean;
   dealerEmail:            string | null;
+  teamNotified:           boolean;
+  teamNotifiedAt?:        string;
   activities:             ActivityResponse[];
 }
 
@@ -85,7 +87,7 @@ interface ActivityPayload {
   category:         string | null;
   subcategory:      string | null;
   qty:              number;
-  salesPercent:     number | null;    // ← NEW
+  salesPercent:     number | null;
   leadTarget:       number;
   retailTarget:     number;
   startDate:        string;
@@ -161,7 +163,7 @@ export interface ActivityActualsPayload {
   mediaFileUrl:    string | null;
   mediaFileName:   string | null;
   mediaFileType:   string | null;
-  dailyData:       string | null;  // JSON: [{date, enquiryPlanned, enquiryActual, ...}]
+  dailyData:       string | null;
 }
 
 /* ── Token helpers ────────────────────────────────────────────────────────── */
@@ -191,6 +193,20 @@ async function getGraphToken(instance: IPublicClientApplication): Promise<string
     }
     return "";
   }
+}
+
+/**
+ * Exposed wrapper around getGraphToken so callers doing bulk operations
+ * (e.g. notifying 100+ dealers) can acquire the Graph token ONCE up front
+ * and reuse it for every request in the batch, instead of calling
+ * acquireTokenSilent() once per item. Re-acquiring per item routinely
+ * throttles against Azure AD's token endpoint on large batches, and
+ * getGraphToken() silently returns "" on any non-interaction-required
+ * failure — so those throttled calls fail invisibly downstream at Graph
+ * with "No Graph token." instead of surfacing a clear error here.
+ */
+export async function getGraphTokenForBulk(instance: IPublicClientApplication): Promise<string> {
+  return getGraphToken(instance);
 }
 
 /* ── API calls ────────────────────────────────────────────────────────────── */
@@ -465,8 +481,6 @@ export async function forwardProposalsBulk(
   ids: string[],
   instance: IPublicClientApplication,
 ): Promise<{ forwarded: number; failed: number }> {
-  // Pass both API token and Graph token — Graph token is stored by backend
-  // for sending the daily digest email via Microsoft Graph API
   const [apiToken, graphToken] = await Promise.all([
     getAccessToken(instance),
     getGraphToken(instance),
@@ -484,15 +498,21 @@ export async function forwardProposalsBulk(
   return res.json();
 }
 
+/**
+ * Notify Dealer — To: dealer, Cc: Approver + RSM + TSM + Commando.
+ * `preAcquiredGraphToken` lets bulk callers acquire the Graph token ONCE
+ * (via getGraphTokenForBulk) and pass it in for every item in a batch,
+ * instead of this function silently re-acquiring per call.
+ */
 export async function notifyDealer(
   id: string,
   dealerEmail: string,
   instance: IPublicClientApplication,
+  teamEmails?: { rsmEmail?: string; tsmEmail?: string; commandoEmail?: string },
+  preAcquiredGraphToken?: string,
 ): Promise<ProposalResponse> {
-  const [apiToken, graphToken] = await Promise.all([
-    getAccessToken(instance),
-    getGraphToken(instance),
-  ]);
+  const apiToken   = await getAccessToken(instance);
+  const graphToken = preAcquiredGraphToken ?? await getGraphToken(instance);
   const res = await fetch(`${API_BASE_URL}/api/proposals/${id}/notify-dealer`, {
     method: "POST",
     headers: {
@@ -500,7 +520,12 @@ export async function notifyDealer(
       Authorization:   `Bearer ${apiToken}`,
       "X-Graph-Token": graphToken,
     },
-    body: JSON.stringify({ dealerEmail }),
+    body: JSON.stringify({
+      dealerEmail,
+      rsmEmail: teamEmails?.rsmEmail || null,
+      tsmEmail: teamEmails?.tsmEmail || null,
+      commandoEmail: teamEmails?.commandoEmail || null,
+    }),
   });
   if (!res.ok) throw new Error(await res.text().catch(() => "") || `Failed (${res.status})`);
   return res.json();

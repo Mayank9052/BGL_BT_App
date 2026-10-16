@@ -36,13 +36,22 @@ public class EmailService : IEmailService
         return Task.FromResult<(bool, string?)>((false, "SMTP not supported for checker-forward. Use Graph."));
     }
 
-    // ── Step 3a: Decision → Mayank + CC RSM ──────────────────────────────────
+    // ── Step 3a: Decision → Checker + CC RSM (+ RSM/TSM/Commando on Approved) ──
     public async Task<(bool Sent, string? Error)> SendDecisionMailAsync(
-        Proposal p, ApprovalDecision decision, string graphToken)
+        Proposal p, ApprovalDecision decision, string graphToken, IEnumerable<string>? teamCc = null)
     {
+        var to = _settings.ApproverEmail;
+        var cc = new[] { p.SubmittedBy }
+            .Concat(teamCc ?? Enumerable.Empty<string>())
+            .Where(e => !string.IsNullOrWhiteSpace(e))
+            .Select(e => e!.Trim())
+            .Where(e => !string.Equals(e, to, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
         return await SendAsync(
-            to:      _settings.ApproverEmail,
-            cc:      p.SubmittedBy,
+            to:      to,
+            cc:      cc.Length > 0 ? string.Join(",", cc) : null,
             subject: BuildSubject($"Re: Proposal {decision.Status}", p),
             body:    BuildDecisionBody(p, decision));
     }
@@ -77,10 +86,26 @@ public class EmailService : IEmailService
 
     // ── Step 4: Dealer notification — SMTP not supported ─────────────────────
     public Task<(bool Sent, string? Error)> SendDealerNotificationMailAsync(
-        Proposal p, string dealerEmail, string graphToken)
+        Proposal p, string dealerEmail, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken)
     {
         _logger.LogWarning("SendDealerNotificationMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
         return Task.FromResult<(bool, string?)>((false, "SMTP not supported for dealer notification. Use Graph."));
+    }
+
+    // Step 1b: Activity sheet submitted notification (Dealer/RSM/Commando) — SMTP not supported
+    public Task<(bool Sent, string? Error)> SendActivitySheetSubmittedMailAsync(
+        Proposal p, string? dealerEmail, string? rsmEmail, string? commandoEmail, string graphToken)
+    {
+        _logger.LogWarning("SendActivitySheetSubmittedMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
+        return Task.FromResult<(bool, string?)>((false, "SMTP not supported for activity-sheet notification. Use Graph."));
+    }
+
+    // Step 4b: Team notification — SMTP not supported
+    public Task<(bool Sent, string? Error)> SendTeamNotificationMailAsync(
+        Proposal p, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken)
+    {
+        _logger.LogWarning("SendTeamNotificationMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
+        return Task.FromResult<(bool, string?)>((false, "SMTP not supported for team notification. Use Graph."));
     }
 
     // ── Core SMTP send with optional CC ──────────────────────────────────────
@@ -314,6 +339,20 @@ public class EmailService : IEmailService
               Regards · <strong>BGauss BTL Team</strong></p>
             """);
     }
+
+    public async Task<(bool Sent, string? Error)> SendPasswordResetEmailAsync(
+        string toEmail, string displayName, string resetLink)
+    {
+        var subject = "Reset your BGauss BTL portal password";
+        var body = $"""
+            <p>Hi {displayName},</p>
+            <p>Click the link below to reset your BGauss BTL portal password (valid 1 hour):</p>
+            <p><a href="{resetLink}">{resetLink}</a></p>
+            <p>If you didn't request this, you can ignore this email.</p>
+            """;
+        return await SendAsync(to: toEmail, cc: null, subject: subject, body: body);
+    }
+
 
     private string BuildRevisionBody(Proposal p, string? note)
     {

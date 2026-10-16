@@ -38,5 +38,7 @@ public record ProposalResponseDto(
     bool            DealerSentBack,
     DateTimeOffset? DealerSentBackAt,
     string?         CheckerRemarks,
+    bool            TeamNotified, 
+    DateTimeOffset? TeamNotifiedAt,
     List<ActivityResponseDto> Activities
 );

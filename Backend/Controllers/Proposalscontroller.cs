@@ -19,6 +19,7 @@ public class ProposalsController : ControllerBase
     private readonly IEmailService _emailService;
     private readonly ILogger<ProposalsController> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly DailyDigestService _digestService; // ← NEW: immediate-send
 
     private string GraphToken() =>
         Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
@@ -28,13 +29,15 @@ public class ProposalsController : ControllerBase
         BaplDbContext bapl,
         IEmailService emailService,
         ILogger<ProposalsController> logger,
-        IServiceScopeFactory scopeFactory)
+        IServiceScopeFactory scopeFactory,
+        DailyDigestService digestService) // ← NEW
     {
-        _db           = db;
-        _bapl         = bapl;
-        _emailService = emailService;
-        _logger       = logger;
-        _scopeFactory = scopeFactory;
+        _db             = db;
+        _bapl           = bapl;
+        _emailService   = emailService;
+        _logger         = logger;
+        _scopeFactory   = scopeFactory;
+        _digestService  = digestService; // ← NEW
     }
 
     // ── POST /api/proposals ───────────────────────────────────────────────────
@@ -58,7 +61,7 @@ public class ProposalsController : ControllerBase
                            $"{string.Join(", ", duplicateTypes)}"
             });
 
-        var (datesOk, dateError) = ValidateActivityDates(dto.Activities);
+        var (datesOk, dateError) = ValidateActivityDates(dto.Activities, dto.Month, dto.Year);
         if (!datesOk) return BadRequest(new { message = dateError });
 
         var submittedBy = CurrentUserEmail();
@@ -149,6 +152,32 @@ public class ProposalsController : ControllerBase
             _logger.LogWarning("Submission mail failed for proposal {Id}: {Error}", proposal.Id, error);
 
         return CreatedAtAction(nameof(GetById), new { id = proposal.Id }, ToResponse(proposal));
+    }
+
+    [HttpPost("{id:guid}/notify-team")]
+    public async Task<ActionResult<ProposalResponseDto>> NotifyTeam(
+        Guid id, [FromBody] NotifyTeamDto dto)
+    {
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
+            .FirstOrDefaultAsync(p => p.Id == id);
+
+        if (proposal is null) return NotFound();
+        if (proposal.Status != "Approved")
+            return Conflict(new { message = "Only approved proposals can have their team notified." });
+
+        var (sent, error) = await _emailService.SendTeamNotificationMailAsync(
+            proposal, dto.RsmEmail, dto.TsmEmail, dto.CommandoEmail, GraphToken());
+
+        if (!sent)
+            return BadRequest(new { error = error ?? "Failed to send team notification." });
+
+        proposal.TeamNotified   = true;
+        proposal.TeamNotifiedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync();
+
+        return Ok(ToResponse(proposal));
     }
 
     // ── GET /api/proposals/{id}/ai-review ─────────────────────────────────────
@@ -312,7 +341,7 @@ public class ProposalsController : ControllerBase
         // Skip backdate validation for budget addition edits on Approved proposals
         if (!isBudgetAdditionEdit)
         {
-            var (datesOk, dateError) = ValidateActivityDates(dto.Activities);
+            var (datesOk, dateError) = ValidateActivityDates(dto.Activities, dto.Month, dto.Year);
             if (!datesOk) return BadRequest(new { message = dateError });
         }
 
@@ -503,7 +532,17 @@ public class ProposalsController : ControllerBase
         _db.ApprovalDecisions.Add(decision);
         await _db.SaveChangesAsync();
 
-        var (sent, error) = await _emailService.SendDecisionMailAsync(proposal, decision, GraphToken());
+        // Approved → cc RSM/TSM/Commando from Dealer Mapping. Rejected → Checker + submitter only.
+        List<string>? teamCc = null;
+        if (dto.Status == "Approved")
+        {
+            var mapping = await DealerNameMatcher.FindMappingAsync(_db, proposal.DealerName);
+            teamCc = DealerNameMatcher.TeamEmails(mapping);
+            if (mapping is null)
+                _logger.LogWarning("No Dealer Mapping for '{Dealer}' — approval mail sent without team cc.", proposal.DealerName);
+        }
+
+        var (sent, error) = await _emailService.SendDecisionMailAsync(proposal, decision, GraphToken(), teamCc);
         decision.MailSent   = sent;
         decision.MailSentAt = sent ? DateTimeOffset.UtcNow : null;
         decision.MailError  = error;
@@ -566,7 +605,9 @@ public class ProposalsController : ControllerBase
     }
 
     // ── PATCH /api/proposals/{id}/actuals ─────────────────────────────────────
+    // Staff (Azure) OR Dealer login. A dealer can only update proposals of its own dealership.
     [HttpPatch("{id:guid}/actuals")]
+    [Authorize(AuthenticationSchemes = "AzureAD,DealerJwt")]
     public async Task<ActionResult<ProposalResponseDto>> UpdateActuals(
         Guid id, [FromBody] List<UpdateActivityActualsDto> actuals)
     {
@@ -578,6 +619,20 @@ public class ProposalsController : ControllerBase
         if (proposal is null) return NotFound();
         if (proposal.Status != "Approved")
             return BadRequest(new { message = "Actuals can only be added after approval." });
+
+        // Dealer caller → must own this proposal
+        var sub = User.FindFirstValue("sub");
+        if (int.TryParse(sub, out var userId))
+        {
+            var caller = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+            if (caller is not null && string.Equals(caller.Role, "Dealer", StringComparison.OrdinalIgnoreCase))
+            {
+                var mapping = await DealerNameMatcher.FindMappingAsync(_db, caller.DealerName);
+                var own = DealerNameMatcher.SameDealer(caller.DealerName, proposal.DealerName)
+                       || (mapping is not null && DealerNameMatcher.SameDealer(mapping.DealerName, proposal.DealerName));
+                if (!own) return Forbid();
+            }
+        }
 
         foreach (var dto in actuals)
         {
@@ -656,6 +711,10 @@ public class ProposalsController : ControllerBase
     }
 
     // ── GET /api/proposals/my-dealer-proposals ────────────────────────────────
+    // Returns EVERY proposal for this dealer, whoever submitted it (RSM Azure login,
+    // RSM/TSM local login, or the dealer). Match = normalised name of the dealer
+    // login + its Dealer Mapping row. No partial/Contains matching (prevents
+    // showing another dealer's proposals).
     [HttpGet("my-dealer-proposals")]
     [Authorize(AuthenticationSchemes = "DealerJwt")]
     public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMyDealerProposals()
@@ -666,46 +725,32 @@ public class ProposalsController : ControllerBase
 
         var dealerUser = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
         if (dealerUser is null) return Unauthorized();
+        if (string.IsNullOrWhiteSpace(dealerUser.DealerName))
+            return Ok(Array.Empty<ProposalResponseDto>());
 
-        List<Proposal> proposals;
+        var mapping = await DealerNameMatcher.FindMappingAsync(_db, dealerUser.DealerName);
 
-        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
-        {
-            proposals = await _db.Proposals
-                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
-                .Where(p => p.DealerName == dealerUser.DealerName)
-                .OrderByDescending(p => p.CreatedAt)
-                .AsNoTracking()
-                .ToListAsync();
+        var keys = new[] { dealerUser.DealerName, mapping?.DealerName }
+            .Select(DealerNameMatcher.Normalize)
+            .Where(k => k.Length > 0)
+            .ToHashSet();
 
-            if (proposals.Count > 0) return Ok(proposals.Select(ToResponse));
-        }
+        var allNames = await _db.Proposals.AsNoTracking()
+            .Select(p => p.DealerName).Distinct().ToListAsync();
+        var matchedNames = allNames
+            .Where(n => keys.Contains(DealerNameMatcher.Normalize(n)))
+            .ToList();
 
-        if (!string.IsNullOrWhiteSpace(dealerUser.DealerName))
-        {
-            var lower = dealerUser.DealerName.Trim().ToLower();
-            proposals = await _db.Proposals
-                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
-                .Where(p => p.DealerName.ToLower() == lower)
-                .OrderByDescending(p => p.CreatedAt)
-                .AsNoTracking()
-                .ToListAsync();
+        if (matchedNames.Count == 0) return Ok(Array.Empty<ProposalResponseDto>());
 
-            if (proposals.Count > 0) return Ok(proposals.Select(ToResponse));
+        var proposals = await _db.Proposals
+            .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
+            .Where(p => matchedNames.Contains(p.DealerName))
+            .OrderByDescending(p => p.CreatedAt)
+            .AsNoTracking()
+            .ToListAsync();
 
-            var partial = lower;
-            proposals = await _db.Proposals
-                .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
-                .Where(p => p.DealerName.ToLower().Contains(partial)
-                        || partial.Contains(p.DealerName.ToLower()))
-                .OrderByDescending(p => p.CreatedAt)
-                .AsNoTracking()
-                .ToListAsync();
-
-            if (proposals.Count > 0) return Ok(proposals.Select(ToResponse));
-        }
-
-        return Ok(Array.Empty<ProposalResponseDto>());
+        return Ok(proposals.Select(ToResponse));
     }
 
     // ── POST /api/proposals/{id}/forward ─────────────────────────────────────
@@ -763,16 +808,103 @@ public class ProposalsController : ControllerBase
         }
         else
         {
-            // Regular forward — existing flow unchanged
-            var (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, GraphToken());
+            // Regular forward — try the delegated (X-Graph-Token) path first,
+            // since it sends from the Checker's own browser session exactly
+            // as before. Fall back to the app-only immediate-send path (still
+            // using the Checker's own email as sender) if no delegated token
+            // was attached to this request.
+            var graphToken = GraphToken();
+            bool sent; string? error;
+
+            if (!string.IsNullOrWhiteSpace(graphToken))
+            {
+                (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, graphToken);
+                if (!sent)
+                    _logger.LogWarning("Delegated checker-forward mail failed for {Id}: {Error} — trying immediate app-only send.", proposal.Id, error);
+            }
+            else
+            {
+                sent = false;
+            }
+
             if (!sent)
-                _logger.LogWarning("Checker-forward mail failed for {Id}: {Error}", proposal.Id, error);
+            {
+                var (immSent, immError) = await _digestService.SendForwardDigestNowAsync(
+                    new List<Guid> { proposal.Id }, CurrentUserEmail());
+                if (!immSent)
+                    _logger.LogWarning("Immediate app-only forward mail also failed for {Id}: {Error}", proposal.Id, immError);
+            }
         }
 
         return Ok(ToResponse(proposal));
     }
 
+        // ── GET /api/proposals/my-team-proposals ──────────────────────────────────
+    [HttpGet("my-team-proposals")]
+    [Authorize(AuthenticationSchemes = "DealerJwt")]
+    public async Task<ActionResult<IEnumerable<ProposalResponseDto>>> GetMyTeamProposals()
+    {
+        var sub = User.FindFirstValue("sub");
+        if (string.IsNullOrWhiteSpace(sub) || !int.TryParse(sub, out var userId))
+            return Unauthorized();
+
+        var staff = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
+        if (staff is null) return Unauthorized();
+        if (string.Equals(staff.Role, "Dealer", StringComparison.OrdinalIgnoreCase)) return Forbid();
+
+        var role    = (staff.Role ?? "").Trim();
+        var email   = (staff.Email ?? "").Trim();
+        var nameKey = DealerNameMatcher.Normalize(staff.DisplayName);
+
+        bool IsMe(string? name, string? emails) =>
+            (email.Length > 0 && !string.IsNullOrWhiteSpace(emails) &&
+             emails.Split(',', ';').Any(x => string.Equals(x.Trim(), email, StringComparison.OrdinalIgnoreCase)))
+            || (nameKey.Length > 0 && DealerNameMatcher.Normalize(name) == nameKey);
+
+        // (a) dealers mapped to me in Dealer Mapping
+        var maps = await _db.Set<DealerTeamMapping>().AsNoTracking().ToListAsync();
+        IEnumerable<DealerTeamMapping> myMaps =
+            role.Equals("RSM", StringComparison.OrdinalIgnoreCase)      ? maps.Where(m => IsMe(m.Rsm, m.RsmEmail)) :
+            role.Equals("TSM", StringComparison.OrdinalIgnoreCase)      ? maps.Where(m => IsMe(m.Tsm, m.TsmEmail)) :
+            role.Equals("Commando", StringComparison.OrdinalIgnoreCase) ? maps.Where(m => IsMe(m.Commando, m.CommandoEmail)) :
+            Enumerable.Empty<DealerTeamMapping>();
+        var dealerKeys = myMaps.Select(m => DealerNameMatcher.Normalize(m.DealerName))
+                               .Where(k => k.Length > 0).ToHashSet();
+
+        // Light projection only — no activities/media yet
+        var heads = await _db.Proposals.AsNoTracking()
+            .Select(p => new { p.Id, p.DealerName, p.RsmName, p.TsmName, p.CommandoName, p.SubmittedBy })
+            .ToListAsync();
+
+        var ids = heads.Where(h =>
+                dealerKeys.Contains(DealerNameMatcher.Normalize(h.DealerName))                                  // (a)
+             || (nameKey.Length > 0 && (                                                                         // (b)
+                    (role.Equals("RSM", StringComparison.OrdinalIgnoreCase)      && DealerNameMatcher.Normalize(h.RsmName)      == nameKey) ||
+                    (role.Equals("TSM", StringComparison.OrdinalIgnoreCase)      && DealerNameMatcher.Normalize(h.TsmName)      == nameKey) ||
+                    (role.Equals("Commando", StringComparison.OrdinalIgnoreCase) && DealerNameMatcher.Normalize(h.CommandoName) == nameKey)))
+             || (email.Length > 0 && string.Equals(h.SubmittedBy, email, StringComparison.OrdinalIgnoreCase))) // (c)
+            .Select(h => h.Id)
+            .ToList();
+
+        if (ids.Count == 0) return Ok(Array.Empty<ProposalResponseDto>());
+
+        var proposals = await _db.Proposals
+            .Where(p => ids.Contains(p.Id))
+            .Include(p => p.Activities).ThenInclude(a => a.MediaFiles)
+            .AsSplitQuery()
+            .AsNoTracking()
+            .OrderByDescending(p => p.CreatedAt)
+            .ToListAsync();
+
+        _logger.LogInformation("my-team-proposals: {Email} ({Role}) → {Maps} mapped dealers, {Count} proposals",
+            email, role, dealerKeys.Count, proposals.Count);
+
+        return Ok(proposals.Select(ToResponse));
+    }
+
     // ── POST /api/proposals/{id}/notify-dealer ────────────────────────────────
+    // ONE-TIME: once DealerNotified = true, further calls are rejected (409).
+    // Flag is set ONLY after the mail is actually sent.
     [HttpPost("{id:guid}/notify-dealer")]
     public async Task<ActionResult<ProposalResponseDto>> NotifyDealer(
         Guid id, [FromBody] NotifyDealerDto dto)
@@ -785,10 +917,23 @@ public class ProposalsController : ControllerBase
         if (proposal is null) return NotFound();
         if (proposal.Status != "Approved")
             return Conflict(new { message = "Only approved proposals can be sent to the dealer." });
+        if (proposal.DealerNotified)
+            return Conflict(new { message = $"Dealer already notified{(string.IsNullOrWhiteSpace(proposal.DealerEmail) ? "" : $" ({proposal.DealerEmail})")}." });
         if (string.IsNullOrWhiteSpace(dto.DealerEmail))
             return BadRequest(new { message = "Dealer email is required." });
 
-        proposal.DealerEmail    = dto.DealerEmail;
+        var dealerEmail = dto.DealerEmail.Trim();
+
+        var (sent, error) = await _emailService.SendDealerNotificationMailAsync(
+            proposal, dealerEmail, dto.RsmEmail, dto.TsmEmail, dto.CommandoEmail, GraphToken());
+
+        if (!sent)
+        {
+            _logger.LogWarning("Dealer notification failed for {Id}: {Error}", proposal.Id, error);
+            return BadRequest(new { message = $"Mail not sent — {error ?? "unknown error"}. Proposal NOT marked as notified; you can retry." });
+        }
+
+        proposal.DealerEmail    = dealerEmail;
         proposal.DealerNotified = true;
         await _db.SaveChangesAsync();
 
@@ -804,12 +949,6 @@ public class ProposalsController : ControllerBase
             }
         });
 
-        var (sent, error) = await _emailService.SendDealerNotificationMailAsync(
-            proposal, dto.DealerEmail, GraphToken());
-
-        if (!sent)
-            _logger.LogWarning("Dealer notification failed for {Id}: {Error}", proposal.Id, error);
-
         return Ok(ToResponse(proposal));
     }
 
@@ -818,8 +957,9 @@ public class ProposalsController : ControllerBase
     // ─────────────────────────────────────────────────────────────────────────
     private string CurrentUserEmail() =>
         User.FindFirstValue("preferred_username")
-        ?? User.FindFirstValue(ClaimTypes.Upn)
+        ?? User.FindFirstValue("email")                 // ← local-login JWT (RSM/TSM/Commando/Dealer)
         ?? User.FindFirstValue(ClaimTypes.Email)
+        ?? User.FindFirstValue(ClaimTypes.Upn)
         ?? User.Identity?.Name
         ?? "unknown";
 
@@ -829,10 +969,27 @@ public class ProposalsController : ControllerBase
     private static DateOnly? ParseDate(string? value) =>
         DateOnly.TryParse(value, out var date) ? date : null;
 
+        private static readonly string[] MonthNames = {
+        "January","February","March","April","May","June",
+        "July","August","September","October","November","December"
+    };
+
     private static (bool Ok, string? Error) ValidateActivityDates(
-        List<ActivityDto> activities)
+        List<ActivityDto> activities, string? month, string? year)
     {
-        var todayIst = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(5).AddMinutes(30));
+        // ── FIX: validate against the proposal's selected Month/Year, not "today".
+        // A whole-month activity plan (e.g. imported from Excel) can legitimately
+        // start earlier in the month than the day it's submitted — the old
+        // "start >= today" rule blocked exactly that case. Mirrors the same fix
+        // applied on the frontend (RSMForm.tsx's activityDateRange).
+        DateOnly? firstOfMonth = null;
+        DateOnly? lastOfMonth  = null;
+        var monthIdx = Array.IndexOf(MonthNames, month);
+        if (monthIdx >= 0 && int.TryParse(year, out var yearNum))
+        {
+            firstOfMonth = new DateOnly(yearNum, monthIdx + 1, 1);
+            lastOfMonth  = firstOfMonth.Value.AddMonths(1).AddDays(-1);
+        }
 
         for (int i = 0; i < activities.Count; i++)
         {
@@ -844,10 +1001,13 @@ public class ProposalsController : ControllerBase
             if (start.HasValue && end.HasValue && end.Value < start.Value)
                 return (false, $"'{name}': end date cannot be before start date.");
 
-            if (start.HasValue && start.Value < todayIst)
-                return (false,
-                    $"'{name}': start date ({start.Value:dd-MMM-yyyy}) is in the past. " +
-                    $"Activities must start from today ({todayIst:dd-MMM-yyyy}) or later.");
+            if (firstOfMonth.HasValue && lastOfMonth.HasValue)
+            {
+                if (start.HasValue && (start.Value < firstOfMonth.Value || start.Value > lastOfMonth.Value))
+                    return (false, $"'{name}': start date ({start.Value:dd-MMM-yyyy}) must fall within {month} {year}.");
+                if (end.HasValue && (end.Value < firstOfMonth.Value || end.Value > lastOfMonth.Value))
+                    return (false, $"'{name}': end date ({end.Value:dd-MMM-yyyy}) must fall within {month} {year}.");
+            }
         }
 
         return (true, null);
@@ -916,7 +1076,8 @@ public class ProposalsController : ControllerBase
         p.TokenNumber, p.AllowedCac, p.CacWarning,
         p.CheckedByEmail, p.CheckedAt, p.DealerNotified, p.DealerEmail,
         p.DealerSendBackNote, p.DealerSentBack, p.DealerSentBackAt,
-        p.CheckerRemarks,                              // ← FIX: was missing → CS7036
+        p.CheckerRemarks,
+        p.TeamNotified, p.TeamNotifiedAt,   // ← NEW
         p.Activities.Select(a => new ActivityResponseDto(
             a.Id, a.ActivityType, a.Category,
             a.Subcategory, a.Qty, a.SalesPercent,

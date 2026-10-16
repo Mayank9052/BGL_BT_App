@@ -32,15 +32,18 @@ public class DealerAuthController : ControllerBase
     private readonly JwtTokenService _jwt;
     private readonly IEmailService _emailService;
     private readonly ILogger<DealerAuthController> _logger;
+    private readonly AuditLogService _audit;
 
     public DealerAuthController(
         AppDbContext db, BaplDbContext bapl,
         JwtTokenService jwt,
         IEmailService emailService,
-        ILogger<DealerAuthController> logger)
+        ILogger<DealerAuthController> logger,
+        AuditLogService audit)
     {
         _db = db; _bapl = bapl; _jwt = jwt;
         _emailService = emailService; _logger = logger;
+        _audit = audit;
     }
 
     // ── POST /api/dealer-auth/login — public ──────────────────────────────────
@@ -58,16 +61,30 @@ public class DealerAuthController : ControllerBase
                                        && u.Role == "Dealer");
 
             if (user is null || user.PasswordHash is null)
+            {
+                await _audit.LogAsync(dto.Email, "", "Dealer", "Local", "LoginFailed", success: false,
+                    details: "No matching dealer account found.");
                 return Unauthorized(new { message = "Invalid email or password." });
+            }
 
             if (!user.IsActive)
+            {
+                await _audit.LogAsync(user.Email, user.DisplayName, "Dealer", "Local", "LoginFailed", success: false,
+                    details: "Account is deactivated.");
                 return Unauthorized(new { message = "This account has been deactivated. Contact admin." });
+            }
 
             if (!PasswordHasher.Verify(dto.Password, user.PasswordHash))
+            {
+                await _audit.LogAsync(user.Email, user.DisplayName, "Dealer", "Local", "LoginFailed", success: false,
+                    details: "Incorrect password.");
                 return Unauthorized(new { message = "Invalid email or password." });
+            }
 
             user.LastLoginAt = DateTime.UtcNow;
             await _db.SaveChangesAsync();
+
+            await _audit.LogAsync(user.Email, user.DisplayName, user.Role, "Local", "Login", success: true);
 
             var token = _jwt.GenerateToken(user);
 
@@ -213,6 +230,9 @@ public class DealerAuthController : ControllerBase
 
             _logger.LogInformation(
                 "Admin {Admin} reset password for dealer {Email}", guard.CallerEmail, dealer.Email);
+
+            await _audit.LogAsync(guard.CallerEmail!, "Admin", "Admin", "AzureAD", "PasswordAdminReset",
+                targetEmail: dealer.Email, details: $"Admin reset password for {dealer.DisplayName}");
 
             return Ok(new { message = $"Password reset successfully for {dealer.DisplayName}." });
         }
@@ -418,6 +438,10 @@ public class DealerAuthController : ControllerBase
     // ══════════════════════════════════════════════════════════════════════════
 
     // ── POST /api/dealer-auth/forgot-password — public ─────────────────────────
+    // FIXED: now calls IEmailService.SendPasswordResetEmailAsync, which uses an
+    // app-only Graph token (client credentials) via GraphAppTokenService — this
+    // works from a public/unauthenticated endpoint with no signed-in user,
+    // unlike the old code path which always failed with "No Graph token."
     [HttpPost("forgot-password")]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto dto)
     {
@@ -440,78 +464,28 @@ public class DealerAuthController : ControllerBase
 
             user.ResetToken       = rawToken;
             user.ResetTokenExpiry = DateTime.UtcNow.AddHours(1);
+            await _audit.LogAsync(user.Email, user.DisplayName, user.Role, "Local", "PasswordForgotRequested");
             await _db.SaveChangesAsync();
 
             var origin    = HttpContext.Request.Headers["Origin"].FirstOrDefault()
-                            ?? "https://44.210.115.237";
+                            ?? "https://btl.bgauss.com"; // fallback if Origin header missing
             var resetLink = $"{origin}/reset-password?token={rawToken}&email={Uri.EscapeDataString(user.Email)}";
 
-            // Send via a simple email using the email service
-            // We use SendRevisionEmailAsync as a generic "send to user" fallback
-            // or log the link if email fails (dealer portal is internal)
-            try
+            var (sent, error) = await _emailService.SendPasswordResetEmailAsync(
+                user.Email, user.DisplayName, resetLink);
+
+            if (!sent)
             {
-                // Send password reset email via GraphEmailService.
-                // We reuse SendRevisionEmailAsync(proposal, note, makerEmail) where
-                // the 'note' field carries the reset link and body for the dealer.
-                // ProposalResponseDto is constructed with the exact 38-param signature:
-                // Guid,str,str,str,str, int?,str?, str,str,str?,
-                // str,str?,str,str?, decimal,int,int,decimal,decimal,
-                // str,DateTimeOffset,str?, str,str?,str?,DateTimeOffset?,
-                // str?,int,str?, str?,DateTimeOffset?,
-                // bool,str?,str?,bool,DateTimeOffset?, str?, List<ActivityResponseDto>
-                if (_emailService is GraphEmailService graphSvc)
-                    await graphSvc.SendRevisionEmailAsync(
-                        new BGL_BT_App.Backend.DTOs.ProposalResponseDto(
-                            Guid.Empty,                           //  1 Id
-                            "",                                   //  2 State
-                            "",                                   //  3 Location
-                            "",                                   //  4 Type
-                            user.DealerName ?? user.DisplayName,  //  5 DealerName
-                            null,                                 //  6 VendorId      int?
-                            null,                                 //  7 VendorName    string?
-                            "",                                   //  8 RsmName
-                            "",                                   //  9 TsmName
-                            null,                                 // 10 CommandoName  string?
-                            "",                                   // 11 Month
-                            null,                                 // 12 Eligibility   string?
-                            "",                                   // 13 Remarks       string
-                            null,                                 // 14               string?
-                            0m,                                   // 15 TotalBudget   decimal
-                            0,                                    // 16 TotalLeadTarget
-                            0,                                    // 17 TotalRetailTarget
-                            0m,                                   // 18 Cac           decimal
-                            0m,                                   // 19 Cpl           decimal
-                            user.Email,                           // 20 SubmittedBy
-                            DateTimeOffset.UtcNow,                // 21 CreatedAt
-                            user.DisplayName,                     // 22 SubmittedByDisplayName string?
-                            "Pending",                            // 23 Status
-                            null,                                 // 24 ApproverNote  string?
-                            null,                                 // 25 ApprovedBy    string?
-                            null,                                 // 26 DecidedAt     DateTimeOffset?
-                            null,                                 // 27 TokenNumber   string?
-                            0,                                    // 28 AllowedCac    int
-                            null,                                 // 29 CacWarning    string?
-                            null,                                 // 30 CheckedByEmail string?
-                            null,                                 // 31 CheckedAt     DateTimeOffset?
-                            false,                                // 32 DealerNotified bool
-                            null,                                 // 33 DealerEmail   string?
-                            null,                                 // 34 DealerSendBackNote string?
-                            false,                                // 35 DealerSentBack bool
-                            null,                                 // 36 DealerSentBackAt DateTimeOffset?
-                            null,                                 // 37 CheckerRemarks string?
-                            new List<BGL_BT_App.Backend.DTOs.ActivityResponseDto>()), // 38 Activities
-                        $"Hi {user.DisplayName},\n\nClick this link to reset your BGauss BTL portal password (valid 1 hour):\n{resetLink}\n\nIf you didn't request this, ignore this email.",
-                        user.Email);
-                else
-                    _logger.LogInformation(
-                        "EMAIL SERVICE NOT GRAPH — PASSWORD RESET LINK for {Email}: {Link}",
-                        user.Email, resetLink);
+                // Email genuinely failed to send (e.g. Mail.Send Application
+                // permission not yet consented in Azure AD) — log the link so
+                // support can still hand it to the dealer manually if needed.
+                _logger.LogWarning(
+                    "Password reset email failed for {Email}: {Error} — link: {Link}",
+                    user.Email, error, resetLink);
             }
-            catch (Exception mailEx)
+            else
             {
-                _logger.LogWarning(mailEx, "Reset email failed — link logged for {Email}", user.Email);
-                _logger.LogInformation("PASSWORD RESET LINK for {Email}: {Link}", user.Email, resetLink);
+                _logger.LogInformation("Password reset email sent to {Email}", user.Email);
             }
 
             return Ok(new { message = "If an account exists with this email, a reset link has been sent." });
@@ -550,6 +524,7 @@ public class DealerAuthController : ControllerBase
             user.PasswordHash     = PasswordHasher.Hash(dto.NewPassword);
             user.ResetToken       = null;
             user.ResetTokenExpiry = null;
+            await _audit.LogAsync(user.Email, user.DisplayName, user.Role, "Local", "PasswordReset");
             await _db.SaveChangesAsync();
 
             return Ok(new { message = "Password reset successfully. You can now log in." });
@@ -591,6 +566,7 @@ public class DealerAuthController : ControllerBase
 
             user.PasswordHash = PasswordHasher.Hash(dto.NewPassword);
             user.UpdatedAt    = DateTime.UtcNow;
+            await _audit.LogAsync(user.Email, user.DisplayName, user.Role, "Local", "PasswordChanged");
             await _db.SaveChangesAsync();
 
             return Ok(new { message = "Password changed successfully." });
