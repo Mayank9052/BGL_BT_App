@@ -4,25 +4,12 @@
 // and opens proposals in a DealerDashboard-style read+log modal (not the
 // Approver's edit/approve/reject modal — staff can view + log actuals only).
 //
-// REQUIRES BACKEND CHANGE:
-//   GET /api/proposals/my-team-proposals must return the SAME shape as
-//   ProposalResponse (activities[], mediaFiles[], dailyData) — the same
-//   contract fetchMyDealerProposals() already uses for the Dealer role.
-//   The flat StaffProposal shape that used to be returned here is gone;
-//   this file now imports ProposalResponse from proposalService instead.
+// CN (Credit Note): each approved activity's Post-Activity section shows the
+// Credit Note panel. RSM → Approve / Reject CN. RSM/TSM/Commando → upload the
+// dealer's invoice in BGauss's name. A banner lists CNs awaiting the RSM.
 //
-// ROLE SCOPING (who sees which dealers' proposals):
-//   RSM / TSM / Commando — backend should filter my-team-proposals by
-//   matching the signed-in staff member's displayName against the
-//   proposal's rsmName / tsmName / commandoName (same logic RSMForm.tsx
-//   already applies client-side to the dealer picklist via findDealerTeam()).
-//   ZSM — NOT yet supported by dealerTeamMap.ts (no `zsm` field exists).
-//   A ZSM oversees several RSMs' territories, so a single name-match against
-//   one field isn't enough. Add a `zsm` (and optionally `zsmEmail`) field to
-//   DealerTeam + DEALER_TEAM_MAP, then have the backend match on that field
-//   the same way it matches rsmName/tsmName/commandoName for the other roles.
-//   Until then, ZSM logins will see everything the backend returns for them —
-//   scope that at the API layer, not here.
+// Data: GET /api/proposals/my-team-proposals → ProposalResponse[]
+// (all proposals of dealers mapped to this person in Dealer Mapping).
 
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
@@ -30,10 +17,11 @@ import type { DealerLoginResponse } from "../services/dealerAuthService";
 import { getDealerToken } from "../services/dealerAuthService";
 import { API_BASE_URL } from "../authConfig";
 import type { ProposalResponse } from "../services/proposalService";
+import CnPanel from "../components/CnPanel";
+import { fetchCnReport, type CnReportRow } from "../services/cnService";
 import "./DealerDashboard.css";
 
 // ─── Formatters ───────────────────────────────────────────────────────────
-const inr = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
 const inrCompact = (v: number) => {
   if (v >= 1_00_000) return `₹${(v / 1_00_000).toFixed(1)}L`;
   if (v >= 1_000) return `₹${(v / 1_000).toFixed(0)}K`;
@@ -58,12 +46,25 @@ function captureGeo(): Promise<{ lat: number; lng: number } | null> {
 }
 const mapsUrl = (lat: number, lng: number) => `https://maps.google.com/?q=${lat},${lng}`;
 const DEFAULT_PLAN_PER_SETUP = 35;
-function getActualDateRange() {
-  const now = new Date();
-  const min = new Date(now.getFullYear(), now.getMonth(), 1);
-  const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);
-  const fmt = (d: Date) => d.toISOString().split("T")[0];
-  return { min: fmt(min), max: fmt(max) };
+// Local-date ISO (no UTC shift — toISOString() can roll back a day in IST)
+const isoLocal = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// Post-Activity actual dates: proposal month + next month only (local dates, no UTC shift).
+// e.g. September 2026 -> 2026-09-01 .. 2026-10-31; December 2026 -> 2026-12-01 .. 2027-01-31
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+function getActualDateRange(month?: string | null, year?: string | number | null) {
+  const mi = MONTHS.indexOf((month ?? "").trim());
+  const y  = parseInt(String(year ?? ""), 10) || new Date().getFullYear();
+  if (mi < 0) {
+    const now = new Date();
+    return { min: isoLocal(new Date(now.getFullYear(), now.getMonth(), 1)),
+             max: isoLocal(new Date(now.getFullYear(), now.getMonth() + 2, 0)),
+             label: "current and next month" };
+  }
+  const nextName = MONTHS[(mi + 1) % 12];
+  const nextYear = mi === 11 ? y + 1 : y;
+  return { min: isoLocal(new Date(y, mi, 1)), max: isoLocal(new Date(y, mi + 2, 0)),
+           label: `${MONTHS[mi]} ${y} – ${nextName} ${nextYear}` };
 }
 
 // ─── Media helpers ──────────────────────────────────────────────────────────
@@ -117,7 +118,7 @@ function buildDailyEntries(start?: string | null, end?: string | null): DailyEnt
   const s = new Date(start), e = new Date(end), today = new Date();
   const cap = e < today ? e : today;
   for (const d = new Date(s); d <= cap; d.setDate(d.getDate() + 1)) {
-    entries.push({ date: d.toISOString().split("T")[0], setupCount: 0, enquiryPlanned: 0, enquiryActual: 0, testDrivePlanned: 0, testDriveActual: 0, bookingActual: 0, retailActual: 0, leadsPunched: 0 });
+    entries.push({ date: isoLocal(d), setupCount: 0, enquiryPlanned: 0, enquiryActual: 0, testDrivePlanned: 0, testDriveActual: 0, bookingActual: 0, retailActual: 0, leadsPunched: 0 });
   }
   return entries;
 }
@@ -148,6 +149,7 @@ type ActiveFilter = "All" | "Pending" | "Approved" | "Rejected" | "NeedsRevision
 // ═══════════════════════════════════════════════════════════════════════════
 export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }) {
   const navigate = useNavigate();
+  const isRsm = (staff.role ?? "").toUpperCase() === "RSM";
 
   const [proposals, setProposals] = useState<ProposalResponse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -167,6 +169,10 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
   const toggleActualsPanel = (activityId: string, panel: "photos" | "invoices" | "history") =>
     setOpenActualsPanel((prev) => ({ ...prev, [activityId]: prev[activityId] === panel ? (undefined as any) : panel }));
   const [mediaViewer, setMediaViewer] = useState<{ url: string; name: string; type: string } | null>(null);
+
+  // ── CN: activities waiting for action by this staff member ──────────────────
+  const [cnAwaitingRsm, setCnAwaitingRsm] = useState<CnReportRow[]>([]);
+  const [cnAwaitingInvoice, setCnAwaitingInvoice] = useState<CnReportRow[]>([]);
 
   const showToast = (msg: string, ok: boolean) => { setToast({ msg, ok }); setTimeout(() => setToast(null), 3500); };
 
@@ -192,7 +198,18 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
     }
   }, []);
 
-  useEffect(() => { loadProposals(); }, [loadProposals]);
+  const loadCnPending = useCallback(async () => {
+    try {
+      const [rsm, inv] = await Promise.all([
+        fetchCnReport({ status: "SentForRsmApproval" }),
+        fetchCnReport({ status: "RsmApproved" }),
+      ]);
+      setCnAwaitingRsm(rsm);
+      setCnAwaitingInvoice(inv.filter((r) => !r.hasFinalInvoice));
+    } catch { /* banner is informational — ignore */ }
+  }, []);
+
+  useEffect(() => { loadProposals(); loadCnPending(); }, [loadProposals, loadCnPending]);
 
   // ── Filters ────────────────────────────────────────────────────────────────
   const months = useMemo(() => ["All", ...Array.from(new Set(proposals.map((p) => p.month))).sort()], [proposals]);
@@ -259,7 +276,15 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
     setOpenActualsId(null);
     setOpenActualsPanel({});
   };
-  const closeModal = () => { setSelected(null); setActualsData({}); setOpenActualsId(null); setOpenActualsPanel({}); };
+  const closeModal = () => { setSelected(null); setActualsData({}); setOpenActualsId(null); setOpenActualsPanel({}); loadCnPending(); };
+
+  // Open a proposal straight at one activity's Post-Activity (used by CN banner)
+  const openActivity = (proposalId: string, activityId: string) => {
+    const p = proposals.find((x) => x.id === proposalId);
+    if (!p) { showToast("Proposal not found in your list — refresh the page.", false); return; }
+    openModal(p);
+    setOpenActualsId(activityId);
+  };
 
   const setActualField = (id: string, key: "actualStartDate" | "actualEndDate", v: string) =>
     setActualsData((prev) => ({ ...prev, [id]: { ...prev[id], [key]: v } }));
@@ -366,8 +391,22 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
     }
   };
 
+  // ── Save actuals — backend route is PATCH (PUT returned 405) ──────────────
   const saveActuals = async () => {
-    if (!selected) return;
+    if (!selected || actualsLoading) return;
+    {
+      const rng = getActualDateRange(selected.month, (selected as any).year);
+      const bad = selected.activities.find(a => {
+        const d = actualsData[a.id];
+        return [d?.actualStartDate, d?.actualEndDate].some(v => !!v && (v < rng.min || v > rng.max));
+      });
+      if (bad) { showToast(`"${bad.activityType}": actual dates must be within ${rng.label}.`, false); return; }
+      const badOrder = selected.activities.find(a => {
+        const d = actualsData[a.id];
+        return !!d?.actualStartDate && !!d?.actualEndDate && d.actualEndDate < d.actualStartDate;
+      });
+      if (badOrder) { showToast(`"${badOrder.activityType}": Actual End cannot be before Actual Start.`, false); return; }
+    }
     setActualsLoading(true);
     try {
       const payload = selected.activities.map((a) => {
@@ -383,9 +422,9 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
         };
       });
       const resp = await fetch(`${API_BASE}/api/proposals/${selected.id}/actuals`, {
-        method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${staffJwt()}` }, body: JSON.stringify(payload),
+        method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${staffJwt()}` }, body: JSON.stringify(payload),
       });
-      if (!resp.ok) throw new Error(await resp.text());
+      if (!resp.ok) throw new Error((await resp.text()) || `Save failed (${resp.status})`);
       const updated: ProposalResponse = await resp.json();
       setProposals((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       setSelected(updated);
@@ -410,6 +449,8 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
     </div>
   );
 
+  const cnBannerRows = isRsm ? cnAwaitingRsm : [];
+
   return (
     <div className="dash-root">
       {toast && (
@@ -427,8 +468,54 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
             {" · "}{proposals.length} proposal{proposals.length !== 1 ? "s" : ""} · {stats.approved} approved · {stats.pending} pending
           </p>
         </div>
-        <button className="dash-add-btn" onClick={() => navigate("/staff-proposal")}>+ New Proposal</button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => navigate("/cn-tracker")}
+            style={{ background: "#1e3a5f", color: "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+            💳 CN Tracker
+          </button>
+          <button className="dash-add-btn" onClick={() => navigate("/staff-proposal")}>+ New Proposal</button>
+        </div>
       </div>
+
+      {/* ══ CN — awaiting this RSM's approval ══ */}
+      {cnBannerRows.length > 0 && (
+        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderLeft: "4px solid #f59e0b", borderRadius: 8, padding: "12px 16px", marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, color: "#92400e", fontSize: 13, marginBottom: 8 }}>
+            💳 {cnBannerRows.length} Credit Note request{cnBannerRows.length !== 1 ? "s" : ""} awaiting your approval
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {cnBannerRows.slice(0, 10).map((r) => (
+              <div key={r.activityId} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: "#fff", border: "1px solid #fde68a", borderRadius: 6, padding: "6px 10px", fontSize: 12 }}>
+                <span style={{ fontFamily: "monospace", color: "#1e3a5f", fontWeight: 600 }}>{r.tokenNumber}</span>
+                <span style={{ fontWeight: 600, color: "#0a2540" }}>{r.dealerName}</span>
+                <span style={{ color: "#6b7280" }}>{r.activityName} · {r.month} {r.year}</span>
+                <span style={{ color: "#374151" }}>Leads {r.actualLeads}/{r.approvedLeads} · Retail {r.actualRetail}/{r.approvedRetail}</span>
+                <button onClick={() => openActivity(r.proposalId, r.activityId)}
+                  style={{ marginLeft: "auto", background: "#f59e0b", color: "#fff", border: "none", borderRadius: 6, padding: "4px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                  Review →
+                </button>
+              </div>
+            ))}
+            {cnBannerRows.length > 10 && <span style={{ fontSize: 11, color: "#92400e" }}>+{cnBannerRows.length - 10} more — open CN Tracker.</span>}
+          </div>
+        </div>
+      )}
+
+      {/* ══ CN — RSM-approved, waiting for the BGauss-name invoice ══ */}
+      {cnAwaitingInvoice.length > 0 && (
+        <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderLeft: "4px solid #3b82f6", borderRadius: 8, padding: "10px 16px", marginBottom: 14, fontSize: 12, color: "#1e40af" }}>
+          <strong>🧾 {cnAwaitingInvoice.length} CN{cnAwaitingInvoice.length !== 1 ? "s" : ""} approved — waiting for the dealer's invoice in BGauss's name.</strong>{" "}
+          Follow up with the dealer, or upload it from Post-Activity → Credit Note:
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+            {cnAwaitingInvoice.slice(0, 8).map((r) => (
+              <button key={r.activityId} onClick={() => openActivity(r.proposalId, r.activityId)}
+                style={{ background: "#fff", border: "1px solid #bfdbfe", color: "#1e40af", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                {r.dealerName} · {r.activityName}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="dash-filter-bar">
         <select className="dash-filter-select" value={activeFilter} onChange={(e) => setActiveFilter(e.target.value as ActiveFilter)}>
@@ -469,7 +556,7 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
           <div className="dash-empty">
             <div className="dd-empty-icon">📭</div>
             <div className="dd-empty-title">{proposals.length === 0 ? "No proposals yet" : "No proposals match your filters"}</div>
-            <div className="dd-empty-sub">{proposals.length === 0 ? "No proposals found for your name yet." : "Try clearing your filters."}</div>
+            <div className="dd-empty-sub">{proposals.length === 0 ? "No proposals found for your dealers yet." : "Try clearing your filters."}</div>
           </div>
         ) : (
           <div className="dash-table-wrap">
@@ -504,7 +591,7 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
         )}
       </div>
 
-      {/* ══ PROPOSAL DETAIL MODAL — view + Post-Activity, no edit/approve/reject ══ */}
+      {/* ══ PROPOSAL DETAIL MODAL — view + Post-Activity + CN, no edit/approve/reject ══ */}
       {selected && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.52)", zIndex: 1000, overflowY: "auto", padding: "20px 12px" }} onClick={(e) => { if (e.target === e.currentTarget) closeModal(); }}>
           <div style={{ background: "#fff", borderRadius: 14, maxWidth: 940, margin: "0 auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)", overflow: "hidden" }}>
@@ -559,7 +646,7 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
                         <th style={{ padding: "8px 6px", color: "#e2e8f0", textAlign: "center", fontSize: 10 }}>Retail</th>
                         <th style={{ padding: "8px 8px", color: "#e2e8f0", textAlign: "center", fontSize: 10 }}>Dates</th>
                         <th style={{ padding: "8px 6px", color: "#e2e8f0", textAlign: "right", fontSize: 10 }}>Budget (₹)</th>
-                        {selected.status === "Approved" && <th style={{ padding: "8px 8px", color: "#6ee7b7", textAlign: "center", fontSize: 10 }}>Post-Activity</th>}
+                        {selected.status === "Approved" && <th style={{ padding: "8px 8px", color: "#6ee7b7", textAlign: "center", fontSize: 10 }}>Post-Activity / CN</th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -592,6 +679,8 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
               {selected.status === "Approved" && selected.activities.map((a) => {
                 const d = actualsData[a.id];
                 if (openActualsId !== a.id || !d) return null;
+                const range = getActualDateRange(selected.month, (selected as any).year);
+                const outOfRange = (v: string) => !!v && (v < range.min || v > range.max);
                 return (
                   <div key={`actuals-${a.id}`} style={{ marginTop: 10, borderRadius: 10, overflow: "hidden", border: "2px solid #bbf7d0" }}>
                     <div style={{ padding: "14px 20px" }}>
@@ -602,19 +691,25 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
                         <span style={{ fontSize: 11, color: "#6b7280", marginLeft: "auto" }}>Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
                       </div>
 
+                      {(outOfRange(d.actualStartDate) || outOfRange(d.actualEndDate)) && (
+                        <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderLeft: "4px solid #dc2626", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12, color: "#991b1b" }}>
+                          ⚠ Actual dates are outside <strong>{range.label}</strong>. Correct them before saving.
+                        </div>
+                      )}
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 12, background: "#ecfdf5", borderRadius: 8, padding: "10px 12px", border: "1px solid #bbf7d0" }}>
                         <div>
                           <label style={{ fontSize: 10, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: 4 }}>Actual Start</label>
-                          <input type="date" value={d.actualStartDate} min={getActualDateRange().min} max={getActualDateRange().max}
-                            onChange={(e) => { setActualField(a.id, "actualStartDate", e.target.value); rebuildDailyEntries(a.id, e.target.value, d.actualEndDate); }}
+                          <input type="date" value={d.actualStartDate} min={range.min} max={range.max}
+                            onChange={(e) => { const v = e.target.value; if (outOfRange(v)) { showToast(`Actual dates must be within ${range.label}.`, false); return; } setActualField(a.id, "actualStartDate", v); rebuildDailyEntries(a.id, v, d.actualEndDate); }}
                             style={{ border: "1px solid #bbf7d0", borderRadius: 6, padding: "6px 9px", fontSize: 12, outline: "none", background: "#fff" }} />
                         </div>
                         <div>
                           <label style={{ fontSize: 10, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.04em", display: "block", marginBottom: 4 }}>Actual End</label>
-                          <input type="date" value={d.actualEndDate} min={d.actualStartDate || getActualDateRange().min} max={getActualDateRange().max}
-                            onChange={(e) => { setActualField(a.id, "actualEndDate", e.target.value); rebuildDailyEntries(a.id, d.actualStartDate, e.target.value); }}
+                          <input type="date" value={d.actualEndDate} min={d.actualStartDate && !outOfRange(d.actualStartDate) ? d.actualStartDate : range.min} max={range.max}
+                            onChange={(e) => { const v = e.target.value; if (outOfRange(v)) { showToast(`Actual dates must be within ${range.label}.`, false); return; } if (v && d.actualStartDate && v < d.actualStartDate) { showToast("Actual End cannot be before Actual Start.", false); return; } setActualField(a.id, "actualEndDate", v); rebuildDailyEntries(a.id, d.actualStartDate, v); }}
                             style={{ border: "1px solid #bbf7d0", borderRadius: 6, padding: "6px 9px", fontSize: 12, outline: "none", background: "#fff" }} />
                         </div>
+                        <div style={{ fontSize: 10, color: "#6b7280", alignSelf: "center", lineHeight: 1.4 }}>Allowed:<br /><strong style={{ color: "#166534" }}>{range.label}</strong></div>
                         {(a.actualStartDate || a.actualEndDate) && <div style={{ fontSize: 11, color: "#166534", fontWeight: 600 }}>✓ {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</div>}
 
                         <div style={{ display: "flex", gap: 7, marginLeft: "auto", flexWrap: "wrap", alignItems: "center" }}>
@@ -637,6 +732,7 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
                           <button onClick={() => { setOpenActualsId(null); setOpenActualsPanel((prev) => ({ ...prev, [a.id]: undefined as any })); }} style={{ background: "#f1f5f9", color: "#374151", border: "1px solid #e2e8f0", padding: "5px 10px", borderRadius: 7, fontSize: 12, cursor: "pointer" }}>✕</button>
                         </div>
                       </div>
+
 
                       {openActualsPanel[a.id] === "photos" && (
                         <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: 9, padding: "12px 14px", marginBottom: 10 }}>
@@ -806,9 +902,9 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
                                 <tfoot>
                                   <tr style={{ background: "#0a2540", borderTop: "2px solid #1e3a5f" }}>
                                     <td style={{ padding: "7px 10px", fontWeight: 800, color: "#fbbf24", fontSize: 11 }}>TOTAL</td>
-                                    <td></td>
+                                    <td style={{ padding: "7px 6px", textAlign: "center", fontWeight: 700, fontSize: 12, color: "#fde68a" }}>{d.dailyEntries.reduce((s, e) => s + (Number((e as any).setupCount) || 0), 0)}</td>
                                     {(["enquiryPlanned", "enquiryActual", "testDrivePlanned", "testDriveActual", "bookingActual", "retailActual", "leadsPunched"] as (keyof DailyEntry)[]).map((key, ki) => (
-                                      <td key={key} style={{ padding: "7px 6px", textAlign: "center", fontWeight: 700, fontSize: 12, color: [0, 2].includes(ki) ? "#93c5fd" : [1, 3].includes(ki) ? "#6ee7b7" : ki === 4 ? "#c4b5fd" : ki === 5 ? "#fbbf24" : "#a5b4fc" }}>{d.dailyEntries.reduce((s, e) => s + ((e as any)[key] as number), 0)}</td>
+                                      <td key={key} style={{ padding: "7px 6px", textAlign: "center", fontWeight: 700, fontSize: 12, color: [0, 2].includes(ki) ? "#93c5fd" : [1, 3].includes(ki) ? "#6ee7b7" : ki === 4 ? "#c4b5fd" : ki === 5 ? "#fbbf24" : "#a5b4fc" }}>{d.dailyEntries.reduce((s, e) => s + (Number((e as any)[key]) || 0), 0)}</td>
                                     ))}
                                     <td style={{ padding: "7px 8px", textAlign: "center" }}><span style={{ fontSize: 10, color: "#94a3b8" }}>{d.proofMedia.length > 0 && `📸${d.proofMedia.length} `}{d.invoiceMedia.length > 0 && `🧾${d.invoiceMedia.length}`}</span></td>
                                   </tr>
@@ -819,6 +915,13 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
                           <div style={{ padding: "7px 14px", fontSize: 11, color: "#6b7280", background: "#f8fafc", borderTop: "1px solid #e2e8f0" }}>ℹ Green ≥90% · Yellow ≥60% · Red &lt;60% · Dim rows = no data yet</div>
                         </div>
                       )}
+
+                      {/* ══ CREDIT NOTE (CN) — always last, after all Post-Activity panels ══ */}
+                      <div style={{ marginTop: 14 }}>
+                        <CnPanel proposalId={selected.id} activityId={a.id}
+                          refreshKey={`${d.proofMedia.length}-${d.invoiceMedia.length}-${a.actualEndDate ?? ""}`}
+                          onChanged={() => loadCnPending()} />
+                      </div>
                     </div>
                   </div>
                 );

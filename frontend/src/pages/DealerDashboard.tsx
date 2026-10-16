@@ -8,6 +8,7 @@ import { fetchMyDealerProposals, type ProposalResponse } from "../services/propo
 import { getDealerToken } from "../services/dealerAuthService";
 import * as XLSX from "xlsx";
 import "./DealerDashboard.css";
+import CnPanel from "../components/CnPanel";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 const inrCompact = (v: number) => {
@@ -38,11 +39,22 @@ const DEFAULT_PLAN_PER_SETUP = 35;
 // Bounds for Actual Start/End — current + next month, matches Approver (local date, no UTC shift)
 const isoLocal = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-function getActualDateRange() {
-  const now = new Date();
-  const min = new Date(now.getFullYear(), now.getMonth(), 1);
-  const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);
-  return { min: isoLocal(min), max: isoLocal(max) };
+// Post-Activity actual dates: proposal month + next month only (local dates, no UTC shift).
+// e.g. September 2026 -> 2026-09-01 .. 2026-10-31; December 2026 -> 2026-12-01 .. 2027-01-31
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+function getActualDateRange(month?: string | null, year?: string | number | null) {
+  const mi = MONTHS.indexOf((month ?? "").trim());
+  const y  = parseInt(String(year ?? ""), 10) || new Date().getFullYear();
+  if (mi < 0) {
+    const now = new Date();
+    return { min: isoLocal(new Date(now.getFullYear(), now.getMonth(), 1)),
+             max: isoLocal(new Date(now.getFullYear(), now.getMonth() + 2, 0)),
+             label: "current and next month" };
+  }
+  const nextName = MONTHS[(mi + 1) % 12];
+  const nextYear = mi === 11 ? y + 1 : y;
+  return { min: isoLocal(new Date(y, mi, 1)), max: isoLocal(new Date(y, mi + 2, 0)),
+           label: `${MONTHS[mi]} ${y} – ${nextName} ${nextYear}` };
 }
 
 // ─── Dealer auth helpers ──────────────────────────────────────────────────────
@@ -589,6 +601,19 @@ export default function DealerDashboard() {
   // ── Save actuals (dealer JWT) — backend route is PATCH ────────────────────
   const saveActuals = async () => {
     if (!selected || actualsLoading) return;
+    {
+      const rng = getActualDateRange(selected.month, (selected as any).year);
+      const bad = selected.activities.find(a => {
+        const d = actualsData[a.id];
+        return [d?.actualStartDate, d?.actualEndDate].some(v => !!v && (v < rng.min || v > rng.max));
+      });
+      if (bad) { showToast(`"${bad.activityType}": actual dates must be within ${rng.label}.`, false); return; }
+      const badOrder = selected.activities.find(a => {
+        const d = actualsData[a.id];
+        return !!d?.actualStartDate && !!d?.actualEndDate && d.actualEndDate < d.actualStartDate;
+      });
+      if (badOrder) { showToast(`"${badOrder.activityType}": Actual End cannot be before Actual Start.`, false); return; }
+    }
     setActualsLoading(true);
     try {
       const payload = selected.activities.map(a => {
@@ -1235,6 +1260,8 @@ export default function DealerDashboard() {
               {selected.status==="Approved"&&selected.activities.map((a)=>{
                 const d=actualsData[a.id];
                 if (openActualsId!==a.id||!d) return null;
+                const range = getActualDateRange(selected.month, (selected as any).year);
+                const outOfRange = (v: string) => !!v && (v < range.min || v > range.max);
                 return (
                   <div key={`actuals-${a.id}`} style={{ marginTop:10,borderRadius:10,overflow:"hidden",border:"2px solid #bbf7d0" }}>
                     <div style={{ padding:"14px 20px" }}>
@@ -1247,20 +1274,26 @@ export default function DealerDashboard() {
                       </div>
 
                       {/* Actual dates + action bar */}
+                      {(outOfRange(d.actualStartDate) || outOfRange(d.actualEndDate)) && (
+                        <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderLeft: "4px solid #dc2626", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12, color: "#991b1b" }}>
+                          ⚠ Actual dates are outside <strong>{range.label}</strong>. Correct them before saving.
+                        </div>
+                      )}
                       <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
                         <div>
                           <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual Start</label>
                           <input type="date" value={d.actualStartDate}
-                            min={getActualDateRange().min} max={getActualDateRange().max}
-                            onChange={(e)=>{ setActualField(a.id,"actualStartDate",e.target.value); rebuildDailyEntries(a.id,e.target.value,d.actualEndDate); }}
+                            min={range.min} max={range.max}
+                            onChange={(e)=>{ const v=e.target.value; if (outOfRange(v)) { showToast(`Actual dates must be within ${range.label}.`,false); return; } setActualField(a.id,"actualStartDate",v); rebuildDailyEntries(a.id,v,d.actualEndDate); }}
                             style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
                         </div>
                         <div>
                           <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual End</label>
-                          <input type="date" value={d.actualEndDate} min={d.actualStartDate||getActualDateRange().min} max={getActualDateRange().max}
-                            onChange={(e)=>{ setActualField(a.id,"actualEndDate",e.target.value); rebuildDailyEntries(a.id,d.actualStartDate,e.target.value); }}
+                          <input type="date" value={d.actualEndDate} min={d.actualStartDate&&!outOfRange(d.actualStartDate)?d.actualStartDate:range.min} max={range.max}
+                            onChange={(e)=>{ const v=e.target.value; if (outOfRange(v)) { showToast(`Actual dates must be within ${range.label}.`,false); return; } if (v&&d.actualStartDate&&v<d.actualStartDate) { showToast("Actual End cannot be before Actual Start.",false); return; } setActualField(a.id,"actualEndDate",v); rebuildDailyEntries(a.id,d.actualStartDate,v); }}
                             style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
                         </div>
+                        <div style={{ fontSize:10,color:"#6b7280",alignSelf:"center",lineHeight:1.4 }}>Allowed:<br/><strong style={{ color:"#166534" }}>{range.label}</strong></div>
                         {(a.actualStartDate||a.actualEndDate)&&(
                           <div style={{ fontSize:11,color:"#166534",fontWeight:600 }}>✓ {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</div>
                         )}
@@ -1310,6 +1343,7 @@ export default function DealerDashboard() {
                               padding:"5px 10px",borderRadius:7,fontSize:12,cursor:"pointer" }}>✕</button>
                         </div>
                       </div>
+
 
                       {/* ══ PHOTOS PANEL ══ */}
                       {openActualsPanel[a.id]==="photos"&&(
@@ -1524,6 +1558,12 @@ export default function DealerDashboard() {
                           </div>
                         </div>
                       )}
+
+                      {/* ══ CREDIT NOTE (CN) — always last, after all Post-Activity panels ══ */}
+                      <div style={{ marginTop: 14 }}>
+                        <CnPanel proposalId={selected.id} activityId={a.id}
+                          refreshKey={`${d.proofMedia.length}-${d.invoiceMedia.length}-${a.actualEndDate ?? ""}`} />
+                      </div>
 
                     </div>
                   </div>

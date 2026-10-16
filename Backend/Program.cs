@@ -188,6 +188,7 @@ builder.Services.AddSingleton<GraphAppTokenService>();
 // it directly for immediate sends), once as the hosted background service
 // (the nightly safety-net loop). Both share the same stateless logic.
 builder.Services.AddSingleton<DailyDigestService>();
+builder.Services.AddHostedService<ErpAutoSyncService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DailyDigestService>());
 
 // ── Email ─────────────────────────────────────────────────────────────────────
@@ -195,6 +196,11 @@ builder.Services.AddHttpClient<GraphEmailService>();
 builder.Services.AddScoped<IEmailService, GraphEmailService>();
 builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 builder.Services.AddScoped<AuditLogService>();
+// ── CN (Credit Note) workflow ─────────────────────────────────────────────────
+builder.Services.AddHttpClient("cn-graph", c => c.Timeout = TimeSpan.FromMinutes(5));
+builder.Services.AddHttpClient("cn-media", c => c.Timeout = TimeSpan.FromMinutes(2));
+builder.Services.AddScoped<CnAttachmentLoader>();
+builder.Services.AddScoped<CnEmailService>();
 // ── Chat — SignalR + AI bot with DB access ────────────────────────────────────
 builder.Services.AddSignalR(opts =>
 {

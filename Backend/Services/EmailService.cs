@@ -108,6 +108,22 @@ public class EmailService : IEmailService
         return Task.FromResult<(bool, string?)>((false, "SMTP not supported for team notification. Use Graph."));
     }
 
+    // ── CN step 2 (rejected): RSM rejected → Checker + Dealer — SMTP not supported ──
+    public Task<(bool Sent, string? Error)> SendCnRejectedMailAsync(
+        Proposal p, ProposalActivity a, string? note, string? dealerEmail, string graphToken)
+    {
+        _logger.LogWarning("SendCnRejectedMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
+        return Task.FromResult<(bool, string?)>((false, "SMTP not supported for CN-rejected mail. Use Graph."));
+    }
+
+    // ── CN step 4: Checker → Accounts with attachments — SMTP not supported ──
+    public Task<(bool Sent, string? Error)> SendCnToAccountsMailAsync(
+        Proposal p, ProposalActivity a, List<CnMailAttachment> attachments, string graphToken)
+    {
+        _logger.LogWarning("SendCnToAccountsMailAsync: SMTP not supported. Use Graph. Proposal {Token}", p.TokenNumber);
+        return Task.FromResult<(bool, string?)>((false, "SMTP not supported for CN-to-Accounts mail. Use Graph."));
+    }
+
     // ── Core SMTP send with optional CC ──────────────────────────────────────
     private async Task<(bool Sent, string? Error)> SendAsync(
         string to, string? cc, string subject, string body)

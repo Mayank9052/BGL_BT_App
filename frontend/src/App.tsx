@@ -24,6 +24,7 @@ import { getDealerUser, type DealerLoginResponse } from "./services/dealerAuthSe
 import AdminAuditLogPage from "./pages/AdminAuditLogPage";
 import AdminDealerMapPage from "./pages/AdminDealerMapPage";
 import AutoUpdateChecker from "./components/AutoUpdateChecker";
+import CnTrackerPage from "./pages/CnTrackerPage";
 
 const STAFF_ROLES = new Set(["RSM", "TSM", "ZSM", "Commando"]);
 
@@ -60,13 +61,15 @@ export default function App() {
     <BrowserRouter>
     <AutoUpdateChecker />
       {isDealerSession ? (
-        // ── Dealer login — DealerLayout with own sidebar ──────────────────────
+        // ── Dealer login ─────────────────────────────────────────────────────
         <Routes>
           <Route element={<DealerLayout onLogout={refreshDealer} />}>
             {/* Dashboard — proposal history, KPIs, send-back */}
             <Route path="/dealer-dashboard" element={<DealerDashboard />} />
             {/* New Proposal — same RSMForm but under dealer route */}
             <Route path="/dealer-proposal"  element={<RSMProposalForm />} />
+            {/* CN Tracker — dealer sees only own activities (scoped by backend) */}
+            <Route path="/cn-tracker"       element={<CnTrackerPage />} />
             <Route path="/" element={<Navigate to="/dealer-dashboard" replace />} />
             <Route path="*" element={<Navigate to="/dealer-dashboard" replace />} />
           </Route>
@@ -74,10 +77,7 @@ export default function App() {
           <Route path="/reset-password"  element={<ResetPasswordPage />} />
         </Routes>
       ) : isStaffSession ? (
-        // ── RSM/TSM/ZSM/Commando local login — their own dashboard,
-        // filtered to proposals matching their name via
-        // GET /api/proposals/my-team-proposals. They do NOT get the
-        // dealer's proposal-submission form or the DealerLayout shell. ──────
+        // ── RSM / TSM / ZSM / Commando local login ───────────────────────────
         <Routes>
           <Route element={<DealerLayout onLogout={refreshDealer} />}>
             <Route path="/staff-dashboard" element={<StaffDashboard staff={dealer!} />} />
@@ -90,6 +90,8 @@ export default function App() {
                 to the same form here. */}
             <Route path="/staff-proposal"  element={<RSMProposalForm />} />
             <Route path="/dealer-proposal" element={<RSMProposalForm />} />
+            {/* CN Tracker — mapped dealers only (scoped by backend) */}
+            <Route path="/cn-tracker"      element={<CnTrackerPage />} />
             <Route path="/" element={<Navigate to="/staff-dashboard" replace />} />
             <Route path="*" element={<Navigate to="/staff-dashboard" replace />} />
           </Route>
@@ -106,16 +108,15 @@ export default function App() {
             <Route path="/rsm-form"    element={<RSMProposalForm />} />
             {/* Approver / review portal */}
             <Route path="/approver"    element={<ApproverDashboard />} />
-            {/* Analytics — budget/region/activity/daily insights */}
-            <Route path="/analytics"  element={<AnalyticsDashboard />} />
-            {/* Reports — Excel / PDF downloads */}
+            <Route path="/analytics"   element={<AnalyticsDashboard />} />
             <Route path="/reports"     element={<ReportsPage />} />
-            {/* Chat — AI assistant + team chat */}
+            {/* CN Tracker — Checker / Final Approver see all; others scoped by backend */}
+            <Route path="/cn-tracker"  element={<CnTrackerPage />} />
             <Route path="/chat"        element={<ChatTestPage />} />
             {/* Admin — user management */}
             <Route element={<AdminRoute />}>
-              <Route path="/admin/users" element={<AdminUsersPage />} />
-              <Route path="/admin/audit-log" element={<AdminAuditLogPage />} />
+              <Route path="/admin/users"      element={<AdminUsersPage />} />
+              <Route path="/admin/audit-log"  element={<AdminAuditLogPage />} />
               <Route path="/admin/dealer-map" element={<AdminDealerMapPage />} />
             </Route>
             <Route path="/"  element={<Navigate to="/dashboard" replace />} />

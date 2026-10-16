@@ -1,6 +1,7 @@
-// Backend/Services/GraphEmailService.cs
+﻿// Backend/Services/GraphEmailService.cs
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json.Serialization;
 using BGL_BT_App.Backend.Models;
 using Microsoft.Extensions.Options;
 using BGL_BT_App.Backend.DTOs;
@@ -25,6 +26,9 @@ public class SmtpSettings
 
     public string FinalApproverFirstName =>
         FirstName(FinalApproverEmail);
+
+    public string AccountsTeamEmails { get; set; } =
+        "gaurav.zore@bgauss.com,ankit.heda@bgauss.com";
 
     private static string FirstName(string email)
     {

@@ -1,13 +1,21 @@
 // src/pages/AdminDealerMapPage.tsx
 // Dealer Mapping admin — CRUD + Excel Template / Export / Import.
 //
-// IMPORT RULES (updated):
+// NEW: the Add/Edit form's Dealer / RSM / TSM / Commando fields are now
+// searchable dropdowns sourced from ERP (same fetchDealers()/fetchCommandos()
+// calls AdminUsersPage.tsx already uses), with a "Can't find it? Enter
+// manually" fallback for anyone not yet in ERP. Picking a dealer from the
+// dropdown auto-fills Dealer Code, City, State, and pre-fills RSM/TSM/
+// Commando from whatever ERP already knows for that dealer (still editable
+// afterward — nothing is locked).
+//
+// IMPORT RULES (unchanged):
 //   • Only "Dealer Name" is mandatory in the file.
 //   • Cells containing NULL / N/A / None / - are treated as BLANK.
 //   • BLANK cell = KEEP the existing DB value (partial update). Use Edit to clear a field.
 //   • Match: Dealer Code first, else Dealer Name. Not found → created.
 //   • Dealers missing from the file are NOT deleted.
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useMsal } from "@azure/msal-react";
 import * as XLSX from "xlsx";
 import {
@@ -16,6 +24,11 @@ import {
   type DealerTeamMappingRow, type UpsertDealerTeamMapping,
   type BulkImportRow, type BulkImportError, type BulkImportResult,
 } from "../services/dealerTeamMappingService";
+import {
+  fetchDealers, fetchCommandos,
+  type DealerOption, type CommandoOption,
+} from "../services/dealerService";
+import SearchableSelect from "../components/SearchableSelect";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXCEL FORMAT — single source of truth for Template, Export and Import
@@ -78,6 +91,9 @@ const parseType = (v: string): "Old" | "New" | null => {
   const s = v.trim().toLowerCase();
   return s === "old" ? "Old" : s === "new" ? "New" : null;
 };
+
+const titleCase = (s: string): string =>
+  (s ?? "").toLowerCase().split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 
 // DD.MM.YYYY HH:mm (browser local = IST for users). Server sends UTC without "Z".
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -229,6 +245,93 @@ async function parseImportFile(file: File): Promise<{
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Dealer search dropdown — fetched from ERP (same source as AdminUsersPage /
+// RSMForm). Selecting a dealer hands the full DealerOption back to the
+// caller so it can auto-fill Dealer Code / City / State / RSM / TSM /
+// Commando in one shot.
+// ═══════════════════════════════════════════════════════════════════════════
+function DealerSearchSelect({ dealers, loading, value, onSelect }: {
+  dealers: DealerOption[]; loading: boolean; value: string; // value = dealerCode (if picked from ERP)
+  onSelect: (d: DealerOption | null) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [open,   setOpen]   = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = dealers.find((d) => d.customerCode === value);
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const filtered = dealers.filter((d) =>
+    !search ||
+    d.customerName.toLowerCase().includes(search.toLowerCase()) ||
+    d.customerCode.toLowerCase().includes(search.toLowerCase()) ||
+    (d.city ?? "").toLowerCase().includes(search.toLowerCase())
+  ).slice(0, 50);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <div onClick={() => { if (!loading) setOpen((v) => !v); }}
+        style={{ border: "1.5px solid #e2e8f0", borderRadius: 7, padding: "7px 11px",
+          background: "#fff", cursor: loading ? "not-allowed" : "pointer", fontSize: 13,
+          color: selected ? "#0a2540" : "#9ca3af", display: "flex",
+          justifyContent: "space-between", alignItems: "center", minHeight: 38 }}>
+        <span>{loading ? "Loading dealers from ERP…" : selected
+          ? `${titleCase(selected.customerName)} (${selected.customerCode})`
+          : "🔍 Search ERP dealer…"}</span>
+        <span style={{ fontSize: 10, color: "#9ca3af" }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
+          background: "#fff", border: "1.5px solid #e2e8f0", borderRadius: 8,
+          boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 1000, maxHeight: 280,
+          display: "flex", flexDirection: "column" }}>
+          <div style={{ padding: "8px 10px", borderBottom: "1px solid #f1f5f9" }}>
+            <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)}
+              placeholder="Type dealer name or code…"
+              style={{ width: "100%", border: "1.5px solid #e2e8f0", borderRadius: 6,
+                padding: "6px 10px", fontSize: 13, outline: "none",
+                boxSizing: "border-box" as const }}/>
+          </div>
+          <div style={{ overflowY: "auto", flex: 1 }}>
+            {value && (
+              <div onClick={() => { onSelect(null); setSearch(""); setOpen(false); }}
+                style={{ padding: "8px 12px", fontSize: 12, color: "#ef4444",
+                  cursor: "pointer", borderBottom: "1px solid #f1f5f9" }}>
+                ✕ Clear selection
+              </div>
+            )}
+            {filtered.length === 0
+              ? <div style={{ padding: "16px 12px", fontSize: 12, color: "#9ca3af", textAlign: "center" }}>
+                  {dealers.length === 0 ? "No ERP dealers loaded" : "No results found"}
+                </div>
+              : filtered.map((d) => (
+                <div key={d.customerCode}
+                  onClick={() => { onSelect(d); setSearch(""); setOpen(false); }}
+                  style={{ padding: "9px 12px", cursor: "pointer", fontSize: 13,
+                    background: d.customerCode === value ? "#eff6ff" : "transparent",
+                    borderBottom: "1px solid #f9fafb" }}>
+                  <div style={{ fontWeight: 600, color: "#0a2540" }}>{titleCase(d.customerName)}</div>
+                  <div style={{ fontSize: 11, color: "#6b7280", marginTop: 1 }}>
+                    Code: {d.customerCode}
+                    {(d.city || d.state) && ` · ${[d.city, d.state].filter(Boolean).map((v) => titleCase(v!)).join(", ")}`}
+                    {d.rsmName && ` · RSM: ${titleCase(d.rsmName)}`}
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 const emptyForm: UpsertDealerTeamMapping = {
   dealerName: "", dealerCode: "", city: "", state: "",
   rsm: "", rsmEmail: "", tsm: "", tsmEmail: "",
@@ -249,6 +352,15 @@ export default function AdminDealerMapPage() {
   const [form,      setForm]      = useState<UpsertDealerTeamMapping>(emptyForm);
   const [saving,    setSaving]    = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // ── NEW: ERP data for the searchable dropdowns ───────────────────────────
+  const [erpDealers,   setErpDealers]   = useState<DealerOption[]>([]);
+  const [erpCommandos, setErpCommandos] = useState<CommandoOption[]>([]);
+  const [erpLoading,   setErpLoading]   = useState(false);
+  // "erp" = pick dealer from ERP dropdown (auto-fills code/city/state/team).
+  // "manual" = type everything by hand — for dealers not yet in ERP.
+  const [dealerSourceMode, setDealerSourceMode] = useState<"erp" | "manual">("erp");
+  const [selectedErpDealerCode, setSelectedErpDealerCode] = useState("");
 
   // Excel
   const fileRef = useRef<HTMLInputElement>(null);
@@ -273,7 +385,55 @@ export default function AdminDealerMapPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  const openCreate = () => { setEditingId(null); setForm(emptyForm); setFormError(null); setShowForm(true); };
+  // ── NEW: load ERP dealers + commandos once, in the background (not
+  // blocking the page) so the dropdowns are ready by the time the modal opens ──
+  useEffect(() => {
+    setErpLoading(true);
+    Promise.all([
+      fetchDealers(instance).catch(() => [] as DealerOption[]),
+      fetchCommandos(instance).catch(() => [] as CommandoOption[]),
+    ])
+      .then(([dealers, commandos]) => { setErpDealers(dealers); setErpCommandos(commandos); })
+      .finally(() => setErpLoading(false));
+  }, [instance]);
+
+  // ── NEW: option lists for the searchable RSM / TSM / Commando fields,
+  // built from whatever ERP already knows (deduplicated, title-cased) ──────
+  const rsmOptions = useMemo(() => {
+    const map = new Map<string, { value: string; label: string }>();
+    for (const d of erpDealers) {
+      const val = d.rsmName ?? d.rsmCode;
+      if (val) { const tc = titleCase(val); map.set(tc.toLowerCase(), { value: tc, label: tc }); }
+    }
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [erpDealers]);
+
+  const tsmOptions = useMemo(() => {
+    const map = new Map<string, { value: string; label: string }>();
+    for (const d of erpDealers) {
+      const val = d.tsmName ?? d.tsmCode;
+      if (val) { const tc = titleCase(val); map.set(tc.toLowerCase(), { value: tc, label: tc }); }
+    }
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [erpDealers]);
+
+  const commandoOptions = useMemo(() => {
+    const map = new Map<string, { value: string; label: string }>();
+    for (const c of erpCommandos) {
+      const tc = titleCase(c.name);
+      map.set(tc.toLowerCase(), { value: tc, label: tc });
+    }
+    for (const d of erpDealers) {
+      if (d.commandoName) { const tc = titleCase(d.commandoName); map.set(tc.toLowerCase(), { value: tc, label: tc }); }
+    }
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [erpCommandos, erpDealers]);
+
+  const openCreate = () => {
+    setEditingId(null); setForm(emptyForm); setFormError(null);
+    setDealerSourceMode("erp"); setSelectedErpDealerCode("");
+    setShowForm(true);
+  };
   const openEdit = (row: DealerTeamMappingRow) => {
     setEditingId(row.id);
     setForm({
@@ -282,9 +442,35 @@ export default function AdminDealerMapPage() {
       commando: row.commando ?? "", commandoEmail: row.commandoEmail ?? "", dealerEmail: row.dealerEmail ?? "",
       isEligible: row.isEligible, dealerType: row.dealerType ?? "Old",
     });
+    // Editing an existing mapping always starts in "manual" view — the fields
+    // are already filled from the DB. Switching to "erp" re-picks a dealer
+    // and overwrites Code/City/State/RSM/TSM/Commando from ERP, if needed.
+    setDealerSourceMode("manual");
+    setSelectedErpDealerCode(row.dealerCode ?? "");
     setFormError(null); setShowForm(true);
   };
   const closeForm = () => { setShowForm(false); setEditingId(null); setFormError(null); };
+
+  // ── NEW: dealer picked from the ERP dropdown — auto-fill everything we can ──
+  const handleErpDealerSelect = (d: DealerOption | null) => {
+    if (!d) {
+      setSelectedErpDealerCode("");
+      return;
+    }
+    setSelectedErpDealerCode(d.customerCode);
+    setForm((f) => ({
+      ...f,
+      dealerName: titleCase(d.customerName),
+      dealerCode: d.customerCode,
+      city:       d.city  ? titleCase(d.city)  : f.city,
+      state:      d.state ? titleCase(d.state) : f.state,
+      // Pre-fill team from ERP, but only if the field is still empty — never
+      // clobber something the admin already typed/edited in this session.
+      rsm:      f.rsm.trim()      || (d.rsmName      ? titleCase(d.rsmName)      : f.rsm),
+      tsm:      f.tsm?.trim()     || (d.tsmName      ? titleCase(d.tsmName)      : f.tsm),
+      commando: f.commando?.trim()|| (d.commandoName ? titleCase(d.commandoName) : f.commando),
+    }));
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -573,45 +759,117 @@ export default function AdminDealerMapPage() {
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 7,
                   padding: "8px 12px", fontSize: 12, color: "#991b1b", marginBottom: 14 }}>⚠ {formError}</div>
               )}
-              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginBottom: 12 }}>
-                <div><label style={labelStyle}>Dealer Name *</label>
-                  <input style={inputStyle} value={form.dealerName} required
-                    onChange={(e) => setForm((f) => ({ ...f, dealerName: e.target.value }))} /></div>
-                <div><label style={labelStyle}>Dealer Code</label>
-                  <input style={inputStyle} value={form.dealerCode ?? ""}
-                    onChange={(e) => setForm((f) => ({ ...f, dealerCode: e.target.value }))} /></div>
+
+              {/* ── Dealer source toggle: ERP dropdown vs manual entry ── */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <button type="button" onClick={() => setDealerSourceMode("erp")}
+                  style={{ flex: 1, padding: "7px 10px", borderRadius: 7, fontSize: 12, fontWeight: 700,
+                    cursor: "pointer", border: `1.5px solid ${dealerSourceMode === "erp" ? "#2563eb" : "#e2e8f0"}`,
+                    background: dealerSourceMode === "erp" ? "#eff6ff" : "#fff",
+                    color: dealerSourceMode === "erp" ? "#1e40af" : "#6b7280" }}>
+                  🔍 Pick from ERP
+                </button>
+                <button type="button" onClick={() => setDealerSourceMode("manual")}
+                  style={{ flex: 1, padding: "7px 10px", borderRadius: 7, fontSize: 12, fontWeight: 700,
+                    cursor: "pointer", border: `1.5px solid ${dealerSourceMode === "manual" ? "#2563eb" : "#e2e8f0"}`,
+                    background: dealerSourceMode === "manual" ? "#eff6ff" : "#fff",
+                    color: dealerSourceMode === "manual" ? "#1e40af" : "#6b7280" }}>
+                  ✎ Enter manually
+                </button>
               </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginBottom: 12 }}>
+                <div>
+                  <label style={labelStyle}>
+                    Dealer Name *{dealerSourceMode === "erp" && (
+                      <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 6, color: "#9ca3af" }}>
+                        (select — auto-fills Code/City/State/Team)
+                      </span>
+                    )}
+                  </label>
+                  {dealerSourceMode === "erp" ? (
+                    <>
+                      <DealerSearchSelect
+                        dealers={erpDealers} loading={erpLoading}
+                        value={selectedErpDealerCode} onSelect={handleErpDealerSelect}/>
+                      {form.dealerName && !selectedErpDealerCode && (
+                        <div style={{ fontSize: 11, color: "#92400e", marginTop: 4 }}>
+                          Currently: <b>{form.dealerName}</b> — pick from the list above, or switch to "Enter manually" to keep this.
+                        </div>
+                      )}
+                      {!erpLoading && erpDealers.length === 0 && (
+                        <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 4 }}>
+                          No ERP dealers loaded — use "Enter manually" instead.
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <input style={inputStyle} value={form.dealerName} required
+                      placeholder="Dealer name"
+                      onChange={(e) => setForm((f) => ({ ...f, dealerName: e.target.value }))} />
+                  )}
+                </div>
+                <div>
+                  <label style={labelStyle}>
+                    Dealer Code{dealerSourceMode === "erp" && selectedErpDealerCode && (
+                      <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 4, color: "#16a34a" }}>✓ auto</span>
+                    )}
+                  </label>
+                  <input style={{ ...inputStyle, background: dealerSourceMode === "erp" && selectedErpDealerCode ? "#f0fdf4" : "#fff" }}
+                    value={form.dealerCode ?? ""} placeholder="e.g. D00123"
+                    readOnly={dealerSourceMode === "erp" && !!selectedErpDealerCode}
+                    onChange={(e) => setForm((f) => ({ ...f, dealerCode: e.target.value }))} />
+                </div>
+              </div>
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 <div><label style={labelStyle}>City</label>
                   <input style={inputStyle} value={form.city ?? ""} onChange={(e) => setForm((f) => ({ ...f, city: e.target.value }))} /></div>
                 <div><label style={labelStyle}>State</label>
                   <input style={inputStyle} value={form.state ?? ""} onChange={(e) => setForm((f) => ({ ...f, state: e.target.value }))} /></div>
               </div>
+
               <div style={{ height: 1, background: "#e2e8f0", margin: "14px 0" }} />
+
+              <p style={{ fontSize: 11, color: "#9ca3af", margin: "0 0 10px" }}>
+                RSM / TSM / Commando — search &amp; select from ERP, or just type a name if it's not listed yet.
+              </p>
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 <div><label style={labelStyle}>RSM Name *</label>
-                  <input style={inputStyle} value={form.rsm} required onChange={(e) => setForm((f) => ({ ...f, rsm: e.target.value }))} /></div>
+                  <SearchableSelect options={rsmOptions} value={form.rsm}
+                    onChange={(v) => setForm((f) => ({ ...f, rsm: v }))}
+                    placeholder="Search or type RSM name…" allowCreate={true} loading={erpLoading}/></div>
                 <div><label style={labelStyle}>RSM Email</label>
                   <input style={inputStyle} type="email" value={form.rsmEmail ?? ""} onChange={(e) => setForm((f) => ({ ...f, rsmEmail: e.target.value }))} /></div>
               </div>
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 <div><label style={labelStyle}>TSM Name</label>
-                  <input style={inputStyle} value={form.tsm ?? ""} onChange={(e) => setForm((f) => ({ ...f, tsm: e.target.value }))} /></div>
+                  <SearchableSelect options={tsmOptions} value={form.tsm ?? ""}
+                    onChange={(v) => setForm((f) => ({ ...f, tsm: v }))}
+                    placeholder="Search or type TSM name…" allowCreate={true} loading={erpLoading}/></div>
                 <div><label style={labelStyle}>TSM Email</label>
                   <input style={inputStyle} type="email" value={form.tsmEmail ?? ""} onChange={(e) => setForm((f) => ({ ...f, tsmEmail: e.target.value }))} /></div>
               </div>
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 <div><label style={labelStyle}>Commando Name</label>
-                  <input style={inputStyle} value={form.commando ?? ""} onChange={(e) => setForm((f) => ({ ...f, commando: e.target.value }))} /></div>
+                  <SearchableSelect options={commandoOptions} value={form.commando ?? ""}
+                    onChange={(v) => setForm((f) => ({ ...f, commando: v }))}
+                    placeholder="Search or type Commando name…" allowCreate={true} loading={erpLoading}/></div>
                 <div><label style={labelStyle}>Commando Email</label>
                   <input style={inputStyle} type="email" value={form.commandoEmail ?? ""} onChange={(e) => setForm((f) => ({ ...f, commandoEmail: e.target.value }))} /></div>
               </div>
+
               <div style={{ marginBottom: 12 }}>
                 <label style={labelStyle}>Dealer Email</label>
                 <input style={inputStyle} value={form.dealerEmail ?? ""} placeholder="Comma-separate if more than one"
                   onChange={(e) => setForm((f) => ({ ...f, dealerEmail: e.target.value }))} />
               </div>
+
               <div style={{ height: 1, background: "#e2e8f0", margin: "14px 0" }} />
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
                 <div><label style={labelStyle}>Eligibility</label>
                   <select style={inputStyle} value={form.isEligible ? "yes" : "no"}
@@ -628,6 +886,7 @@ export default function AdminDealerMapPage() {
                 These two fields drive the RSM Form (auto-filled, locked) and the Dashboard bucket
                 (Eligible Old / Eligible New / Non-Eligible).
               </p>
+
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <button type="button" onClick={closeForm}
                   style={{ background: "#f1f5f9", border: "1px solid #e2e8f0", color: "#374151",
