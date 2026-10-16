@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using BGL_BT_App.Backend.Data;
 using BGL_BT_App.Backend.DTOs;
 using BGL_BT_App.Backend.Models;
@@ -631,6 +631,25 @@ public class ProposalsController : ControllerBase
                 var own = DealerNameMatcher.SameDealer(caller.DealerName, proposal.DealerName)
                        || (mapping is not null && DealerNameMatcher.SameDealer(mapping.DealerName, proposal.DealerName));
                 if (!own) return Forbid();
+            }
+        }
+
+        // Actual dates: proposal month + next month only
+        var mIdx = Array.IndexOf(MonthNames, proposal.Month);
+        if (mIdx >= 0 && int.TryParse(proposal.Year, out var pYear))
+        {
+            var minD = new DateOnly(pYear, mIdx + 1, 1);
+            var maxD = minD.AddMonths(2).AddDays(-1);
+            foreach (var dto in actuals)
+            {
+                var s = ParseDate(dto.ActualStartDate);
+                var e = ParseDate(dto.ActualEndDate);
+                foreach (var v in new[] { s, e })
+                    if (v.HasValue && (v.Value < minD || v.Value > maxD))
+                        return BadRequest(new { message =
+                            $"Actual dates must be between {minD:dd.MM.yyyy} and {maxD:dd.MM.yyyy} for a {proposal.Month} {proposal.Year} proposal." });
+                if (s.HasValue && e.HasValue && e.Value < s.Value)
+                    return BadRequest(new { message = "Actual end date cannot be before actual start date." });
             }
         }
 

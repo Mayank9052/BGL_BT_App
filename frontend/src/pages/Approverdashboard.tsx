@@ -17,6 +17,7 @@ import {
 } from "../services/activityService";
 import "./ApproverDashboard.css";
 import { fetchDealerUsers } from "../services/dealerAuthService";
+import CnPanel from "../components/CnPanel";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 const inr     = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
@@ -292,14 +293,32 @@ function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[]
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// POST-ACTIVITY DATE RANGE — proposal month + next month only.
+// e.g. September 2026 → 2026-09-01 … 2026-10-31
+//      December 2026  → 2026-12-01 … 2027-01-31
+// Falls back to current + next month if the proposal has no valid month.
+// ═══════════════════════════════════════════════════════════════════════════════
+function getActualDateRange(month?: string | null, year?: string | number | null) {
+  const mi = MONTHS.indexOf((month ?? "").trim());
+  const y  = parseInt(String(year ?? ""), 10) || new Date().getFullYear();
+  if (mi < 0) {
+    const now = new Date();
+    return {
+      min: isoDate(new Date(now.getFullYear(), now.getMonth(), 1)),
+      max: isoDate(new Date(now.getFullYear(), now.getMonth() + 2, 0)),
+      label: "current and next month",
+    };
+  }
+  const min = new Date(y, mi, 1);           // 1st of proposal month
+  const max = new Date(y, mi + 2, 0);       // last day of next month
+  const nextName = MONTHS[(mi + 1) % 12];
+  const nextYear = mi === 11 ? y + 1 : y;
+  return { min: isoDate(min), max: isoDate(max), label: `${MONTHS[mi]} ${y} – ${nextName} ${nextYear}` };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
-function getActualDateRange() {
-  const now = new Date();
-  const min = new Date(now.getFullYear(), now.getMonth(), 1);
-  const max = new Date(now.getFullYear(), now.getMonth() + 2, 0);
-  return { min: isoDate(min), max: isoDate(max) };
-}
 export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
   const navigate  = useNavigate();
@@ -357,7 +376,7 @@ export default function ApproverDashboard() {
   const [bulkNotifying,     setBulkNotifying]     = useState(false);
   const [bulkForwarding,    setBulkForwarding]    = useState(false);
   const [fwdDateFilter,     setFwdDateFilter]     = useState("");
-  const [submittedDateFilter, setSubmittedDateFilter] = useState(""); // ← NEW: filters by the "Submitted" column date (createdAt)
+  const [submittedDateFilter, setSubmittedDateFilter] = useState(""); // filters by the "Submitted" column date (createdAt)
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkNote,      setBulkNote]      = useState("");
   const [showBulkPanel, setShowBulkPanel] = useState(false);
@@ -431,10 +450,8 @@ export default function ApproverDashboard() {
       const checkedDate = isoDate(new Date(p.checkedAt));
       if (checkedDate !== fwdDateFilter) return false;
     }
-    // ── NEW: filters by the same date shown in the "Submitted" column
-    // (p.createdAt) — not the Forward Date (p.checkedAt). This is the
-    // actual submission day, so "30" here means "proposals the RSM
-    // submitted on the 30th", independent of when a Checker later forwarded it.
+    // Filters by the date shown in the "Submitted" column (p.createdAt),
+    // independent of when a Checker later forwarded it.
     if (submittedDateFilter) {
       if (!p.createdAt) return false;
       const submittedDate = isoDate(new Date(p.createdAt));
@@ -681,8 +698,26 @@ export default function ApproverDashboard() {
     setEditData((d)=>d?{...d,activities:d.activities.map((a,i)=>
       i===idx?{...a,mediaFiles:a.mediaFiles.filter((m)=>m.id!==mediaId)}:a)}:d);
 
+  // ── Save actuals — blocked if any actual date is outside proposal month + next month ──
   const saveActuals=async()=>{
     if (!selected) return;
+    const rng=getActualDateRange(selected.month,(selected as any).year);
+    const bad=selected.activities.find((a)=>{
+      const d=actualsData[a.id];
+      return [d?.actualStartDate,d?.actualEndDate].some((v)=>!!v&&(v<rng.min||v>rng.max));
+    });
+    if (bad) {
+      showToast(`"${bad.activityType}": actual dates must be within ${rng.label}.`,false);
+      return;
+    }
+    const badOrder=selected.activities.find((a)=>{
+      const d=actualsData[a.id];
+      return !!d?.actualStartDate&&!!d?.actualEndDate&&d.actualEndDate<d.actualStartDate;
+    });
+    if (badOrder) {
+      showToast(`"${badOrder.activityType}": Actual End cannot be before Actual Start.`,false);
+      return;
+    }
     setActualsLoading(true);
     try {
       const payload=selected.activities.map((a)=>{
@@ -1546,6 +1581,9 @@ export default function ApproverDashboard() {
                       {!isEditing&&selected.status==="Approved"&&selected.activities.map((a)=>{
                         const d=actualsData[a.id];
                         if (openActualsId!==a.id||!d) return null;
+                        // Actual dates allowed: proposal month + next month only
+                        const range=getActualDateRange(selected.month,(selected as any).year);
+                        const outOfRange=(v:string)=>!!v&&(v<range.min||v>range.max);
                         return (
                           <tr key={`actuals-${a.id}`}>
                             <td colSpan={14} style={{ padding:0,background:"#f0fdf4",borderBottom:"2px solid #bbf7d0" }}>
@@ -1570,17 +1608,41 @@ export default function ApproverDashboard() {
                                   );
                                 })()}
 
+                                {/* Saved dates fall outside the allowed window (entered before this rule) */}
+                                {(outOfRange(d.actualStartDate)||outOfRange(d.actualEndDate))&&(
+                                  <div style={{ background:"#fef2f2",border:"1px solid #fecaca",borderLeft:"4px solid #dc2626",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:12,color:"#991b1b" }}>
+                                    ⚠ Actual dates are outside <strong>{range.label}</strong>. Correct them before saving.
+                                  </div>
+                                )}
+
                                 <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
                                   <div>
                                     <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual Start</label>
                                     <input type="date" value={d.actualStartDate}
-                                    min={getActualDateRange().min} max={getActualDateRange().max}
-                                    onChange={(e)=>{ setActualField(a.id,"actualStartDate",e.target.value); rebuildDailyEntries(a.id,e.target.value,d.actualEndDate); }} style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
+                                      min={range.min} max={range.max}
+                                      onChange={(e)=>{
+                                        const v=e.target.value;
+                                        if (outOfRange(v)) { showToast(`Actual dates must be within ${range.label}.`,false); return; }
+                                        setActualField(a.id,"actualStartDate",v);
+                                        rebuildDailyEntries(a.id,v,d.actualEndDate);
+                                      }}
+                                      style={{ border:`1px solid ${outOfRange(d.actualStartDate)?"#dc2626":"#bbf7d0"}`,borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
                                   </div>
                                   <div>
                                     <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual End</label>
-                                    <input type="date" value={d.actualEndDate} min={d.actualStartDate||getActualDateRange().min} max={getActualDateRange().max}
-                                    onChange={(e)=>{ setActualField(a.id,"actualEndDate",e.target.value); rebuildDailyEntries(a.id,d.actualStartDate,e.target.value); }} style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
+                                    <input type="date" value={d.actualEndDate}
+                                      min={d.actualStartDate&&!outOfRange(d.actualStartDate)?d.actualStartDate:range.min} max={range.max}
+                                      onChange={(e)=>{
+                                        const v=e.target.value;
+                                        if (outOfRange(v)) { showToast(`Actual dates must be within ${range.label}.`,false); return; }
+                                        if (v&&d.actualStartDate&&v<d.actualStartDate) { showToast("Actual End cannot be before Actual Start.",false); return; }
+                                        setActualField(a.id,"actualEndDate",v);
+                                        rebuildDailyEntries(a.id,d.actualStartDate,v);
+                                      }}
+                                      style={{ border:`1px solid ${outOfRange(d.actualEndDate)?"#dc2626":"#bbf7d0"}`,borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
+                                  </div>
+                                  <div style={{ fontSize:10,color:"#6b7280",alignSelf:"center",lineHeight:1.4 }}>
+                                    Allowed:<br/><strong style={{ color:"#166534" }}>{range.label}</strong>
                                   </div>
                                   {(a.actualStartDate||a.actualEndDate)&&(
                                     <div style={{ fontSize:11,color:"#166534",fontWeight:600 }}>✓ {fmtDate(a.actualStartDate)} → {fmtDate(a.actualEndDate)}</div>
@@ -1632,6 +1694,7 @@ export default function ApproverDashboard() {
                                   </div>
                                 </div>
 
+                                {/* ══ PHOTOS PANEL ══ */}
                                 {openActualsPanel[a.id]==="photos"&&(
                                   <div style={{ background:"#fff",border:"1px solid #bbf7d0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
                                     <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
@@ -1680,6 +1743,7 @@ export default function ApproverDashboard() {
                                   </div>
                                 )}
 
+                                {/* ══ INVOICES PANEL ══ */}
                                 {openActualsPanel[a.id]==="invoices"&&(
                                   <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
                                     <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap" }}>
@@ -1721,6 +1785,7 @@ export default function ApproverDashboard() {
                                   </div>
                                 )}
 
+                                {/* ══ HISTORY PANEL ══ */}
                                 {openActualsPanel[a.id]==="history"&&d.actualStartDate&&d.actualEndDate&&(
                                   <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,overflow:"hidden",marginBottom:10 }}>
                                     <div style={{ background:"#0a2540",padding:"9px 14px",display:"flex",alignItems:"center",gap:10 }}>
@@ -1994,6 +2059,12 @@ export default function ApproverDashboard() {
                                     </div>
                                   </div>
                                 )}
+
+                                {/* ══ CREDIT NOTE (CN) — always last, after all Post-Activity panels ══ */}
+                                <div style={{ marginTop:14 }}>
+                                  <CnPanel proposalId={selected.id} activityId={a.id} instance={instance}
+                                    refreshKey={`${d.proofMedia.length}-${d.invoiceMedia.length}-${a.actualEndDate ?? ""}`} />
+                                </div>
 
                               </div>
                             </td>

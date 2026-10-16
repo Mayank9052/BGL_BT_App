@@ -99,7 +99,7 @@ public class EmployeeAuthController : ControllerBase
                 {
                     r.EmployeeCode,
                     r.EmployeeName,
-                    role = EmployeeRoleMap.ToRole(r.DesignationId),
+                    role = EmployeeRoleMap.ToRole(r.DesignationId) ?? (r.DesignationId == 8 ? "RSM" : null),
                     r.EmailId,
                     hasRealEmail = !string.IsNullOrWhiteSpace(r.EmailId) && r.EmailId.Contains('@'),
                 })
@@ -146,8 +146,8 @@ public class EmployeeAuthController : ControllerBase
             {
                 if (existingCodes.Contains(row.EmployeeCode)) { skipped++; continue; }
 
-                var role = EmployeeRoleMap.ToRole(row.DesignationId);
-                if (role is null) { skipped++; continue; } // not an RSM/TSM/ZSM/Commando designation
+                var role = EmployeeRoleMap.ToRole(row.DesignationId) ?? (row.DesignationId == 8 ? "RSM" : null);
+                if (role is null) { skipped++; continue; } // not an RSM/TSM/ZSM/Commando/Manager designation
 
                 try
                 {
@@ -311,7 +311,7 @@ public class EmployeeAuthController : ControllerBase
                     BaseLocation
                 FROM [dbo].[H_EmployeeMaster]
                 WHERE Status = 'Y'
-                  AND DesignationId IN (24, 25, 26, 36)")
+                  AND DesignationId IN (8, 24, 25, 26, 36)")
             .ToListAsync();
 
     private async Task<HashSet<string>> GetExistingEmployeeCodes() =>

@@ -1,4 +1,6 @@
 // Backend/Services/IEmailService.cs
+// CN workflow mails moved to CnEmailService (app-only Graph token, large attachments).
+// CnMailAttachment record now lives in CnEmailService.cs.
 using BGL_BT_App.Backend.Models;
 
 namespace BGL_BT_App.Backend.Services;
@@ -19,10 +21,7 @@ public interface IEmailService
     Task<(bool Sent, string? Error)> SendTeamNotificationMailAsync(
         Proposal p, string? rsmEmail, string? tsmEmail, string? commandoEmail, string graphToken);
 
-    // ── NEW: used for public/unauthenticated flows (dealer + staff forgot-password)
-    // where there is NO signed-in user and therefore NO interactive Graph token
-    // available. GraphEmailService implements this via an app-only token instead
-    // of the X-Graph-Token header the other methods rely on.
+    // Public/unauthenticated flows (forgot-password) — app-only token.
     Task<(bool Sent, string? Error)> SendPasswordResetEmailAsync(
         string toEmail, string displayName, string resetLink);
 }
