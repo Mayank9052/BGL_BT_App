@@ -193,7 +193,7 @@ public class CnEmailService
             {linkList}
             <p style="margin:12px 0 0;font-size:11px;color:#6b7280;">Once the CN is issued, please reply with the <strong>CN number</strong> so it can be recorded in the portal.<br/>Portal reference: {H(p.TokenNumber)}</p>
             """);
-        return SendAsync(AccountsEmails, cc, Subject("Ready for Processing", p, a), html, attachments);
+        return SendAsync(AccountsEmails, cc, Subject("", p, a), html, attachments);
     }
 
     // Step 5 — CN processed → Dealer + team
@@ -399,8 +399,14 @@ public class CnEmailService
         return first.Length == 0 ? "Team" : char.ToUpper(first[0]) + first[1..];
     }
 
-    private static string Subject(string tag, Proposal p, ProposalActivity a) =>
-        $"[CN] {tag} — {p.TokenNumber} — {(p.DealerName ?? "").ToUpper()} — {a.ActivityType} — {p.Month} {p.Year}";
+    // private static string Subject(string tag, Proposal p, ProposalActivity a) =>
+    //     $"[CN] {tag} — {p.TokenNumber} — {(p.DealerName ?? "").ToUpper()} — {a.ActivityType} — {p.Month} {p.Year}";
+
+    private static string Subject(string tag, Proposal p, ProposalActivity a)
+    {
+        var tagPart = string.IsNullOrWhiteSpace(tag) ? "" : $"{tag} — ";
+        return $"[CN] {tagPart}{p.TokenNumber} — {(p.DealerName ?? "").ToUpper()} — {a.ActivityType} — {p.Month} {p.Year}";
+    }
 
     private static string Shell(string color, string tagLine, string? token, string inner) => $"""
         <div style="font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a2233;max-width:720px;margin:0 auto;">

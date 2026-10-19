@@ -1,5 +1,6 @@
 // src/pages/DealerDashboard.tsx
 // Full post-activity same as ApproverDashboard — Photos, Invoices, History panels.
+// History table = shared <DailyHistoryPanel/> (same 17 columns + TOTAL + Avg Per Canopy as Approver).
 // Dealer-specific: JWT auth, revision edit, NeedsRevision banner.
 // My Team = Dealer Mapping (GET /api/dealer-team-mapping/my-team), fallback = latest proposal.
 import { useState, useMemo, useEffect, useCallback } from "react";
@@ -9,6 +10,9 @@ import { getDealerToken } from "../services/dealerAuthService";
 import * as XLSX from "xlsx";
 import "./DealerDashboard.css";
 import CnPanel from "../components/CnPanel";
+import DailyHistoryPanel, {
+  LmsSummaryChips, parseDailyData, applyDailyChange, rebuildDaily, type DailyEntry,
+} from "../components/DailyHistoryPanel";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 const inrCompact = (v: number) => {
@@ -21,6 +25,7 @@ const fmtDate = (iso: string | null | undefined) => {
   return new Date(iso).toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" });
 };
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+const resolveUrl = (u: string) => (u.startsWith("http") ? u : `${API_BASE}${u}`);
 
 // ─── GPS helper ───────────────────────────────────────────────────────────────
 function captureGeo(): Promise<{ lat: number; lng: number } | null> {
@@ -34,9 +39,7 @@ function captureGeo(): Promise<{ lat: number; lng: number } | null> {
   });
 }
 const mapsUrl = (lat: number, lng: number) => `https://maps.google.com/?q=${lat},${lng}`;
-// Setup Count auto-fills Enquiry/TD plan
-const DEFAULT_PLAN_PER_SETUP = 35;
-// Bounds for Actual Start/End — current + next month, matches Approver (local date, no UTC shift)
+// Local-date ISO (no UTC shift)
 const isoLocal = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 // Post-Activity actual dates: proposal month + next month only (local dates, no UTC shift).
@@ -154,12 +157,6 @@ interface ProofMedia {
   id:string; fileUrl:string; fileName:string; fileType:string;
   capturedAt:string; latitude?:number|null; longitude?:number|null;
 }
-interface DailyEntry {
-  date:string; setupCount:number;
-  enquiryPlanned:number; enquiryActual:number;
-  testDrivePlanned:number; testDriveActual:number;
-  bookingActual:number; retailActual:number; leadsPunched:number;
-}
 interface ActualEntry {
   actualStartDate:string; actualEndDate:string;
   mediaFile:File|null; mediaFileUrl:string|null;
@@ -173,20 +170,6 @@ interface MappedTeam {
   rsm?: string; rsmEmail?: string | null;
   tsm?: string | null; tsmEmail?: string | null;
   commando?: string | null; commandoEmail?: string | null;
-}
-
-function buildDailyEntries(start?: string|null, end?: string|null): DailyEntry[] {
-  if (!start||!end) return [];
-  const entries:DailyEntry[]=[];
-  const s=new Date(start), e=new Date(end), today=new Date();
-  const cap=e<today?e:today;
-  for (const d=new Date(s);d<=cap;d.setDate(d.getDate()+1)) {
-    entries.push({ date:isoLocal(d),
-      setupCount:0,
-      enquiryPlanned:0,enquiryActual:0,testDrivePlanned:0,testDriveActual:0,
-      bookingActual:0,retailActual:0,leadsPunched:0 });
-  }
-  return entries;
 }
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
@@ -424,16 +407,7 @@ export default function DealerDashboard() {
           .filter(m => m.fileType?.startsWith("image/") || m.fileType?.startsWith("video/"))
           .map(m => ({ id:m.id, fileUrl:m.fileUrl, fileName:m.fileName, fileType:m.fileType,
             capturedAt:m.capturedAt??new Date().toISOString(), latitude:m.latitude??null, longitude:m.longitude??null })),
-        dailyEntries: (() => {
-          const serverDaily = (a as any).dailyData;
-          if (serverDaily) {
-            try {
-              const parsed = JSON.parse(serverDaily) as DailyEntry[];
-              if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-            } catch {}
-          }
-          return buildDailyEntries(a.actualStartDate??a.startDate, a.actualEndDate??a.endDate);
-        })(),
+        dailyEntries: parseDailyData((a as any).dailyData, a.actualStartDate ?? a.startDate, a.actualEndDate ?? a.endDate),
       };
     });
     setActualsData(init);
@@ -459,17 +433,15 @@ export default function DealerDashboard() {
     setActualsData(prev => ({ ...prev, [id]: { ...prev[id], [key]:v } }));
 
   const setDailyField = (activityId:string, date:string, key:keyof DailyEntry, v:number) =>
-    setActualsData(prev => ({ ...prev, [activityId]: { ...prev[activityId],
-      dailyEntries: prev[activityId].dailyEntries.map(e => e.date===date?{...e,[key]:v}:e) } }));
-
-  const rebuildDailyEntries = (activityId:string, startDate:string, endDate:string) => {
-    const fresh = buildDailyEntries(startDate, endDate);
     setActualsData(prev => {
-      const existing = prev[activityId]?.dailyEntries ?? [];
-      const merged = fresh.map(ne => existing.find(e => e.date===ne.date) ?? ne);
-      return { ...prev, [activityId]: { ...prev[activityId], dailyEntries:merged } };
+      const acc = prev[activityId];
+      if (!acc) return prev;
+      return { ...prev, [activityId]: { ...acc, dailyEntries: applyDailyChange(acc.dailyEntries, date, key, v) } };
     });
-  };
+
+  const rebuildDailyEntries = (activityId:string, startDate:string, endDate:string) =>
+    setActualsData(prev => ({ ...prev, [activityId]: { ...prev[activityId],
+      dailyEntries: rebuildDaily(prev[activityId]?.dailyEntries ?? [], startDate, endDate) } }));
 
   const toggleActuals = (activityId:string) =>
     setOpenActualsId(prev => prev===activityId ? null : activityId);
@@ -1099,7 +1071,7 @@ export default function DealerDashboard() {
         <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.52)",
           zIndex:1000,overflowY:"auto",padding:"20px 12px" }}
           onClick={e => { if (e.target===e.currentTarget) closeModal(); }}>
-          <div style={{ background:"#fff",borderRadius:14,maxWidth:940,margin:"0 auto",
+          <div style={{ background:"#fff",borderRadius:14,maxWidth:1280,margin:"0 auto",
             boxShadow:"0 20px 60px rgba(0,0,0,0.3)",overflow:"hidden" }}>
 
             {/* Modal header */}
@@ -1146,14 +1118,14 @@ export default function DealerDashboard() {
               )}
 
               {/* ── Proposal metadata grid ───────────────────────────────────── */}
-              <div style={{ display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:10,marginBottom:16 }}>
+              <div style={{ display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10,marginBottom:16 }}>
                 {([
                   ["Location",      selected.location],
                   ["State",         selected.state],
                   ["Month",         selected.month],
                   ["Year",          (selected as any).year??"—"],
                   ["RSM",           selected.rsmName],
-                  ["TSM",           selected.tsmName||"—"],
+                  ["TSM",           (selected as any).tsmName||"—"],
                   ["Commando",      selected.commandoName||"—"],
                   ["Submitted By",  selected.submittedByDisplayName||selected.submittedBy||"—"],
                   ["Eligibility",   selected.eligibility],
@@ -1263,35 +1235,39 @@ export default function DealerDashboard() {
                 const range = getActualDateRange(selected.month, (selected as any).year);
                 const outOfRange = (v: string) => !!v && (v < range.min || v > range.max);
                 return (
-                  <div key={`actuals-${a.id}`} style={{ marginTop:10,borderRadius:10,overflow:"hidden",border:"2px solid #bbf7d0" }}>
+                  <div key={`actuals-${a.id}`} style={{ marginTop:10,borderRadius:10,overflow:"hidden",border:"2px solid #bbf7d0",background:"#f0fdf4" }}>
                     <div style={{ padding:"14px 20px" }}>
                       {/* Header row */}
-                      <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:12,flexWrap:"wrap" }}>
+                      <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap" }}>
                         <span style={{ background:"#16a34a",color:"#fff",borderRadius:4,padding:"2px 8px",fontSize:11,fontWeight:700 }}>📋 Post-Activity</span>
                         <span style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>{a.activityType}</span>
                         {a.category&&<span style={{ fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:3,background:a.category==="ATL"?"#eff6ff":"#dcfce7",color:a.category==="ATL"?"#1e40af":"#166534" }}>{a.category}</span>}
                         <span style={{ fontSize:11,color:"#6b7280",marginLeft:"auto" }}>Planned: {fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
                       </div>
 
-                      {/* Actual dates + action bar */}
+                      <LmsSummaryChips entries={d.dailyEntries}/>
+
+                      {/* Saved dates outside the allowed window */}
                       {(outOfRange(d.actualStartDate) || outOfRange(d.actualEndDate)) && (
                         <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderLeft: "4px solid #dc2626", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12, color: "#991b1b" }}>
                           ⚠ Actual dates are outside <strong>{range.label}</strong>. Correct them before saving.
                         </div>
                       )}
+
+                      {/* Actual dates + action bar */}
                       <div style={{ display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:12,background:"#ecfdf5",borderRadius:8,padding:"10px 12px",border:"1px solid #bbf7d0" }}>
                         <div>
                           <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual Start</label>
                           <input type="date" value={d.actualStartDate}
                             min={range.min} max={range.max}
                             onChange={(e)=>{ const v=e.target.value; if (outOfRange(v)) { showToast(`Actual dates must be within ${range.label}.`,false); return; } setActualField(a.id,"actualStartDate",v); rebuildDailyEntries(a.id,v,d.actualEndDate); }}
-                            style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
+                            style={{ border:`1px solid ${outOfRange(d.actualStartDate)?"#dc2626":"#bbf7d0"}`,borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
                         </div>
                         <div>
                           <label style={{ fontSize:10,fontWeight:700,color:"#374151",textTransform:"uppercase",letterSpacing:"0.04em",display:"block",marginBottom:4 }}>Actual End</label>
                           <input type="date" value={d.actualEndDate} min={d.actualStartDate&&!outOfRange(d.actualStartDate)?d.actualStartDate:range.min} max={range.max}
                             onChange={(e)=>{ const v=e.target.value; if (outOfRange(v)) { showToast(`Actual dates must be within ${range.label}.`,false); return; } if (v&&d.actualStartDate&&v<d.actualStartDate) { showToast("Actual End cannot be before Actual Start.",false); return; } setActualField(a.id,"actualEndDate",v); rebuildDailyEntries(a.id,d.actualStartDate,v); }}
-                            style={{ border:"1px solid #bbf7d0",borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
+                            style={{ border:`1px solid ${outOfRange(d.actualEndDate)?"#dc2626":"#bbf7d0"}`,borderRadius:6,padding:"6px 9px",fontSize:12,outline:"none",background:"#fff" }}/>
                         </div>
                         <div style={{ fontSize:10,color:"#6b7280",alignSelf:"center",lineHeight:1.4 }}>Allowed:<br/><strong style={{ color:"#166534" }}>{range.label}</strong></div>
                         {(a.actualStartDate||a.actualEndDate)&&(
@@ -1344,7 +1320,6 @@ export default function DealerDashboard() {
                         </div>
                       </div>
 
-
                       {/* ══ PHOTOS PANEL ══ */}
                       {openActualsPanel[a.id]==="photos"&&(
                         <div style={{ background:"#fff",border:"1px solid #bbf7d0",borderRadius:9,padding:"12px 14px",marginBottom:10 }}>
@@ -1371,7 +1346,7 @@ export default function DealerDashboard() {
                           ):(
                             <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
                               {d.proofMedia.map((m,pi)=>{
-                                const url=m.fileUrl.startsWith("http")?m.fileUrl:`${API_BASE}${m.fileUrl}`;
+                                const url=resolveUrl(m.fileUrl);
                                 const uploadTime=new Date(m.capturedAt).toLocaleString("en-IN",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true});
                                 return (
                                   <div key={m.id} style={{ display:"flex",alignItems:"center",gap:8,background:"#f0fdf4",border:"1px solid #bbf7d0",borderRadius:7,padding:"6px 10px" }}>
@@ -1417,7 +1392,7 @@ export default function DealerDashboard() {
                           ):(
                             <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
                               {d.invoiceMedia.map((inv,ii)=>{
-                                const url=inv.fileUrl.startsWith("http")?inv.fileUrl:`${API_BASE}${inv.fileUrl}`;
+                                const url=resolveUrl(inv.fileUrl);
                                 const icon=inv.fileType?.includes("pdf")?"📄":inv.fileType?.startsWith("image/")?"🖼":"📎";
                                 return (
                                   <div key={inv.id} style={{ display:"flex",alignItems:"center",gap:8,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:7,padding:"6px 10px" }}>
@@ -1436,127 +1411,19 @@ export default function DealerDashboard() {
                         </div>
                       )}
 
-                      {/* ══ HISTORY PANEL ══ */}
+                      {/* ══ HISTORY PANEL — same columns as ApproverDashboard ══ */}
                       {openActualsPanel[a.id]==="history"&&d.actualStartDate&&d.actualEndDate&&(
-                        <div style={{ background:"#fff",border:"1px solid #e2e8f0",borderRadius:9,overflow:"hidden",marginBottom:10 }}>
-                          <div style={{ background:"#0a2540",padding:"9px 14px",display:"flex",alignItems:"center",gap:10 }}>
-                            <span style={{ color:"#fff",fontWeight:700,fontSize:13 }}>📊 Daily Activity History</span>
-                            <span style={{ color:"#94a3b8",fontSize:11 }}>{fmtDate(d.actualStartDate)} → {fmtDate(d.actualEndDate)}</span>
-                            {d.dailyEntries.length>0&&<span style={{ marginLeft:"auto",fontSize:11,color:"#86efac",fontWeight:600 }}>{d.dailyEntries.length} day{d.dailyEntries.length!==1?"s":""}</span>}
-                          </div>
-                          {d.dailyEntries.length===0?(
-                            <div style={{ padding:"24px",textAlign:"center",color:"#9ca3af",fontSize:13 }}>No entries yet for this date range.</div>
-                          ):(
-                            <div style={{ overflowX:"auto" }}>
-                              <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:660 }}>
-                                <thead>
-                                  <tr style={{ background:"#1e293b" }}>
-                                    <th style={{ padding:"8px 10px",textAlign:"left",color:"#e2e8f0",fontSize:10,fontWeight:700,width:95 }}>Date</th>
-                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#fde68a",fontSize:10,fontWeight:700 }}>Setup<br/>Count</th>
-                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Enquiry<br/>Plan</th>
-                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Enquiry<br/>Actual</th>
-                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#93c5fd",fontSize:10,fontWeight:700 }}>Test Drive<br/>Plan</th>
-                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#6ee7b7",fontSize:10,fontWeight:700 }}>Test Drive<br/>Actual</th>
-                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#c4b5fd",fontSize:10,fontWeight:700 }}>Booking</th>
-                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#fbbf24",fontSize:10,fontWeight:700 }}>Retail</th>
-                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#a5b4fc",fontSize:10,fontWeight:700 }}>LMS Leads<br/>Punched</th>
-                                    <th style={{ padding:"8px 8px",textAlign:"center",color:"#e2e8f0",fontSize:10,fontWeight:700 }}>Media</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {d.dailyEntries.map((entry,ei)=>{
-                                    const pctC=(actual:number,planned:number)=>{ if(!actual) return ""; const r=planned>0?actual/planned:1; return r>=0.9?"#d1fae5":r>=0.6?"#fef3c7":"#fee2e2"; };
-                                    const entryDate=entry.date;
-                                    const photosOnDay=d.proofMedia.filter(m=>m.capturedAt.startsWith(entryDate));
-                                    const invoicesOnDay=d.invoiceMedia.filter(m=>m.capturedAt.startsWith(entryDate));
-                                    const hasAnyData=entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||entry.retailActual>0||entry.leadsPunched>0||photosOnDay.length>0||invoicesOnDay.length>0;
-                                    const sc=entry.setupCount||0;
-                                    return (
-                                      <tr key={entry.date} style={{ background:ei%2===0?"#fff":"#f8fafc",borderBottom:"1px solid #f1f5f9",opacity:hasAnyData?1:0.5 }}>
-                                        <td style={{ padding:"5px 10px",fontWeight:600,color:"#374151",whiteSpace:"nowrap",fontSize:11 }}>{entry.date}</td>
-                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} max={20}
-                                            style={{ width:40,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"2px",fontSize:11,outline:"none",background:"#fefce8",fontWeight:700 }}
-                                            value={sc||""} placeholder="0"
-                                            title="Setup Count — Enquiry Plan & TD Plan = 35 × this value"
-                                            onChange={(ev)=>{
-                                              const v=parseInt(ev.target.value)||0;
-                                              setDailyField(a.id,entry.date,"setupCount",v);
-                                              setDailyField(a.id,entry.date,"enquiryPlanned",v*DEFAULT_PLAN_PER_SETUP);
-                                              setDailyField(a.id,entry.date,"testDrivePlanned",v*DEFAULT_PLAN_PER_SETUP);
-                                            }}/>
-                                        </td>
-                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:sc>0?"#1e40af":"inherit",fontWeight:sc>0?700:400 }} value={entry.enquiryPlanned||""} placeholder="0" readOnly={sc>0} title={sc>0?"Auto-calculated (35 × Setup Count)":"Enter manually"} onChange={(e)=>!sc&&setDailyField(a.id,entry.date,"enquiryPlanned",parseInt(e.target.value)||0)}/>
-                                        </td>
-                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.enquiryActual,entry.enquiryPlanned)||"#fff",fontWeight:entry.enquiryActual>0?700:400 }} value={entry.enquiryActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"enquiryActual",parseInt(e.target.value)||0)}/>
-                                        </td>
-                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:"#f8fafc",color:sc>0?"#1e40af":"inherit",fontWeight:sc>0?700:400 }} value={entry.testDrivePlanned||""} placeholder="0" readOnly={sc>0} onChange={(e)=>!sc&&setDailyField(a.id,entry.date,"testDrivePlanned",parseInt(e.target.value)||0)}/>
-                                        </td>
-                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #bbf7d0",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:pctC(entry.testDriveActual,entry.testDrivePlanned)||"#fff",fontWeight:entry.testDriveActual>0?700:400 }} value={entry.testDriveActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"testDriveActual",parseInt(e.target.value)||0)}/>
-                                        </td>
-                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #e9d5ff",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.bookingActual>0?"#fdf4ff":"#fff",fontWeight:entry.bookingActual>0?700:400,color:entry.bookingActual>0?"#7c3aed":"inherit" }} value={entry.bookingActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"bookingActual",parseInt(e.target.value)||0)}/>
-                                        </td>
-                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #fde68a",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.retailActual>0?"#fef9c3":"#fff",fontWeight:entry.retailActual>0?700:400,color:entry.retailActual>0?"#92400e":"inherit" }} value={entry.retailActual||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"retailActual",parseInt(e.target.value)||0)}/>
-                                        </td>
-                                        <td style={{ padding:"4px 5px",textAlign:"center" }}>
-                                          <input type="number" min={0} style={{ width:48,textAlign:"center",border:"1px solid #c7d2fe",borderRadius:4,padding:"3px",fontSize:11,outline:"none",background:entry.leadsPunched>0?"#eef2ff":"#fff",fontWeight:entry.leadsPunched>0?700:400,color:entry.leadsPunched>0?"#4338ca":"inherit" }} value={entry.leadsPunched||""} placeholder="0" onChange={(e)=>setDailyField(a.id,entry.date,"leadsPunched",parseInt(e.target.value)||0)}/>
-                                        </td>
-                                        <td style={{ padding:"4px 8px",textAlign:"center" }}>
-                                          <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
-                                            {photosOnDay.slice(0,2).map(m=>{
-                                              const url=m.fileUrl.startsWith("http")?m.fileUrl:`${API_BASE}${m.fileUrl}`;
-                                              return (
-                                                <div key={m.id} style={{ width:26,height:26,borderRadius:3,overflow:"hidden",cursor:"pointer",border:"1px solid #bbf7d0",flexShrink:0 }} onClick={()=>setMediaViewer({url,name:m.fileName,type:m.fileType})}>
-                                                  {isImage(m.fileType)?<img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>:<span style={{ fontSize:14,lineHeight:"26px",display:"block",textAlign:"center" }}>{mediaIcon(m.fileType)}</span>}
-                                                </div>
-                                              );
-                                            })}
-                                            {photosOnDay.length>2&&<span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-2}</span>}
-                                            {invoicesOnDay.length>0&&<span style={{ fontSize:10,background:"#f1f5f9",border:"1px solid #e2e8f0",borderRadius:3,padding:"1px 4px",color:"#374151",whiteSpace:"nowrap" }}>🧾{invoicesOnDay.length}</span>}
-                                            {photosOnDay.length===0&&invoicesOnDay.length===0&&<span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
-                                            <label title={`Upload photo for ${entryDate}`}
-                                              style={{ cursor:"pointer",fontSize:11,color:"#60a5fa",marginLeft:2 }}>
-                                              📷
-                                              <input type="file" accept="image/*,video/*" multiple style={{ display:"none" }}
-                                                onChange={(ev)=>{
-                                                  if (!ev.target.files?.length) return;
-                                                  handleDateWiseUpload(a.id, entryDate, ev.target.files);
-                                                  ev.target.value = "";
-                                                }}/>
-                                            </label>
-                                          </div>
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                                <tfoot>
-                                  <tr style={{ background:"#0a2540",borderTop:"2px solid #1e3a5f" }}>
-                                    <td style={{ padding:"7px 10px",fontWeight:800,color:"#fbbf24",fontSize:11 }}>TOTAL</td>
-                                    <td style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:"#fde68a" }}>{d.dailyEntries.reduce((s,e)=>s+(e.setupCount||0),0)}</td>
-                                    {(["enquiryPlanned","enquiryActual","testDrivePlanned","testDriveActual","bookingActual","retailActual","leadsPunched"] as (keyof DailyEntry)[]).map((key,ki)=>(
-                                      <td key={key} style={{ padding:"7px 6px",textAlign:"center",fontWeight:700,fontSize:12,color:[0,2].includes(ki)?"#93c5fd":[1,3].includes(ki)?"#6ee7b7":ki===4?"#c4b5fd":ki===5?"#fbbf24":"#a5b4fc" }}>{d.dailyEntries.reduce((s,e)=>s+(Number((e as any)[key])||0),0)}</td>
-                                    ))}
-                                    <td style={{ padding:"7px 8px",textAlign:"center" }}>
-                                      <span style={{ fontSize:10,color:"#94a3b8" }}>
-                                        {d.proofMedia.length>0&&`📸${d.proofMedia.length} `}{d.invoiceMedia.length>0&&`🧾${d.invoiceMedia.length}`}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                </tfoot>
-                              </table>
-                            </div>
-                          )}
-                          <div style={{ padding:"7px 14px",fontSize:11,color:"#6b7280",background:"#f8fafc",borderTop:"1px solid #e2e8f0" }}>
-                            ℹ Green ≥90% · Yellow ≥60% · Red &lt;60% · Dim rows = no data yet
-                          </div>
-                        </div>
+                        <DailyHistoryPanel
+                          entries={d.dailyEntries}
+                          actualStartDate={d.actualStartDate}
+                          actualEndDate={d.actualEndDate}
+                          proofMedia={d.proofMedia}
+                          invoiceMedia={d.invoiceMedia}
+                          resolveUrl={resolveUrl}
+                          onChange={(date,key,v)=>setDailyField(a.id,date,key,v)}
+                          onDateUpload={(date,files)=>handleDateWiseUpload(a.id,date,files)}
+                          onViewMedia={setMediaViewer}
+                        />
                       )}
 
                       {/* ══ CREDIT NOTE (CN) — always last, after all Post-Activity panels ══ */}

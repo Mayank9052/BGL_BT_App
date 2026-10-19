@@ -345,6 +345,7 @@ export default function ApproverDashboard() {
   const [filterStatus,     setFilterStatus]     = useState("All");
   const [filterMonth,      setFilterMonth]      = useState("All");
   const [filterYear,       setFilterYear]       = useState("All");
+  const [filterState,      setFilterState]      = useState("All");
   const [search,           setSearch]           = useState("");
   const [loading,          setLoading]          = useState(true);
   const [fetchError,       setFetchError]       = useState<string|null>(null);
@@ -441,10 +442,15 @@ export default function ApproverDashboard() {
   // ── Computed ───────────────────────────────────────────────────────────────
   const months   = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],[proposals]);
   const years    = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>(p as any).year).filter(Boolean))).sort()],[proposals]);
+  const statesList = useMemo(
+    () => ["All", ...Array.from(new Set(proposals.map((p) => p.state).filter(Boolean))).sort()],
+    [proposals]
+  );
   const filtered = useMemo(()=>proposals.filter((p)=>{
     if (filterStatus!=="All"&&p.status!==filterStatus) return false;
     if (filterMonth!=="All"&&p.month!==filterMonth) return false;
     if (filterYear!=="All"&&(p as any).year!==filterYear) return false;
+    if (filterState!=="All"&&p.state!==filterState) return false;   // ← add this
     if (fwdDateFilter) {
       if (!p.checkedAt) return false;
       const checkedDate = isoDate(new Date(p.checkedAt));
@@ -461,7 +467,7 @@ export default function ApproverDashboard() {
       return p.dealerName.toLowerCase().includes(q)||p.rsmName.toLowerCase().includes(q)||
             p.location.toLowerCase().includes(q)||(p.tokenNumber??"").toLowerCase().includes(q); }
     return true;
-  }),[proposals,filterStatus,filterMonth,filterYear,search,fwdDateFilter,submittedDateFilter]);
+  }),[proposals,filterStatus,filterMonth,filterYear,filterState,search,fwdDateFilter,submittedDateFilter]);
   const pendingFiltered = useMemo(()=>filtered.filter((p)=>p.status==="Pending"),[filtered]);
   // Approved AND not yet notified — the only rows the Checker can bulk-notify
   const notifiableFiltered = useMemo(
@@ -1120,6 +1126,9 @@ export default function ApproverDashboard() {
               </select>
               <select className="ap-select" value={filterYear} onChange={(e)=>setFilterYear(e.target.value)}>
                 {years.map((y)=><option key={y} value={y}>{y==="All"?"All years":y}</option>)}
+              </select>
+              <select className="ap-select" value={filterState} onChange={(e)=>setFilterState(e.target.value)}>
+                {statesList.map((s)=><option key={s} value={s}>{s==="All"?"All states":s}</option>)}
               </select>
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
               <div style={{ display:"flex",alignItems:"center",gap:6 }}>
