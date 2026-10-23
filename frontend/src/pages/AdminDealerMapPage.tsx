@@ -1,13 +1,16 @@
 // src/pages/AdminDealerMapPage.tsx
 // Dealer Mapping admin — CRUD + Excel Template / Export / Import.
 //
-// NEW: the Add/Edit form's Dealer / RSM / TSM / Commando fields are now
-// searchable dropdowns sourced from ERP (same fetchDealers()/fetchCommandos()
-// calls AdminUsersPage.tsx already uses), with a "Can't find it? Enter
-// manually" fallback for anyone not yet in ERP. Picking a dealer from the
-// dropdown auto-fills Dealer Code, City, State, and pre-fills RSM/TSM/
-// Commando from whatever ERP already knows for that dealer (still editable
-// afterward — nothing is locked).
+// Add/Edit form:
+//   • Dealer Name / Code / City / State → searchable ERP dealer dropdown
+//     (fetchDealers()) with an "Enter manually" fallback.
+//   • RSM / TSM / Commando dropdowns → now sourced from the STAFF LOGINS
+//     (Admin Users → Staff tab, i.e. users imported from ERP H_EmployeeMaster):
+//         RSM dropdown      = active staff with Role "RSM"
+//         TSM dropdown      = active staff with Role "TSM"
+//         Commando dropdown = active staff with Role "Commando"
+//     Picking a person also fills their email (placeholder @staff.bgauss.local
+//     emails are never auto-filled). Typing a name not in the list still works.
 //
 // IMPORT RULES (unchanged):
 //   • Only "Dealer Name" is mandatory in the file.
@@ -24,10 +27,10 @@ import {
   type DealerTeamMappingRow, type UpsertDealerTeamMapping,
   type BulkImportRow, type BulkImportError, type BulkImportResult,
 } from "../services/dealerTeamMappingService";
-import {
-  fetchDealers, fetchCommandos,
-  type DealerOption, type CommandoOption,
-} from "../services/dealerService";
+import { fetchDealers, type DealerOption } from "../services/dealerService";
+// ⬇ Use the SAME function/type AdminUsersPage.tsx uses for the Staff tab
+//   (GET /api/employee-auth/list). Fix the path/names if they differ.
+import { fetchStaffUsers, type StaffAccount } from "../services/employeeAuthService";
 import SearchableSelect from "../components/SearchableSelect";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -94,6 +97,24 @@ const parseType = (v: string): "Old" | "New" | null => {
 
 const titleCase = (s: string): string =>
   (s ?? "").toLowerCase().split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+
+// ── Staff dropdown helpers ───────────────────────────────────────────────────
+type StaffRole = "RSM" | "TSM" | "Commando";
+
+// Options for one role, taken from the Staff-tab users (active only, de-duplicated).
+const buildStaffOptions = (staff: StaffAccount[], role: StaffRole) => {
+  const map = new Map<string, { value: string; label: string }>();
+  for (const s of staff) {
+    if (!s.isActive || (s.role ?? "").toLowerCase() !== role.toLowerCase()) continue;
+    const tc = titleCase((s.displayName ?? "").trim());
+    if (tc) map.set(tc.toLowerCase(), { value: tc, label: tc });
+  }
+  return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+};
+
+// Bulk-import creates fake emails like emp0687@staff.bgauss.local — never auto-fill those.
+const realEmail = (e?: string | null) =>
+  e && e.includes("@") && !e.toLowerCase().endsWith("@staff.bgauss.local") ? e : "";
 
 // DD.MM.YYYY HH:mm (browser local = IST for users). Server sends UTC without "Z".
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -353,10 +374,10 @@ export default function AdminDealerMapPage() {
   const [saving,    setSaving]    = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
-  // ── NEW: ERP data for the searchable dropdowns ───────────────────────────
-  const [erpDealers,   setErpDealers]   = useState<DealerOption[]>([]);
-  const [erpCommandos, setErpCommandos] = useState<CommandoOption[]>([]);
-  const [erpLoading,   setErpLoading]   = useState(false);
+  // ── ERP dealers (dealer dropdown) + Staff logins (RSM / TSM / Commando dropdowns) ──
+  const [erpDealers, setErpDealers] = useState<DealerOption[]>([]);
+  const [staffUsers, setStaffUsers] = useState<StaffAccount[]>([]);
+  const [erpLoading, setErpLoading] = useState(false);
   // "erp" = pick dealer from ERP dropdown (auto-fills code/city/state/team).
   // "manual" = type everything by hand — for dealers not yet in ERP.
   const [dealerSourceMode, setDealerSourceMode] = useState<"erp" | "manual">("erp");
@@ -385,49 +406,40 @@ export default function AdminDealerMapPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  // ── NEW: load ERP dealers + commandos once, in the background (not
-  // blocking the page) so the dropdowns are ready by the time the modal opens ──
+  // Load ERP dealers + staff logins once, in the background (not blocking the
+  // page) so the dropdowns are ready by the time the modal opens.
   useEffect(() => {
     setErpLoading(true);
     Promise.all([
       fetchDealers(instance).catch(() => [] as DealerOption[]),
-      fetchCommandos(instance).catch(() => [] as CommandoOption[]),
+      fetchStaffUsers(instance).catch(() => [] as StaffAccount[]),
     ])
-      .then(([dealers, commandos]) => { setErpDealers(dealers); setErpCommandos(commandos); })
+      .then(([dealers, staff]) => { setErpDealers(dealers); setStaffUsers(staff); })
       .finally(() => setErpLoading(false));
   }, [instance]);
 
-  // ── NEW: option lists for the searchable RSM / TSM / Commando fields,
-  // built from whatever ERP already knows (deduplicated, title-cased) ──────
-  const rsmOptions = useMemo(() => {
-    const map = new Map<string, { value: string; label: string }>();
-    for (const d of erpDealers) {
-      const val = d.rsmName ?? d.rsmCode;
-      if (val) { const tc = titleCase(val); map.set(tc.toLowerCase(), { value: tc, label: tc }); }
-    }
-    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
-  }, [erpDealers]);
+  // ── RSM / TSM / Commando options — straight from the Staff tab users ──────
+  const rsmOptions      = useMemo(() => buildStaffOptions(staffUsers, "RSM"),      [staffUsers]);
+  const tsmOptions      = useMemo(() => buildStaffOptions(staffUsers, "TSM"),      [staffUsers]);
+  const commandoOptions = useMemo(() => buildStaffOptions(staffUsers, "Commando"), [staffUsers]);
 
-  const tsmOptions = useMemo(() => {
-    const map = new Map<string, { value: string; label: string }>();
-    for (const d of erpDealers) {
-      const val = d.tsmName ?? d.tsmCode;
-      if (val) { const tc = titleCase(val); map.set(tc.toLowerCase(), { value: tc, label: tc }); }
-    }
-    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
-  }, [erpDealers]);
-
-  const commandoOptions = useMemo(() => {
-    const map = new Map<string, { value: string; label: string }>();
-    for (const c of erpCommandos) {
-      const tc = titleCase(c.name);
-      map.set(tc.toLowerCase(), { value: tc, label: tc });
-    }
-    for (const d of erpDealers) {
-      if (d.commandoName) { const tc = titleCase(d.commandoName); map.set(tc.toLowerCase(), { value: tc, label: tc }); }
-    }
-    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
-  }, [erpCommandos, erpDealers]);
+  // Picking a staff member fills the name AND their email (email stays editable).
+  // A typed-in name that isn't in the list just sets the name and leaves the email alone.
+  const pickStaff = (
+    role: StaffRole,
+    nameKey: "rsm" | "tsm" | "commando",
+    emailKey: "rsmEmail" | "tsmEmail" | "commandoEmail",
+  ) => (v: string) => {
+    const match = staffUsers.find((s) =>
+      s.isActive &&
+      (s.role ?? "").toLowerCase() === role.toLowerCase() &&
+      titleCase((s.displayName ?? "").trim()).toLowerCase() === v.trim().toLowerCase());
+    setForm((f) => ({
+      ...f,
+      [nameKey]: v,
+      ...(match ? { [emailKey]: realEmail(match.email) } : {}),
+    }));
+  };
 
   const openCreate = () => {
     setEditingId(null); setForm(emptyForm); setFormError(null);
@@ -451,7 +463,7 @@ export default function AdminDealerMapPage() {
   };
   const closeForm = () => { setShowForm(false); setEditingId(null); setFormError(null); };
 
-  // ── NEW: dealer picked from the ERP dropdown — auto-fill everything we can ──
+  // Dealer picked from the ERP dropdown — auto-fill everything we can
   const handleErpDealerSelect = (d: DealerOption | null) => {
     if (!d) {
       setSelectedErpDealerCode("");
@@ -832,13 +844,13 @@ export default function AdminDealerMapPage() {
               <div style={{ height: 1, background: "#e2e8f0", margin: "14px 0" }} />
 
               <p style={{ fontSize: 11, color: "#9ca3af", margin: "0 0 10px" }}>
-                RSM / TSM / Commando — search &amp; select from ERP, or just type a name if it's not listed yet.
+                RSM / TSM / Commando — search &amp; select from the Staff logins (Users → Staff tab), or just type a name if it's not listed yet.
               </p>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 <div><label style={labelStyle}>RSM Name *</label>
                   <SearchableSelect options={rsmOptions} value={form.rsm}
-                    onChange={(v) => setForm((f) => ({ ...f, rsm: v }))}
+                    onChange={pickStaff("RSM", "rsm", "rsmEmail")}
                     placeholder="Search or type RSM name…" allowCreate={true} loading={erpLoading}/></div>
                 <div><label style={labelStyle}>RSM Email</label>
                   <input style={inputStyle} type="email" value={form.rsmEmail ?? ""} onChange={(e) => setForm((f) => ({ ...f, rsmEmail: e.target.value }))} /></div>
@@ -847,7 +859,7 @@ export default function AdminDealerMapPage() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 <div><label style={labelStyle}>TSM Name</label>
                   <SearchableSelect options={tsmOptions} value={form.tsm ?? ""}
-                    onChange={(v) => setForm((f) => ({ ...f, tsm: v }))}
+                    onChange={pickStaff("TSM", "tsm", "tsmEmail")}
                     placeholder="Search or type TSM name…" allowCreate={true} loading={erpLoading}/></div>
                 <div><label style={labelStyle}>TSM Email</label>
                   <input style={inputStyle} type="email" value={form.tsmEmail ?? ""} onChange={(e) => setForm((f) => ({ ...f, tsmEmail: e.target.value }))} /></div>
@@ -856,7 +868,7 @@ export default function AdminDealerMapPage() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 <div><label style={labelStyle}>Commando Name</label>
                   <SearchableSelect options={commandoOptions} value={form.commando ?? ""}
-                    onChange={(v) => setForm((f) => ({ ...f, commando: v }))}
+                    onChange={pickStaff("Commando", "commando", "commandoEmail")}
                     placeholder="Search or type Commando name…" allowCreate={true} loading={erpLoading}/></div>
                 <div><label style={labelStyle}>Commando Email</label>
                   <input style={inputStyle} type="email" value={form.commandoEmail ?? ""} onChange={(e) => setForm((f) => ({ ...f, commandoEmail: e.target.value }))} /></div>
