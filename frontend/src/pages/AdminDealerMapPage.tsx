@@ -4,13 +4,15 @@
 // Add/Edit form:
 //   • Dealer Name / Code / City / State → searchable ERP dealer dropdown
 //     (fetchDealers()) with an "Enter manually" fallback.
-//   • RSM / TSM / Commando dropdowns → now sourced from the STAFF LOGINS
+//   • RSM / TSM / Commando dropdowns → sourced from the STAFF LOGINS
 //     (Admin Users → Staff tab, i.e. users imported from ERP H_EmployeeMaster):
 //         RSM dropdown      = active staff with Role "RSM"
 //         TSM dropdown      = active staff with Role "TSM"
 //         Commando dropdown = active staff with Role "Commando"
 //     Picking a person also fills their email (placeholder @staff.bgauss.local
 //     emails are never auto-filled). Typing a name not in the list still works.
+//   • TSM / Commando are optional: the dropdown has "— No TSM / No Commando —"
+//     and a "✕ Remove" link. Blank is saved as NULL (name AND email).
 //
 // IMPORT RULES (unchanged):
 //   • Only "Dealer Name" is mandatory in the file.
@@ -116,6 +118,12 @@ const buildStaffOptions = (staff: StaffAccount[], role: StaffRole) => {
 const realEmail = (e?: string | null) =>
   e && e.includes("@") && !e.toLowerCase().endsWith("@staff.bgauss.local") ? e : "";
 
+// ── "None" choice for optional TSM / Commando (lets Edit clear the mapping) ──
+const NONE = "__none__";
+const noneLabel = (role: string) => `— No ${role} (leave blank) —`;
+const withNone = (opts: { value: string; label: string }[], role: string) =>
+  [{ value: NONE, label: noneLabel(role) }, ...opts];
+
 // DD.MM.YYYY HH:mm (browser local = IST for users). Server sends UTC without "Z".
 const pad = (n: number) => String(n).padStart(2, "0");
 const fmtStamp = (iso?: string | null) => {
@@ -147,7 +155,7 @@ function instructionsSheet() {
     [""],
     ["How import works"],
     ["• Row found (by Dealer Code, else Dealer Name) → updated with the file values."],
-    ["• Blank / NULL / N/A cell = existing value KEPT (not cleared). Use Edit in the app to clear a field."],
+    ["• Blank / NULL / N/A cell = existing value KEPT (not cleared). Use Edit in the app to clear a field (e.g. remove TSM)."],
     ["• Row not found → created."],
     ["• Dealers missing from the file are NOT deleted."],
     ["• Rows with errors are skipped and listed; valid rows still save."],
@@ -422,6 +430,9 @@ export default function AdminDealerMapPage() {
   const rsmOptions      = useMemo(() => buildStaffOptions(staffUsers, "RSM"),      [staffUsers]);
   const tsmOptions      = useMemo(() => buildStaffOptions(staffUsers, "TSM"),      [staffUsers]);
   const commandoOptions = useMemo(() => buildStaffOptions(staffUsers, "Commando"), [staffUsers]);
+  // TSM / Commando are optional → first option clears the mapping
+  const tsmSelectOptions      = useMemo(() => withNone(tsmOptions, "TSM"),           [tsmOptions]);
+  const commandoSelectOptions = useMemo(() => withNone(commandoOptions, "Commando"), [commandoOptions]);
 
   // Picking a staff member fills the name AND their email (email stays editable).
   // A typed-in name that isn't in the list just sets the name and leaves the email alone.
@@ -440,6 +451,21 @@ export default function AdminDealerMapPage() {
       ...(match ? { [emailKey]: realEmail(match.email) } : {}),
     }));
   };
+
+  // Same as pickStaff, plus "— No TSM / No Commando —" → clears name AND email.
+  const pickOptionalStaff = (
+    role: "TSM" | "Commando",
+    nameKey: "tsm" | "commando",
+    emailKey: "tsmEmail" | "commandoEmail",
+  ) => {
+    const pick = pickStaff(role, nameKey, emailKey);
+    return (v: string) =>
+      v === NONE || v === noneLabel(role)
+        ? setForm((f) => ({ ...f, [nameKey]: "", [emailKey]: "" }))
+        : pick(v);
+  };
+  const clearStaff = (nameKey: "tsm" | "commando", emailKey: "tsmEmail" | "commandoEmail") =>
+    setForm((f) => ({ ...f, [nameKey]: "", [emailKey]: "" }));
 
   const openCreate = () => {
     setEditingId(null); setForm(emptyForm); setFormError(null);
@@ -490,8 +516,16 @@ export default function AdminDealerMapPage() {
     if (!form.rsm.trim())        { setFormError("RSM name is required."); return; }
     setSaving(true); setFormError(null);
     try {
-      if (editingId !== null) await updateDealerTeamMapping(editingId, form, instance);
-      else                    await createDealerTeamMapping(form, instance);
+      // Blank optional team fields → NULL in DB (Edit clears; Excel import blank still = keep).
+      const payload = {
+        ...form,
+        tsm:           form.tsm?.trim()           || null,
+        tsmEmail:      form.tsmEmail?.trim()      || null,
+        commando:      form.commando?.trim()      || null,
+        commandoEmail: form.commandoEmail?.trim() || null,
+      } as UpsertDealerTeamMapping;
+      if (editingId !== null) await updateDealerTeamMapping(editingId, payload, instance);
+      else                    await createDealerTeamMapping(payload, instance);
       closeForm();
       await load(search || undefined);
     } catch (e) { setFormError(e instanceof Error ? e.message : "Failed to save."); }
@@ -563,6 +597,11 @@ export default function AdminDealerMapPage() {
     fontSize: 13, fontWeight: 700, cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.6 : 1, whiteSpace: "nowrap",
   });
+  const removeLinkStyle: React.CSSProperties = {
+    background: "none", border: "none", color: "#dc2626", fontSize: 11, fontWeight: 600,
+    cursor: "pointer", padding: "4px 0 0",
+  };
+  const blankHintStyle: React.CSSProperties = { fontSize: 11, color: "#92400e", marginTop: 4 };
 
   return (
     <div style={{ padding: "2px 10px 40px", width: "100%", boxSizing: "border-box" }}>
@@ -702,7 +741,9 @@ export default function AdminDealerMapPage() {
           <strong style={{ color: "#166534" }}>{rows.filter((r) => r.isEligible).length}</strong> eligible ·{" "}
           <strong style={{ color: "#991b1b" }}>{rows.filter((r) => !r.isEligible).length}</strong> non-eligible ·{" "}
           <strong>{rows.filter((r) => !r.dealerType).length}</strong> without dealer type ·{" "}
-          <strong>{rows.filter((r) => !r.dealerCode).length}</strong> without dealer code
+          <strong>{rows.filter((r) => !r.dealerCode).length}</strong> without dealer code ·{" "}
+          <strong>{rows.filter((r) => !r.tsm).length}</strong> without TSM ·{" "}
+          <strong>{rows.filter((r) => !r.commando).length}</strong> without Commando
         </div>
       )}
 
@@ -731,6 +772,7 @@ export default function AdminDealerMapPage() {
                 <li>Matched by <b>Dealer Code</b>, else <b>Dealer Name</b>. Matched rows are <b>updated</b> with the file values — a <b>blank / NULL cell keeps the existing value</b>.</li>
                 <li>New dealers are created (RSM Name required for new dealers; blank Eligibility → Eligible).</li>
                 <li>Dealers not in the file are left unchanged. <b>Nothing is deleted.</b></li>
+                <li>To remove a TSM / Commando from a dealer, use <b>Edit</b> → “No TSM” / “No Commando”.</li>
                 <li>Recommended: take a backup export before importing.</li>
               </ul>
               {preview.issues.length > 0 && <IssueTable issues={preview.issues} />}
@@ -845,6 +887,7 @@ export default function AdminDealerMapPage() {
 
               <p style={{ fontSize: 11, color: "#9ca3af", margin: "0 0 10px" }}>
                 RSM / TSM / Commando — search &amp; select from the Staff logins (Users → Staff tab), or just type a name if it's not listed yet.
+                TSM and Commando are optional — choose “No TSM / No Commando” to leave them blank.
               </p>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
@@ -858,18 +901,28 @@ export default function AdminDealerMapPage() {
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 <div><label style={labelStyle}>TSM Name</label>
-                  <SearchableSelect options={tsmOptions} value={form.tsm ?? ""}
-                    onChange={pickStaff("TSM", "tsm", "tsmEmail")}
-                    placeholder="Search or type TSM name…" allowCreate={true} loading={erpLoading}/></div>
+                  <SearchableSelect options={tsmSelectOptions} value={form.tsm ?? ""}
+                    onChange={pickOptionalStaff("TSM", "tsm", "tsmEmail")}
+                    placeholder="Search or type TSM name…" allowCreate={true} loading={erpLoading}/>
+                  {form.tsm?.trim()
+                    ? <button type="button" onClick={() => clearStaff("tsm", "tsmEmail")} style={removeLinkStyle}>
+                        ✕ Remove TSM (save as blank)</button>
+                    : editingId !== null && <div style={blankHintStyle}>No TSM mapped — will save as blank.</div>}
+                </div>
                 <div><label style={labelStyle}>TSM Email</label>
                   <input style={inputStyle} type="email" value={form.tsmEmail ?? ""} onChange={(e) => setForm((f) => ({ ...f, tsmEmail: e.target.value }))} /></div>
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 <div><label style={labelStyle}>Commando Name</label>
-                  <SearchableSelect options={commandoOptions} value={form.commando ?? ""}
-                    onChange={pickStaff("Commando", "commando", "commandoEmail")}
-                    placeholder="Search or type Commando name…" allowCreate={true} loading={erpLoading}/></div>
+                  <SearchableSelect options={commandoSelectOptions} value={form.commando ?? ""}
+                    onChange={pickOptionalStaff("Commando", "commando", "commandoEmail")}
+                    placeholder="Search or type Commando name…" allowCreate={true} loading={erpLoading}/>
+                  {form.commando?.trim()
+                    ? <button type="button" onClick={() => clearStaff("commando", "commandoEmail")} style={removeLinkStyle}>
+                        ✕ Remove Commando (save as blank)</button>
+                    : editingId !== null && <div style={blankHintStyle}>No Commando mapped — will save as blank.</div>}
+                </div>
                 <div><label style={labelStyle}>Commando Email</label>
                   <input style={inputStyle} type="email" value={form.commandoEmail ?? ""} onChange={(e) => setForm((f) => ({ ...f, commandoEmail: e.target.value }))} /></div>
               </div>

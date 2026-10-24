@@ -1031,46 +1031,63 @@ public class ProposalsController : ControllerBase
 
         return (true, null);
     }
-
     private async Task<(int AllowedCac, string? Warning)>
     GetCacLimitAsync(string dealerName, decimal actualCac)
     {
         try
         {
+            // Dealer Mapping (Admin → Dealer Mapping) wins for Old/New.
+            // ERP onboarding date (≤ 4 months = New) is used only when the mapping has no Dealer Type.
+            var mapping = await DealerNameMatcher.FindMappingAsync(_db, dealerName);
+            bool? mappedNew = (mapping?.DealerType ?? "").Trim().ToLowerInvariant() switch
+            {
+                "new" => true,
+                "old" => false,
+                _     => (bool?)null,
+            };
+
             var cutoff = DateTime.UtcNow.AddMonths(-4).Date;
 
             var dealer = await _bapl.DealerMasters
                 .AsNoTracking()
                 .FirstOrDefaultAsync(d => d.CustomerName == dealerName && d.Active == "Y");
 
-            if (dealer == null) return (4000, null);
+            // No ERP dealer and no mapping type → default Old limit (unchanged behaviour)
+            if (dealer == null && mappedNew is null) return (4000, null);
 
-            bool isNew = dealer.OnboardedDate.HasValue &&
-                        dealer.OnboardedDate.Value.Date >= cutoff;
+            bool isNew = mappedNew
+                ?? (dealer!.OnboardedDate.HasValue && dealer.OnboardedDate.Value.Date >= cutoff);
 
-            var rows = await _bapl.Database
-                .SqlQueryRaw<MonthlyCount>(@"
-                    SELECT
-                        YEAR(TRY_CONVERT(DATE, salebill_date, 105))  AS [Year],
-                        MONTH(TRY_CONVERT(DATE, salebill_date, 105)) AS [Month],
-                        COUNT(*) AS RetailCount
-                    FROM DMS_SaleBill
-                    WHERE dealer_code = {0}
-                    AND IsDelete    = 0
-                    AND TRY_CONVERT(DATE, salebill_date, 105) IS NOT NULL
-                    AND TRY_CONVERT(DATE, salebill_date, 105) >= {1}
-                    GROUP BY
-                        YEAR(TRY_CONVERT(DATE, salebill_date, 105)),
-                        MONTH(TRY_CONVERT(DATE, salebill_date, 105))",
-                    dealer.CustomerCode, cutoff)
-                .ToListAsync();
+            // Avg retails/month — only possible when the dealer exists in ERP
+            double avg = 0;
+            if (dealer != null)
+            {
+                var rows = await _bapl.Database
+                    .SqlQueryRaw<MonthlyCount>(@"
+                        SELECT
+                            YEAR(TRY_CONVERT(DATE, salebill_date, 105))  AS [Year],
+                            MONTH(TRY_CONVERT(DATE, salebill_date, 105)) AS [Month],
+                            COUNT(*) AS RetailCount
+                        FROM DMS_SaleBill
+                        WHERE dealer_code = {0}
+                        AND IsDelete    = 0
+                        AND TRY_CONVERT(DATE, salebill_date, 105) IS NOT NULL
+                        AND TRY_CONVERT(DATE, salebill_date, 105) >= {1}
+                        GROUP BY
+                            YEAR(TRY_CONVERT(DATE, salebill_date, 105)),
+                            MONTH(TRY_CONVERT(DATE, salebill_date, 105))",
+                        dealer.CustomerCode, cutoff)
+                    .ToListAsync();
 
-            double avg        = (double)rows.Sum(r => r.RetailCount) / 4.0;
+                avg = (double)rows.Sum(r => r.RetailCount) / 4.0;
+            }
+
             int    allowedCac = isNew ? 6000 : 4000;
+            string source     = mappedNew is null ? "ERP" : "Dealer Mapping";
 
             string? warning = actualCac > allowedCac
                 ? $"CAC/CPL ₹{actualCac:N0} exceeds allowed ₹{allowedCac}/vehicle " +
-                  $"({(isNew ? "New" : "Old")} dealer, avg {avg:N1} retails/month). " +
+                  $"({(isNew ? "New" : "Old")} dealer per {source}, avg {avg:N1} retails/month). " +
                   "Deviation approval required."
                 : null;
 

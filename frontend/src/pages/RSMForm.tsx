@@ -21,6 +21,16 @@
 //      dealers can be imported/submitted now). The CAC ₹/vehicle limit is a
 //      separate rule and is UNCHANGED — still fetched and still enforced.
 //      Flip ELIGIBILITY_CHECK_ENABLED back to true after Diwali to restore it.
+//  12. FIX: Dealer Type (Old/New) and Eligibility now come from DEALER MAPPING
+//      (Admin → Dealer Mapping) when set there. ERP onboarding-date classification
+//      is only the fallback. Previously ERP always overwrote the mapping value,
+//      so a dealer mapped as "New" showed "Old" here. The allowed CAC follows the
+//      type used (Old ₹4,000 / New ₹6,000 per vehicle — same as backend).
+//      The label under Dealer Type says where the value came from
+//      (Dealer Mapping or ERP onboarding date).
+//      If useDealerTeamLookup does not carry dealerType/isEligible, the form
+//      reads them straight from the Dealer Mapping API (same source as
+//      Admin → Dealer Mapping), so the mapping value always wins.
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
@@ -39,6 +49,7 @@ import SearchableSelect from "../components/SearchableSelect";
 import type { StateOption, CityOption } from "../types/location";
 // import { findDealerTeam, DEALER_TEAM_MAP } from "../data/dealerTeamMap";
 import { useDealerTeamLookup } from "../hooks/useDealerTeamLookup";
+import { fetchDealerTeamMappings } from "../services/dealerTeamMappingService";
 import * as XLSX from "xlsx";
 import "./RSMForm.css";
 import {
@@ -129,6 +140,16 @@ const num = (v: string) => { const n = parseFloat(v); return Number.isFinite(n) 
 const inr = (v: number) => v.toLocaleString("en-IN", { maximumFractionDigits: 0 });
 const titleCase = (str: string): string =>
   (str ?? "").toLowerCase().split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+
+// Dealer Mapping Old/New + Eligibility (null = not set in mapping → use ERP)
+const mapDealerType = (v: unknown): "Old" | "New" | null => {
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "new" ? "New" : s === "old" ? "Old" : null;
+};
+const mapEligibility = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
+// Allowed BGauss CAC per vehicle by dealer type — same values as backend GetCacLimitAsync.
+const CAC_LIMIT_BY_TYPE: Record<"Old" | "New", number> = { Old: 4000, New: 6000 };
+type Source = "mapping" | "erp" | null;
 
 function generateDocNumber(): string {
   const now = new Date();
@@ -225,6 +246,7 @@ export default function RSMProposalForm() {
   const isStaffScopedUser = !!staffRole && staffScopedRoles.has(staffRole);
   const staffNameLower = (dealerUser?.displayName as string | undefined)?.toLowerCase().trim() ?? "";
   const xlsxRef = useRef<HTMLInputElement>(null);
+  const dealerSelectSeq = useRef(0);   // ignores late responses for a previously selected dealer
 
   const editId   = searchParams.get("edit");
   const editMode = !!editId;
@@ -241,6 +263,9 @@ export default function RSMProposalForm() {
   const [loadingEdit,      setLoadingEdit]      = useState(false);
   const [dealerAutoFilled, setDealerAutoFilled] = useState(false);
   const [dealerTypeOverridden, setDealerTypeOverridden] = useState(false);
+  // Where Dealer Type / team names came from — drives the small source labels.
+  const [typeSource,    setTypeSource]    = useState<Source>(null);
+  const [erpDealerType, setErpDealerType] = useState("");
   const [fieldErrors,    setFieldErrors]    = useState<FieldErrors>({});
   const [activityErrors, setActivityErrors] = useState<ActivityErrors>({});
   const [showDetailErr,  setShowDetailErr]  = useState(false);
@@ -450,10 +475,17 @@ export default function RSMProposalForm() {
     setCities([]);
     setDealerAutoFilled(false);
     setDealerTypeOverridden(false);
+    setTypeSource(null); setErpDealerType("");
 
     if (dealer) {
       setDealerAutoFilled(true);
       const csvTeam = findDealerTeam(dealer.customerCode, dealer.customerName);
+      const seq = ++dealerSelectSeq.current;
+      // Dealer Mapping wins for Old/New + Eligibility; ERP is only the fallback.
+      const mapRow  = (csvTeam ?? null) as unknown as { dealerType?: string | null; isEligible?: boolean | null } | null;
+      const mapType = mapDealerType(mapRow?.dealerType);
+      const mapElig = mapEligibility(mapRow?.isEligible);
+      setTypeSource(mapType ? "mapping" : null);
       setHeader((h) => ({
         ...h,
         dealerId:      dealer.customerCode,
@@ -473,6 +505,8 @@ export default function RSMProposalForm() {
         dealerEmail:   csvTeam?.dealerEmail ?? "",
         rsmEmail:      csvTeam?.rsmEmail ?? "",
         commandoEmail: csvTeam?.commandoEmail ?? "",
+        type:          mapType ?? "",
+        eligibility:   mapElig === null ? "" : (mapElig ? "Eligible" : "Not Eligible"),
         month:         h.month || CURRENT_MONTH,
         year:          h.year || String(CURRENT_YEAR),
         vendorId:      h.vendorId,
@@ -480,21 +514,63 @@ export default function RSMProposalForm() {
       }));
       setFieldErrors((e) => { const n = { ...e }; delete n.dealerName; delete n.rsmName; return n; });
       setEligibilityLoading(true);
-      fetchDealerEligibility(dealer.customerCode, instance)
-        .then((elig) => {
-          setEligibility(elig);
-          // ── Old/New classification comes from ERP eligibility API ──
-      // Dealers onboarded within the last 4 months are "New", others are "Old".
-      // If the ERP marks a recently-onboarded dealer (e.g. Tejas Mobility, Shree Ganesh Traders)
-      // as "Old", it means their ERP onboarding date is > 4 months ago — contact ERP admin to fix.
-      setHeader((h) => ({ ...h, type: elig.dealerType, eligibility: elig.isEligible ? "Eligible" : "Not Eligible" }));
-          setFieldErrors((e) => { const n = { ...e }; delete n.type; delete n.eligibility; return n; });
+
+      // Dealer Type / Eligibility from Dealer Mapping. useDealerTeamLookup may not
+      // carry these two fields, so if it doesn't, read the mapping row directly
+      // (Admin → Dealer Mapping API): match Dealer Code first, then Dealer Name.
+      const normName = (v?: string | null) => (v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const mappingPromise: Promise<{ type: "Old" | "New" | null; elig: boolean | null }> =
+        (mapType || mapElig !== null)
+          ? Promise.resolve({ type: mapType, elig: mapElig })
+          : fetchDealerTeamMappings(instance, dealer.customerCode)
+              .then(async (rows) => {
+                let row = rows.find((r) => (r.dealerCode ?? "").trim().toLowerCase() === dealer.customerCode.trim().toLowerCase());
+                if (!row) {
+                  const byName = await fetchDealerTeamMappings(instance, dealer.customerName).catch(() => rows);
+                  row = byName.find((r) => normName(r.dealerName) === normName(dealer.customerName));
+                }
+                return {
+                  type: mapDealerType(row?.dealerType),
+                  elig: typeof row?.isEligible === "boolean" ? row.isEligible : null,
+                };
+              })
+              .catch(() => ({ type: null, elig: null }));
+
+      Promise.all([
+        mappingPromise,
+        fetchDealerEligibility(dealer.customerCode, instance).catch(() => null),
+      ])
+        .then(([m, elig]) => {
+          if (seq !== dealerSelectSeq.current) return;   // user already picked another dealer
+          // ERP classifies Old/New by onboarding date (≤ 4 months = New) — fallback only.
+          setErpDealerType(elig?.dealerType ?? "");
+          const effType = m.type ?? elig?.dealerType ?? "";
+          const effElig = m.elig ?? elig?.isEligible ?? null;
+          setTypeSource(m.type ? "mapping" : elig ? "erp" : null);
+          if (elig) {
+            setEligibility({
+              ...elig,
+              dealerType: effType || elig.dealerType,
+              isEligible: effElig ?? elig.isEligible,
+              // Mapping type differs from ERP → use that type's CAC limit
+              baseCacPerVehicle: m.type && m.type !== elig.dealerType
+                ? CAC_LIMIT_BY_TYPE[m.type]
+                : elig.baseCacPerVehicle,
+            });
+          }
+          setHeader((h) => ({
+            ...h,
+            type: effType,
+            eligibility: effElig === null ? h.eligibility : (effElig ? "Eligible" : "Not Eligible"),
+          }));
+          if (effType) setFieldErrors((e) => { const n = { ...e }; delete n.type; delete n.eligibility; return n; });
         })
-        .catch(() => {}).finally(() => setEligibilityLoading(false));
+        .finally(() => { if (seq === dealerSelectSeq.current) setEligibilityLoading(false); });
       setLoadingDealerHistory(true);
       fetchProposalsByDealer(titleCase(dealer.customerName), instance)
         .then(setDealerHistory).catch(() => {}).finally(() => setLoadingDealerHistory(false));
     } else {
+      dealerSelectSeq.current++;   // cancel any pending mapping / ERP response
       setDealerAutoFilled(false);
       setHeader((h) => ({ ...h, dealerId:"", dealerName:"", state:"", stateId:null, location:"", rsmName:"", tsmName:"", commandoName:"", type:"", eligibility:"", dealerEmail:"", rsmEmail:"", commandoEmail:"" }));
     }
@@ -582,6 +658,7 @@ export default function RSMProposalForm() {
     setEligibility(null); setCacWarning(null); setCacBlocking(false);
     setXlsxMsg(null); setXlsxAlert(null);
     setDealerAutoFilled(false); setUsedActivityTypes([]);
+    setTypeSource(null); setErpDealerType("");
   }, []);
 
   const goToActivities = () => {
@@ -1001,6 +1078,7 @@ export default function RSMProposalForm() {
       sublabel: [d.city, d.state].filter((v): v is string => v !== null).map(titleCase).join(", ")
     }));
   const vendorOptions = vendors.map((v) => ({ value: String(v.id), label: titleCase(v.vendorName) }));
+
   const rsmOptions = Array.from(new Map([
     ...dealers.filter((d) => d.rsmName || d.rsmCode).map((d) => { const val = d.rsmName ?? d.rsmCode!; return [titleCase(val), { value: val, label: titleCase(val) }] as [string, { value: string; label: string }]; }),
     ...dealers.filter((d) => d.tsmName || d.tsmCode).map((d) => { const val = d.tsmName ?? d.tsmCode!; return [titleCase(val), { value: val, label: titleCase(val) }] as [string, { value: string; label: string }]; }),
@@ -1218,9 +1296,14 @@ export default function RSMProposalForm() {
                 {dealerAutoFilled && !editMode && !dealerTypeOverridden ? (
                   <>
                     <LockedField value={header.type}/>
-                    {eligibility && (
+                    {typeSource === "mapping" && erpDealerType && erpDealerType !== header.type && (
+                      <span style={{ fontSize:10,color:"#92400e",marginTop:2,display:"block" }}>
+                        ERP onboarding date says <b>{erpDealerType}</b> — Dealer Mapping value <b>{header.type}</b> is used.
+                      </span>
+                    )}
+                    {(eligibility || typeSource) && (
                       <span style={{ fontSize:10,color:"#6b7280",marginTop:2,display:"block" }}>
-                        From ERP onboarding date · <button type="button"
+                        {typeSource === "mapping" ? "From Dealer Mapping" : "From ERP onboarding date"} · <button type="button"
                           style={{ fontSize:10,color:"#2563eb",background:"none",border:"none",cursor:"pointer",padding:0 }}
                           onClick={() => setDealerTypeOverridden(true)}>
                           Wrong? Override manually
