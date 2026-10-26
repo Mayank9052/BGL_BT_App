@@ -24,4 +24,8 @@ public class DealerTeamMapping
     public DateTime CreatedAt      { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt      { get; set; } = DateTime.UtcNow;
     public string?  UpdatedByEmail { get; set; }
+    public bool IsActive { get; set; } = true;
+
+    /// <summary>When DealerType was last set from RRERP (DealerTypeService).</summary>
+    public DateTime? DealerTypeUpdatedAt { get; set; }
 }

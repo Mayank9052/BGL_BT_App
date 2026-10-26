@@ -8,6 +8,7 @@ import DownloadReportButton from "../components/DownloadReportButton";
 import type { ExportColumn } from "../utils/exportReport";
 import { fetchLeadReport, type LeadReportApiRow } from "../services/leadReportService";
 import "./AnalyticsDashboard.css";
+import { fetchDealerStatus, buildInactiveMatcher } from "../services/dealerStatusService";   // [BTL-2026-10-26c]
 // [BTL-2026-10-26] multi-select filters + custom date range + Daily PPT
 import MultiSelectDropdown from "../components/MultiSelectDropdown";
 import { buildDailyReportPpt } from "../utils/dailyReportPpt";
@@ -264,9 +265,22 @@ export default function AnalyticsDashboard() {
   const [proposals, setProposals] = useState<ProposalResponse[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState<string|null>(null);
-  const [yearFilter, setYearFilter] = useState(String(CURRENT_YEAR));
-  const [monthFilter, setMonthFilter] = useState("All");
-  const [statusFilter, setStatusFilter] = useState("All");
+  // ── [BTL-2026-10-26c] header filters: multi-select (empty = All); Month & Year default to the current month ──
+  const [yearSel,   setYearSel]   = useState<string[]>([String(CURRENT_YEAR)]);
+  const [monthSel,  setMonthSel]  = useState<string[]>([MONTHS[new Date().getMonth()]]);
+  const [statusSel, setStatusSel] = useState<string[]>([]);
+  const [dealerStatusSel, setDealerStatusSel] = useState<string[]>([]);
+  const [isDealerInactive, setIsDealerInactive] =
+    useState<(code?: string | null, name?: string | null) => boolean>(() => () => false);
+  useEffect(() => {
+    fetchDealerStatus(instance).then((rows) => setIsDealerInactive(() => buildInactiveMatcher(rows))).catch(() => {});
+  }, [instance]);
+  // single-value views kept for the KPI cards / month bars (one selected = that value, else "All")
+  const one = (a: string[]) => (a.length === 1 ? a[0] : "All");
+  const yearFilter = one(yearSel), monthFilter = one(monthSel), statusFilter = one(statusSel);
+  const setYearFilter   = (v: string) => setYearSel(v === "All" ? [] : [v]);
+  const setMonthFilter  = (v: string) => setMonthSel(v === "All" ? [] : [v]);
+  const setStatusFilter = (v: string) => setStatusSel(v === "All" ? [] : [v]);
   const [activeTab,   setActiveTab]   = useState<"overview"|"region"|"activity"|"daily"|"budget"|"daily-activity"|"lead-report">("overview");
   const [activeKpi,    setActiveKpi]    = useState<string|null>(null);
   const [stateFilter,  setStateFilter]  = useState<string|null>(null);
@@ -281,8 +295,8 @@ export default function AnalyticsDashboard() {
   const [dailyStateSel,   setDailyStateSel]   = useState<string[]>([]);
   const [dailyDealerSel,  setDailyDealerSel]  = useState<string[]>([]);
   const [dailyActTypeSel, setDailyActTypeSel] = useState<string[]>([]);
-  const [dailyFrom,       setDailyFrom]       = useState("");   // yyyy-MM-dd, "" = no lower bound
-  const [dailyTo,         setDailyTo]         = useState("");   // yyyy-MM-dd, "" = no upper bound
+  const [dailyFrom,       setDailyFrom]       = useState(() => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-01`; });   // yyyy-MM-dd, "" = no lower bound
+  const [dailyTo,         setDailyTo]         = useState(() => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`; });   // yyyy-MM-dd, "" = no upper bound
   const [pptBusy,         setPptBusy]         = useState<string | null>(null);
   const dailyRangeActive = !!(dailyFrom || dailyTo);
   const toLocalIso = (s: string) => {
@@ -357,9 +371,10 @@ export default function AnalyticsDashboard() {
 
   // ── Filtered proposals ──────────────────────────────────────────────────────
   const filtered = useMemo(() => proposals.filter(p => {
-    if (yearFilter   !== "All"  && (p as any).year !== yearFilter)   return false;
-    if (monthFilter  !== "All"  && p.month  !== monthFilter)          return false;
-    if (statusFilter !== "All"  && p.status !== statusFilter)         return false;
+    if (yearSel.length   && !yearSel.includes(String((p as any).year ?? ""))) return false;
+    if (monthSel.length  && !monthSel.includes(p.month)) return false;
+    if (statusSel.length && !statusSel.includes(p.status)) return false;
+    if (dealerStatusSel.length && !dealerStatusSel.includes(isDealerInactive((p as any).dealerCode, p.dealerName) ? "Inactive" : "Active")) return false;
     if (stateFilter  !== null   && p.state  !== stateFilter)          return false;
     if (rsmFilter    !== null   && p.rsmName !== rsmFilter)           return false;
     if (dealerFilter !== null   && p.dealerName !== dealerFilter)     return false;
@@ -369,9 +384,15 @@ export default function AnalyticsDashboard() {
       else { if (!p.activities.some(a => a.activityType === actFilter)) return false; }
     }
     return true;
-  }), [proposals, yearFilter, monthFilter, statusFilter, stateFilter, rsmFilter, dealerFilter, actFilter]);
+  }), [proposals, yearSel, monthSel, statusSel, dealerStatusSel, isDealerInactive, stateFilter, rsmFilter, dealerFilter, actFilter]);
 
   const approved  = useMemo(() => filtered.filter(p => p.status === "Approved"),  [filtered]);
+  // [BTL-2026-10-26c] Daily Activity Report uses its own date range, so it ignores the header Month / Year / Status
+  const approvedAnyPeriod = useMemo(() => proposals.filter((p) => p.status === "Approved" &&
+    (!stateFilter || p.state === stateFilter) && (!rsmFilter || p.rsmName === rsmFilter) &&
+    (!dealerFilter || p.dealerName === dealerFilter) &&
+    (!dealerStatusSel.length || dealerStatusSel.includes(isDealerInactive((p as any).dealerCode, p.dealerName) ? "Inactive" : "Active"))),
+    [proposals, stateFilter, rsmFilter, dealerFilter, dealerStatusSel, isDealerInactive]);
   const pending   = useMemo(() => filtered.filter(p => p.status === "Pending"),   [filtered]);
   const rejected  = useMemo(() => filtered.filter(p => p.status === "Rejected"),  [filtered]);
   const revision  = useMemo(() => filtered.filter(p => p.status === "NeedsRevision"), [filtered]);
@@ -493,7 +514,7 @@ export default function AnalyticsDashboard() {
 
   // ── Daily Activity Summary (same as DashboardPage) ─────────────────────────
   const liveDailySummary = useMemo((): DailySummaryRow[] => {
-    const approvedProposals = approved;
+    const approvedProposals = approvedAnyPeriod;
     const rows: DailySummaryRow[] = [];
     let sr = 1;
     for (const p of approvedProposals) {
@@ -570,7 +591,7 @@ export default function AnalyticsDashboard() {
       }
     }
     return rows;
-  }, [approved, dailyFrom, dailyTo]);
+  }, [approvedAnyPeriod, dailyFrom, dailyTo]);
 
   const dsTotals = useMemo(() => {
     const src = liveDailySummary.filter(dailyRowMatches);
@@ -778,23 +799,14 @@ export default function AnalyticsDashboard() {
           </div>
         </div>
         <div className="an-filters">
-          <select className="an-select" value={yearFilter} onChange={e => setYearFilter(e.target.value)}>
-            {years.map(y => <option key={y} value={y}>{y === "All" ? "All Years" : y}</option>)}
-          </select>
-          <select className="an-select" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}>
-            <option value="All">All Months</option>
-            {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
-          <select className="an-select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-            <option value="All">All Statuses</option>
-            <option value="Approved">Approved</option>
-            <option value="Pending">Pending</option>
-            <option value="Rejected">Rejected</option>
-            <option value="NeedsRevision">Needs Revision</option>
-          </select>
-          {(yearFilter !== "All" || monthFilter !== "All" || statusFilter !== "All" || stateFilter || rsmFilter || dealerFilter || actFilter) && (
+          {/* [BTL-2026-10-26c] multi-select header filters */}
+          <MultiSelectDropdown label="Years" options={Array.from(new Set([...years.filter(y=>y!=="All"), String(CURRENT_YEAR)])).sort()} value={yearSel} onChange={setYearSel} width={120}/>
+          <MultiSelectDropdown label="Months" options={MONTHS} value={monthSel} onChange={setMonthSel} width={150}/>
+          <MultiSelectDropdown label="Statuses" options={["Approved","Pending","Rejected","NeedsRevision"]} value={statusSel} onChange={setStatusSel} width={150}/>
+          <MultiSelectDropdown label="Dealer Status" options={["Active","Inactive"]} value={dealerStatusSel} onChange={setDealerStatusSel} width={150}/>
+          {(yearSel.length > 0 || monthSel.length > 0 || statusSel.length > 0 || dealerStatusSel.length > 0 || stateFilter || rsmFilter || dealerFilter || actFilter) && (
             <button className="an-clear" onClick={() => {
-              setYearFilter(String(CURRENT_YEAR)); setMonthFilter("All"); setStatusFilter("All");
+              setYearSel([]); setMonthSel([]); setStatusSel([]); setDealerStatusSel([]);
               setStateFilter(null); setRsmFilter(null); setDealerFilter(null); setActFilter(null);
             }}>
               Clear all ✕

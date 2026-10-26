@@ -1,22 +1,20 @@
-BGauss BTL — Daily Activity Report: filters + Daily Report as PPT / PDF / Excel + Admin Delete (26.10.2026)
+BGauss BTL — 26.10.2026 part 3
+(Dealer Active/Inactive · Old/New from RRERP · inactive staff · multi-select filters · bulk delete · default month)
 
-COPY (new / updated files)
-  frontend/src/components/MultiSelectDropdown.tsx
-  frontend/src/utils/dailyReportCore.ts      (NEW  - one definition of every table, used by all 3 formats)
-  frontend/src/utils/dailyReportPpt.ts       (UPDATED - now built on dailyReportCore)
-  frontend/src/utils/dailyReportPdf.ts       (NEW)
-  frontend/src/utils/dailyReportExcel.ts     (NEW)
-  frontend/public/ppt-assets/*               (brand images from Project_Towns_15_August_2026.pptx)
-  Backend/Controllers/ProposalsController.cs (full file, with DELETE /api/proposals/{id})
-
-PATCH existing files (from the BGL_BT_App folder)
-  node apply-changes.mjs frontend      (part 1: filters, date range, Daily PPT, Delete, Send summary; skips if already done)
-  node apply-changes-2.mjs frontend    (part 2: PPT / PDF / Excel buttons)
-
-INSTALL + BUILD
-  cd frontend
-  npm i pptxgenjs@3.12.0 jspdf@2.5.2 jspdf-autotable@3.8.4 exceljs@4.4.0
-  npm run build
-  cd ../Backend && dotnet build
-
-SAMPLE_Daily_Report_test-data.(pptx|pdf|xlsx) = generator output with dummy figures (layout check only).
+ORDER
+ 1. SQL     Backend/Sql/DealerMapping_Status_TypeAuto.sql            (adds IsActive, DealerTypeUpdatedAt)
+ 2. Model   add the 2 properties in Backend/Models/DealerTeamMapping.ADD-THESE-PROPERTIES.cs
+ 3. Backend copy (replace):
+              Services/DealerTypeService.cs                (NEW)
+              Controllers/DealerTeamMappingController.cs
+              Controllers/DealerEligibilityController.cs
+              Controllers/ProposalsController.cs           (CAC limit now uses DealerTypeService)
+              Program.cs                                   (+ AddScoped<DealerTypeService>)
+            appsettings.json (optional):  "DealerType": { "NewWindowMonths": 3 }
+            dotnet build  → publish → restart
+ 4. Frontend copy: src/services/dealerStatusService.ts (NEW), src/components/MultiSelectDropdown.tsx
+            node apply-changes.mjs frontend      (part 1 — skipped if already applied)
+            node apply-changes-2.mjs frontend    (part 2 — skipped if already applied)
+            node apply-changes-3.mjs frontend    (this part)
+            npm run build
+ 5. Dealer Mapping page → "↻ Old/New from RRERP" once (afterwards it runs automatically every 12 h).

@@ -49,6 +49,7 @@ import SearchableSelect from "../components/SearchableSelect";
 import type { StateOption, CityOption } from "../types/location";
 // import { findDealerTeam, DEALER_TEAM_MAP } from "../data/dealerTeamMap";
 import { useDealerTeamLookup } from "../hooks/useDealerTeamLookup";
+import { fetchDealerStatus, buildInactiveMatcher } from "../services/dealerStatusService";   // [BTL-2026-10-26c]
 import { fetchDealerTeamMappings } from "../services/dealerTeamMappingService";
 import * as XLSX from "xlsx";
 import "./RSMForm.css";
@@ -246,6 +247,12 @@ export default function RSMProposalForm() {
   const isStaffScopedUser = !!staffRole && staffScopedRoles.has(staffRole);
   const staffNameLower = (dealerUser?.displayName as string | undefined)?.toLowerCase().trim() ?? "";
   const xlsxRef = useRef<HTMLInputElement>(null);
+  // [BTL-2026-10-26c] dealers marked Inactive in Dealer Mapping are not offered
+  const [isDealerInactive, setIsDealerInactive] =
+    useState<(code?: string | null, name?: string | null) => boolean>(() => () => false);
+  useEffect(() => {
+    fetchDealerStatus(instance).then((rows) => setIsDealerInactive(() => buildInactiveMatcher(rows))).catch(() => {});
+  }, [instance]);
   const dealerSelectSeq = useRef(0);   // ignores late responses for a previously selected dealer
 
   const editId   = searchParams.get("edit");
@@ -1066,6 +1073,7 @@ export default function RSMProposalForm() {
   // Dealers not in the sheet have no RSM/TSM assigned and should not appear in the form.
   const dealerOptions = dealers
     .filter((d) => {
+      if (isDealerInactive(d.customerCode, d.customerName)) return false;   // [BTL-2026-10-26c] inactive dealer
       // Check if this dealer exists in the DB-backed mapping (by name fuzzy match)
       const nameNorm = d.customerName.toLowerCase().trim().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ");
       return dealerTeamRows.some((m) => {

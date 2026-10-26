@@ -141,8 +141,8 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("All");
-  const [monthFilter, setMonthFilter] = useState("All");
-  const [yearFilter, setYearFilter] = useState("All");
+  const [monthFilter, setMonthFilter] = useState(MONTHS[new Date().getMonth()]);   // [BTL-2026-10-26c] default = current month
+  const [yearFilter, setYearFilter] = useState(String(new Date().getFullYear()));
   const [search, setSearch] = useState("");
 
   const [selected, setSelected] = useState<ProposalResponse | null>(null);
@@ -196,8 +196,8 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
   useEffect(() => { loadProposals(); loadCnPending(); }, [loadProposals, loadCnPending]);
 
   // ── Filters ────────────────────────────────────────────────────────────────
-  const months = useMemo(() => ["All", ...Array.from(new Set(proposals.map((p) => p.month))).sort()], [proposals]);
-  const years = useMemo(() => ["All", ...Array.from(new Set(proposals.map((p) => (p as any).year).filter(Boolean))).sort()], [proposals]);
+  const months = useMemo(() => { const s = new Set([...proposals.map((p) => p.month), MONTHS[new Date().getMonth()]]); return ["All", ...MONTHS.filter((m) => s.has(m))]; }, [proposals]);
+  const years = useMemo(() => ["All", ...Array.from(new Set([...proposals.map((p) => String((p as any).year ?? "")).filter(Boolean), String(new Date().getFullYear())])).sort()], [proposals]);
 
   const baseFiltered = useMemo(() => proposals.filter((p) => {
     if (activeFilter !== "All" && p.status !== activeFilter) return false;

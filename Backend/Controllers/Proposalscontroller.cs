@@ -21,6 +21,7 @@ public class ProposalsController : ControllerBase
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly DailyDigestService _digestService; // ← immediate-send
     private readonly IConfiguration _config;             // ← NEW (1G): Email:SuppressIndividualForwardMails
+    private readonly DealerTypeService _dealerType;      // ← 26.10: RRERP Old/New rule (shared)
 
     private string GraphToken() =>
         Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
@@ -32,7 +33,8 @@ public class ProposalsController : ControllerBase
         ILogger<ProposalsController> logger,
         IServiceScopeFactory scopeFactory,
         DailyDigestService digestService,
-        IConfiguration config) // ← NEW (1G)
+        IConfiguration config,              // ← NEW (1G)
+        DealerTypeService dealerType)       // ← 26.10
     {
         _db             = db;
         _bapl           = bapl;
@@ -41,6 +43,7 @@ public class ProposalsController : ControllerBase
         _scopeFactory   = scopeFactory;
         _digestService  = digestService;
         _config         = config;
+        _dealerType     = dealerType;
     }
 
     // ── POST /api/proposals ───────────────────────────────────────────────────
@@ -1140,36 +1143,31 @@ public class ProposalsController : ControllerBase
         return (true, null);
     }
 
+    // Allowed CAC per vehicle: New ₹6,000 / Old ₹4,000.
+    // Old / New = RRERP rule in DealerTypeService (onboarding OR first sale within the last
+    // N months, default 3). Dealer Mapping type is used only when the dealer has no code.
     private async Task<(int AllowedCac, string? Warning)>
     GetCacLimitAsync(string dealerName, decimal actualCac)
     {
         try
         {
-            // Dealer Mapping (Admin → Dealer Mapping) wins for Old/New.
-            // ERP onboarding date (≤ 4 months = New) is used only when the mapping has no Dealer Type.
             var mapping = await DealerNameMatcher.FindMappingAsync(_db, dealerName);
-            bool? mappedNew = (mapping?.DealerType ?? "").Trim().ToLowerInvariant() switch
-            {
-                "new" => true,
-                "old" => false,
-                _     => (bool?)null,
-            };
-
-            var cutoff = DateTime.UtcNow.AddMonths(-4).Date;
-
-            var dealer = await _bapl.DealerMasters
+            var dealer  = await _bapl.DealerMasters
                 .AsNoTracking()
                 .FirstOrDefaultAsync(d => d.CustomerName == dealerName && d.Active == "Y");
+            var code = dealer?.CustomerCode ?? mapping?.DealerCode;
 
-            // No ERP dealer and no mapping type → default Old limit (unchanged behaviour)
-            if (dealer == null && mappedNew is null) return (4000, null);
+            bool   isNew;
+            string source;
+            var    t = await _dealerType.ClassifyOneAsync(code);
+            if (t is not null) { isNew = t.IsNew; source = "RRERP"; }
+            else if (string.Equals(mapping?.DealerType, "New", StringComparison.OrdinalIgnoreCase)) { isNew = true; source = "Dealer Mapping"; }
+            else if (mapping is not null || dealer is not null) { isNew = false; source = mapping?.DealerType is null ? "default" : "Dealer Mapping"; }
+            else return (4000, null);
 
-            bool isNew = mappedNew
-                ?? (dealer!.OnboardedDate.HasValue && dealer.OnboardedDate.Value.Date >= cutoff);
-
-            // Avg retails/month — only possible when the dealer exists in ERP
+            var months = _dealerType.WindowMonths;
             double avg = 0;
-            if (dealer != null)
+            if (!string.IsNullOrWhiteSpace(code))
             {
                 var rows = await _bapl.Database
                     .SqlQueryRaw<MonthlyCount>(@"
@@ -1185,18 +1183,15 @@ public class ProposalsController : ControllerBase
                         GROUP BY
                             YEAR(TRY_CONVERT(DATE, salebill_date, 105)),
                             MONTH(TRY_CONVERT(DATE, salebill_date, 105))",
-                        dealer.CustomerCode, cutoff)
+                        code, _dealerType.Cutoff)
                     .ToListAsync();
-
-                avg = (double)rows.Sum(r => r.RetailCount) / 4.0;
+                avg = (double)rows.Sum(r => r.RetailCount) / months;
             }
 
-            int    allowedCac = isNew ? 6000 : 4000;
-            string source     = mappedNew is null ? "ERP" : "Dealer Mapping";
-
+            int allowedCac = isNew ? 6000 : 4000;
             string? warning = actualCac > allowedCac
                 ? $"CAC/CPL ₹{actualCac:N0} exceeds allowed ₹{allowedCac}/vehicle " +
-                  $"({(isNew ? "New" : "Old")} dealer per {source}, avg {avg:N1} retails/month). " +
+                  $"({(isNew ? "New" : "Old")} dealer per {source}, avg {avg:N1} retails/month over {months} months). " +
                   "Deviation approval required."
                 : null;
 

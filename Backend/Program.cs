@@ -202,6 +202,8 @@ builder.Services.AddHttpClient("cn-graph", c => c.Timeout = TimeSpan.FromMinutes
 builder.Services.AddHttpClient("cn-media", c => c.Timeout = TimeSpan.FromMinutes(2));
 builder.Services.AddScoped<CnAttachmentLoader>();
 builder.Services.AddScoped<CnEmailService>();
+// ── Dealer Old/New from RRERP (shared by eligibility, CAC limit, Dealer Mapping) ──
+builder.Services.AddScoped<DealerTypeService>();
 // ── Chat — SignalR + AI bot with DB access ────────────────────────────────────
 builder.Services.AddSignalR(opts =>
 {

@@ -34,6 +34,8 @@ import { fetchDealers, type DealerOption } from "../services/dealerService";
 //   (GET /api/employee-auth/list). Fix the path/names if they differ.
 import { fetchStaffUsers, type StaffAccount } from "../services/employeeAuthService";
 import SearchableSelect from "../components/SearchableSelect";
+import { fetchDealerEligibility } from "../services/dealerService";                              // [BTL-2026-10-26c]
+import { setDealerMappingStatus, refreshDealerTypes } from "../services/dealerStatusService";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXCEL FORMAT — single source of truth for Template, Export and Import
@@ -390,6 +392,69 @@ export default function AdminDealerMapPage() {
   // "manual" = type everything by hand — for dealers not yet in ERP.
   const [dealerSourceMode, setDealerSourceMode] = useState<"erp" | "manual">("erp");
   const [selectedErpDealerCode, setSelectedErpDealerCode] = useState("");
+  // ── [BTL-2026-10-26c] Active / Inactive · Old/New from RRERP · inactive-staff checks ──
+  const [statusView,  setStatusView]  = useState<"all" | "active" | "inactive">("all");
+  const [typeAuto,    setTypeAuto]    = useState<{ type: "Old" | "New"; reason: string } | null>(null);
+  const [typeLoading, setTypeLoading] = useState(false);
+  const [refreshing,  setRefreshing]  = useState(false);
+  const [notice,      setNotice]      = useState<string | null>(null);
+  const [statusBusy,  setStatusBusy]  = useState<number | null>(null);
+  const isRowActive = (r: DealerTeamMappingRow) => (r as unknown as { isActive?: boolean }).isActive !== false;
+  const visibleRows = useMemo(() => rows.filter((r) =>
+    statusView === "all" || (statusView === "active") === isRowActive(r)), [rows, statusView]);
+  // Staff marked Inactive (Users → Staff). A name that an ACTIVE person also uses is not flagged.
+  const inactiveStaff = useMemo(() => {
+    const active = new Set<string>(), names = new Set<string>(), emails = new Set<string>();
+    for (const s of staffUsers) { const n = titleCase((s.displayName ?? "").trim()).toLowerCase(); if (s.isActive && n) active.add(n); }
+    for (const s of staffUsers) {
+      if (s.isActive) continue;
+      const n = titleCase((s.displayName ?? "").trim()).toLowerCase();
+      if (n && !active.has(n)) names.add(n);
+      const e = (s.email ?? "").trim().toLowerCase();
+      if (e) emails.add(e);
+    }
+    return { names, emails };
+  }, [staffUsers]);
+  const isInactiveStaff = (name?: string | null, email?: string | null) =>
+    (!!name && inactiveStaff.names.has(titleCase(name.trim()).toLowerCase())) ||
+    (!!email && email.split(/[,;]/).some((e) => inactiveStaff.emails.has(e.trim().toLowerCase())));
+  const inactiveBadge = (
+    <span title="Inactive in Users → Staff — re-assign this dealer"
+      style={{ marginLeft: 6, fontSize: 9, fontWeight: 800, color: "#991b1b", background: "#fee2e2",
+        border: "1px solid #fecaca", borderRadius: 4, padding: "0 5px" }}>INACTIVE</span>
+  );
+  // Old / New from RRERP (same rule as RSM Form and CAC limit) — the field is locked when found
+  const autoType = async (code: string) => {
+    if (!code) { setTypeAuto(null); return; }
+    setTypeLoading(true);
+    try {
+      const e = await fetchDealerEligibility(code, instance);
+      const t: "Old" | "New" = e.dealerType === "New" ? "New" : "Old";
+      setTypeAuto({ type: t, reason: e.eligibilityReason });
+      setForm((f) => ({ ...f, dealerType: t }));
+    } catch { setTypeAuto(null); }
+    finally { setTypeLoading(false); }
+  };
+  const handleStatus = async (row: DealerTeamMappingRow, active: boolean) => {
+    if (!active && !window.confirm(`Mark "${row.dealerName}" INACTIVE?\n\nThe dealer will be hidden from the RSM Form and its dealer login(s) will be blocked.`)) return;
+    setStatusBusy(row.id); setError(null);
+    try {
+      const r = await setDealerMappingStatus(row.id, active, instance);
+      setRows((prev) => prev.map((x) => (x.id === row.id ? ({ ...x, isActive: r.isActive } as DealerTeamMappingRow) : x)));
+      setNotice(`${row.dealerName} is now ${active ? "Active" : "Inactive"}` +
+        (r.loginsUpdated ? ` · ${r.loginsUpdated} dealer login(s) ${active ? "re-activated" : "blocked"}` : "") + ".");
+    } catch (e) { setError(e instanceof Error ? e.message : "Status change failed."); }
+    finally { setStatusBusy(null); }
+  };
+  const handleRefreshTypes = async () => {
+    setRefreshing(true); setError(null);
+    try {
+      const r = await refreshDealerTypes(instance);
+      setNotice(`Old / New refreshed from RRERP (last ${r.windowMonths} months): ${r.checked} dealers checked, ${r.changed} changed.`);
+      await load(search || undefined);
+    } catch (e) { setError(e instanceof Error ? e.message : "Refresh failed."); }
+    finally { setRefreshing(false); }
+  };
 
   // Excel
   const fileRef = useRef<HTMLInputElement>(null);
@@ -469,7 +534,7 @@ export default function AdminDealerMapPage() {
 
   const openCreate = () => {
     setEditingId(null); setForm(emptyForm); setFormError(null);
-    setDealerSourceMode("erp"); setSelectedErpDealerCode("");
+    setDealerSourceMode("erp"); setSelectedErpDealerCode(""); setTypeAuto(null);
     setShowForm(true);
   };
   const openEdit = (row: DealerTeamMappingRow) => {
@@ -485,6 +550,7 @@ export default function AdminDealerMapPage() {
     // and overwrites Code/City/State/RSM/TSM/Commando from ERP, if needed.
     setDealerSourceMode("manual");
     setSelectedErpDealerCode(row.dealerCode ?? "");
+    if (row.dealerCode) autoType(row.dealerCode); else setTypeAuto(null);   // [BTL-2026-10-26c]
     setFormError(null); setShowForm(true);
   };
   const closeForm = () => { setShowForm(false); setEditingId(null); setFormError(null); };
@@ -493,9 +559,11 @@ export default function AdminDealerMapPage() {
   const handleErpDealerSelect = (d: DealerOption | null) => {
     if (!d) {
       setSelectedErpDealerCode("");
+      setTypeAuto(null);
       return;
     }
     setSelectedErpDealerCode(d.customerCode);
+    autoType(d.customerCode);   // [BTL-2026-10-26c] Old/New from RRERP
     setForm((f) => ({
       ...f,
       dealerName: titleCase(d.customerName),
@@ -514,6 +582,10 @@ export default function AdminDealerMapPage() {
     e.preventDefault();
     if (!form.dealerName.trim()) { setFormError("Dealer name is required."); return; }
     if (!form.rsm.trim())        { setFormError("RSM name is required."); return; }
+    // [BTL-2026-10-26c] inactive staff cannot be mapped
+    if (isInactiveStaff(form.rsm, form.rsmEmail)) { setFormError(`RSM "${form.rsm}" is Inactive — pick an active RSM.`); return; }
+    if (form.tsm?.trim() && isInactiveStaff(form.tsm, form.tsmEmail)) { setFormError(`TSM "${form.tsm}" is Inactive — pick an active TSM or "No TSM".`); return; }
+    if (form.commando?.trim() && isInactiveStaff(form.commando, form.commandoEmail)) { setFormError(`Commando "${form.commando}" is Inactive — pick an active Commando or "No Commando".`); return; }
     setSaving(true); setFormError(null);
     try {
       // Blank optional team fields → NULL in DB (Edit clears; Excel import blank still = keep).
@@ -623,6 +695,9 @@ export default function AdminDealerMapPage() {
             style={toolBtn("#fffbeb", "#92400e", "#fde68a", parsing || importing)}>
             {parsing ? "Reading…" : "📥 Import Excel"}
           </button>
+          <button onClick={handleRefreshTypes} disabled={refreshing} style={toolBtn("#f0fdf4", "#166534", "#bbf7d0", refreshing)}
+            title="Re-calculate Old / New for every mapped dealer from RRERP (first sale / onboarding within the last 3 months = New). Also runs automatically every 12 h.">
+            {refreshing ? "Refreshing…" : "↻ Old/New from RRERP"}</button>
           <button onClick={openCreate} style={{ ...toolBtn("#16a34a", "#fff", "#16a34a"), padding: "9px 20px" }}>
             + Add Dealer Mapping
           </button>
@@ -634,6 +709,13 @@ export default function AdminDealerMapPage() {
           borderRadius: 8, padding: "11px 14px", marginBottom: 16, fontSize: 13, color: "#991b1b", wordBreak: "break-word" }}>⚠ {error}</div>
       )}
 
+      {notice && (
+        <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderLeft: "4px solid #16a34a", borderRadius: 8,
+          padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#166534", display: "flex", alignItems: "center", gap: 10 }}>
+          ✓ {notice}
+          <button onClick={() => setNotice(null)} style={{ marginLeft: "auto", background: "none", border: "none", color: "#6b7280", cursor: "pointer" }}>✕</button>
+        </div>
+      )}
       {importResult && (
         <div style={{ background: importResult.errors.length ? "#fffbeb" : "#f0fdf4",
           border: `1px solid ${importResult.errors.length ? "#fde68a" : "#bbf7d0"}`,
@@ -664,17 +746,27 @@ export default function AdminDealerMapPage() {
         </div>
       )}
 
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <input value={search} onChange={(e) => setSearch(e.target.value)}
           placeholder="🔍 Search dealer name, code, RSM, TSM, city, state…"
           style={{ ...inputStyle, maxWidth: 400 }} />
+        <div style={{ display: "inline-flex", border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+          {(["all", "active", "inactive"] as const).map((v) => (
+            <button key={v} type="button" onClick={() => setStatusView(v)}
+              style={{ padding: "7px 12px", fontSize: 12, fontWeight: 700, border: "none", cursor: "pointer",
+                background: statusView === v ? (v === "inactive" ? "#991b1b" : v === "active" ? "#16a34a" : "#0a2540") : "#fff",
+                color: statusView === v ? "#fff" : "#374151" }}>
+              {v === "all" ? `All (${rows.length})` : v === "active" ? `Active (${rows.filter(isRowActive).length})` : `Inactive (${rows.filter((r) => !isRowActive(r)).length})`}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: "#0a2540" }}>
-              {["Dealer", "Code", "City / State", "RSM", "TSM", "Commando", "Eligibility", "Type", ""].map((h) => (
+              {["Dealer", "Code", "City / State", "RSM", "TSM", "Commando", "Eligibility", "Type", "Status", ""].map((h) => (
                 <th key={h} style={{ padding: "10px 12px", textAlign: "left", color: "#94a3b8",
                   fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
               ))}
@@ -682,13 +774,13 @@ export default function AdminDealerMapPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: "#9ca3af" }}>Loading…</td></tr>
-            ) : rows.length === 0 ? (
-              <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>
+              <tr><td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#9ca3af" }}>Loading…</td></tr>
+            ) : visibleRows.length === 0 ? (
+              <tr><td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>
                 {search ? "No dealers match your search." : "No dealer mappings yet — Add Dealer Mapping or Import Excel."}
               </td></tr>
-            ) : rows.map((r, i) => (
-              <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc", borderBottom: "1px solid #f1f5f9" }}>
+            ) : visibleRows.map((r, i) => (
+              <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc", borderBottom: "1px solid #f1f5f9", opacity: isRowActive(r) ? 1 : 0.6 }}>
                 <td style={{ padding: "9px 12px", fontWeight: 600, color: "#0a2540" }}>
                   {r.dealerName}
                   {r.dealerEmail && <div style={{ fontSize: 10, color: "#9ca3af" }}>{r.dealerEmail}</div>}
@@ -696,15 +788,15 @@ export default function AdminDealerMapPage() {
                 <td style={{ padding: "9px 12px", fontFamily: "monospace", fontSize: 11, color: "#374151" }}>{r.dealerCode ?? "—"}</td>
                 <td style={{ padding: "9px 12px", fontSize: 12 }}>{[r.city, r.state].filter(Boolean).join(", ") || "—"}</td>
                 <td style={{ padding: "9px 12px" }}>
-                  <div style={{ fontWeight: 600 }}>{r.rsm}</div>
+                  <div style={{ fontWeight: 600 }}>{r.rsm}{isInactiveStaff(r.rsm, r.rsmEmail) && inactiveBadge}</div>
                   {r.rsmEmail && <div style={{ fontSize: 10, color: "#9ca3af" }}>{r.rsmEmail}</div>}
                 </td>
                 <td style={{ padding: "9px 12px" }}>
-                  <div>{r.tsm || <span style={{ color: "#cbd5e1" }}>—</span>}</div>
+                  <div>{r.tsm || <span style={{ color: "#cbd5e1" }}>—</span>}{!!r.tsm && isInactiveStaff(r.tsm, r.tsmEmail) && inactiveBadge}</div>
                   {r.tsmEmail && <div style={{ fontSize: 10, color: "#9ca3af" }}>{r.tsmEmail}</div>}
                 </td>
                 <td style={{ padding: "9px 12px" }}>
-                  <div>{r.commando || <span style={{ color: "#cbd5e1" }}>—</span>}</div>
+                  <div>{r.commando || <span style={{ color: "#cbd5e1" }}>—</span>}{!!r.commando && isInactiveStaff(r.commando, r.commandoEmail) && inactiveBadge}</div>
                   {r.commandoEmail && <div style={{ fontSize: 10, color: "#9ca3af" }}>{r.commandoEmail}</div>}
                 </td>
                 <td style={{ padding: "9px 12px" }}>
@@ -718,6 +810,20 @@ export default function AdminDealerMapPage() {
                     background: r.dealerType === "New" ? "#eff6ff" : "#f1f5f9", color: r.dealerType === "New" ? "#1e40af" : "#374151" }}>
                     {r.dealerType ?? "—"}
                   </span>
+                </td>
+                <td style={{ padding: "9px 12px", whiteSpace: "nowrap" }}>
+                  <div style={{ display: "inline-flex", border: "1px solid #e2e8f0", borderRadius: 7, overflow: "hidden" }}>
+                    <button type="button" disabled={statusBusy === r.id || isRowActive(r)} onClick={() => handleStatus(r, true)}
+                      title="Dealer active — visible in RSM Form, dealer login allowed"
+                      style={{ padding: "4px 10px", fontSize: 11, fontWeight: 700, border: "none",
+                        cursor: isRowActive(r) ? "default" : "pointer",
+                        background: isRowActive(r) ? "#16a34a" : "#fff", color: isRowActive(r) ? "#fff" : "#166534" }}>Active</button>
+                    <button type="button" disabled={statusBusy === r.id || !isRowActive(r)} onClick={() => handleStatus(r, false)}
+                      title="Dealer inactive (e.g. F&F done) — hidden from RSM Form, dealer login blocked"
+                      style={{ padding: "4px 10px", fontSize: 11, fontWeight: 700, border: "none", borderLeft: "1px solid #e2e8f0",
+                        cursor: !isRowActive(r) ? "default" : "pointer",
+                        background: !isRowActive(r) ? "#dc2626" : "#fff", color: !isRowActive(r) ? "#fff" : "#991b1b" }}>Inactive</button>
+                  </div>
                 </td>
                 <td style={{ padding: "9px 12px" }}>
                   <div style={{ display: "flex", gap: 6 }}>
@@ -743,7 +849,7 @@ export default function AdminDealerMapPage() {
           <strong>{rows.filter((r) => !r.dealerType).length}</strong> without dealer type ·{" "}
           <strong>{rows.filter((r) => !r.dealerCode).length}</strong> without dealer code ·{" "}
           <strong>{rows.filter((r) => !r.tsm).length}</strong> without TSM ·{" "}
-          <strong>{rows.filter((r) => !r.commando).length}</strong> without Commando
+          <strong>{rows.filter((r) => !r.commando).length}</strong> without Commando ·{" "}<strong style={{ color: "#991b1b" }}>{rows.filter((r) => !isRowActive(r)).length}</strong> inactive
         </div>
       )}
 
@@ -927,6 +1033,14 @@ export default function AdminDealerMapPage() {
                   <input style={inputStyle} type="email" value={form.commandoEmail ?? ""} onChange={(e) => setForm((f) => ({ ...f, commandoEmail: e.target.value }))} /></div>
               </div>
 
+              {([["RSM", form.rsm, form.rsmEmail], ["TSM", form.tsm, form.tsmEmail], ["Commando", form.commando, form.commandoEmail]] as [string, string | null | undefined, string | null | undefined][])
+                .filter(([, n, e]) => !!n?.trim() && isInactiveStaff(n, e))
+                .map(([role, n]) => (
+                  <div key={role} style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 7, padding: "7px 12px",
+                    fontSize: 12, color: "#991b1b", marginBottom: 10 }}>
+                    ⚠ {role} "{n}" is <b>Inactive</b> — pick an active {role}{role !== "RSM" ? ` or "No ${role}"` : ""} before saving.
+                  </div>
+                ))}
               <div style={{ marginBottom: 12 }}>
                 <label style={labelStyle}>Dealer Email</label>
                 <input style={inputStyle} value={form.dealerEmail ?? ""} placeholder="Comma-separate if more than one"
@@ -941,11 +1055,21 @@ export default function AdminDealerMapPage() {
                     onChange={(e) => setForm((f) => ({ ...f, isEligible: e.target.value === "yes" }))}>
                     <option value="yes">Eligible</option><option value="no">Non-Eligible</option>
                   </select></div>
-                <div><label style={labelStyle}>Dealer Type</label>
-                  <select style={inputStyle} value={form.dealerType ?? "Old"}
+                <div><label style={labelStyle}>Dealer Type{typeAuto && <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 6, color: "#16a34a" }}>🔒 from RRERP</span>}</label>
+                  <select style={{ ...inputStyle, background: typeAuto ? "#f0fdf4" : "#fff", cursor: typeAuto ? "not-allowed" : "pointer" }}
+                    value={form.dealerType ?? "Old"} disabled={!!typeAuto || typeLoading}
                     onChange={(e) => setForm((f) => ({ ...f, dealerType: e.target.value }))}>
                     <option value="Old">Old</option><option value="New">New</option>
-                  </select></div>
+                  </select>
+                  <div style={{ fontSize: 10, color: typeAuto ? "#166534" : "#9ca3af", marginTop: 3 }}>
+                    {typeLoading ? "Checking RRERP…"
+                      : typeAuto ? typeAuto.reason
+                      : form.dealerCode
+                        ? <button type="button" onClick={() => autoType(form.dealerCode ?? "")}
+                            style={{ background: "none", border: "none", color: "#2563eb", fontSize: 10, fontWeight: 600, cursor: "pointer", padding: 0 }}>
+                            Get Old / New from RRERP</button>
+                        : "Manual dealer (no Dealer Code) — choose Old / New"}
+                  </div></div>
               </div>
               <p style={{ fontSize: 11, color: "#9ca3af", margin: "4px 0 18px" }}>
                 These two fields drive the RSM Form (auto-filled, locked) and the Dashboard bucket

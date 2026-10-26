@@ -18,6 +18,8 @@ import {
 import "./ApproverDashboard.css";
 import { fetchDealerUsers } from "../services/dealerAuthService";
 import CnPanel from "../components/CnPanel";
+import MultiSelectDropdown from "../components/MultiSelectDropdown";   // [BTL-2026-10-26c]
+import { fetchDealerStatus, buildInactiveMatcher } from "../services/dealerStatusService";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 const inr     = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
@@ -346,10 +348,22 @@ export default function ApproverDashboard() {
   const [note,             setNote]             = useState("");
   const [sendBackNote,     setSendBackNote]     = useState("");
   const [showSendBack,     setShowSendBack]     = useState(false);
-  const [filterStatus,     setFilterStatus]     = useState("All");
-  const [filterMonth,      setFilterMonth]      = useState("All");
-  const [filterYear,       setFilterYear]       = useState("All");
-  const [filterState,      setFilterState]      = useState("All");
+  // ── [BTL-2026-10-26c] multi-select filters (empty = All); Month & Year default to the current month ──
+  const [statusSel,       setStatusSel]       = useState<string[]>([]);
+  const [monthSel,        setMonthSel]        = useState<string[]>([MONTHS[new Date().getMonth()]]);
+  const [yearSel,         setYearSel]         = useState<string[]>([String(CURRENT_YEAR)]);
+  const [stateSel,        setStateSel]        = useState<string[]>([]);
+  const [dealerStatusSel, setDealerStatusSel] = useState<string[]>([]);
+  const [isDealerInactive, setIsDealerInactive] =
+    useState<(code?: string | null, name?: string | null) => boolean>(() => () => false);
+  const [deleteSel,       setDeleteSel]       = useState<Set<string>>(new Set());
+  const [bulkDeleting,    setBulkDeleting]    = useState<string | null>(null);
+  // single-status view used by the stat cards (click a card = only that status)
+  const filterStatus = statusSel.length === 1 ? statusSel[0] : "All";
+  const setFilterStatus = (s: string) => setStatusSel(s === "All" ? [] : [s]);
+  useEffect(() => {
+    fetchDealerStatus(instance).then((rows) => setIsDealerInactive(() => buildInactiveMatcher(rows))).catch(() => {});
+  }, [instance]);
   const [search,           setSearch]           = useState("");
   const [loading,          setLoading]          = useState(true);
   const [fetchError,       setFetchError]       = useState<string|null>(null);
@@ -381,7 +395,8 @@ export default function ApproverDashboard() {
   const [bulkNotifying,     setBulkNotifying]     = useState(false);
   const [bulkForwarding,    setBulkForwarding]    = useState(false);
   const [fwdDateFilter,     setFwdDateFilter]     = useState("");
-  const [submittedDateFilter, setSubmittedDateFilter] = useState(""); // filters by the "Submitted" column date (createdAt)
+  const [submittedFrom, setSubmittedFrom] = useState("");   // [BTL-2026-10-26c] Submitted date range (createdAt)
+  const [submittedTo,   setSubmittedTo]   = useState("");
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkNote,      setBulkNote]      = useState("");
   const [showBulkPanel, setShowBulkPanel] = useState(false);
@@ -444,34 +459,42 @@ export default function ApproverDashboard() {
   }, [proposals]);
 
   // ── Computed ───────────────────────────────────────────────────────────────
-  const months   = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>p.month)))],[proposals]);
-  const years    = useMemo(()=>["All",...Array.from(new Set(proposals.map((p)=>(p as any).year).filter(Boolean))).sort()],[proposals]);
+  const months   = useMemo(()=>{ const s=new Set(proposals.map(p=>p.month).filter(Boolean)); s.add(MONTHS[new Date().getMonth()]); return MONTHS.filter(m=>s.has(m)); },[proposals]);
+  const years    = useMemo(()=>Array.from(new Set([...proposals.map(p=>String((p as any).year ?? "")).filter(Boolean), String(CURRENT_YEAR)])).sort(),[proposals]);
   const statesList = useMemo(
     () => ["All", ...Array.from(new Set(proposals.map((p) => p.state).filter(Boolean))).sort()],
     [proposals]
   );
   const filtered = useMemo(()=>proposals.filter((p)=>{
-    if (filterStatus!=="All"&&p.status!==filterStatus) return false;
-    if (filterMonth!=="All"&&p.month!==filterMonth) return false;
-    if (filterYear!=="All"&&(p as any).year!==filterYear) return false;
-    if (filterState!=="All"&&p.state!==filterState) return false;   // ← add this
+    if (statusSel.length && !statusSel.includes(p.status)) return false;
+    if (monthSel.length  && !monthSel.includes(p.month)) return false;
+    if (yearSel.length   && !yearSel.includes(String((p as any).year ?? ""))) return false;
+    if (stateSel.length  && !stateSel.includes(p.state)) return false;
+    if (dealerStatusSel.length) {
+      const st = isDealerInactive((p as any).dealerCode, p.dealerName) ? "Inactive" : "Active";
+      if (!dealerStatusSel.includes(st)) return false;
+    }
     if (fwdDateFilter) {
       if (!p.checkedAt) return false;
-      const checkedDate = isoDate(new Date(p.checkedAt));
-      if (checkedDate !== fwdDateFilter) return false;
+      if (isoDate(new Date(p.checkedAt)) !== fwdDateFilter) return false;
     }
-    // Filters by the date shown in the "Submitted" column (p.createdAt),
-    // independent of when a Checker later forwarded it.
-    if (submittedDateFilter) {
+    // Submitted column (createdAt) — From / To, inclusive
+    if (submittedFrom || submittedTo) {
       if (!p.createdAt) return false;
-      const submittedDate = isoDate(new Date(p.createdAt));
-      if (submittedDate !== submittedDateFilter) return false;
+      const d = isoDate(new Date(p.createdAt));
+      if (submittedFrom && d < submittedFrom) return false;
+      if (submittedTo   && d > submittedTo)   return false;
     }
     if (search){ const q=search.toLowerCase();
       return p.dealerName.toLowerCase().includes(q)||p.rsmName.toLowerCase().includes(q)||
             p.location.toLowerCase().includes(q)||(p.tokenNumber??"").toLowerCase().includes(q); }
     return true;
-  }),[proposals,filterStatus,filterMonth,filterYear,filterState,search,fwdDateFilter,submittedDateFilter]);
+  }),[proposals,statusSel,monthSel,yearSel,stateSel,dealerStatusSel,isDealerInactive,search,fwdDateFilter,submittedFrom,submittedTo]);
+  // Pending proposals hidden only by the Month / Year selection (shown as a hint)
+  const pendingOutsidePeriod = useMemo(() => proposals.filter((p) => p.status === "Pending" && (
+    (monthSel.length > 0 && !monthSel.includes(p.month)) ||
+    (yearSel.length  > 0 && !yearSel.includes(String((p as any).year ?? ""))))).length,
+    [proposals, monthSel, yearSel]);
   const pendingFiltered = useMemo(()=>filtered.filter((p)=>p.status==="Pending"),[filtered]);
   // Approved AND not yet notified — the only rows the Checker can bulk-notify
   const notifiableFiltered = useMemo(
@@ -977,6 +1000,37 @@ export default function ApproverDashboard() {
     } finally { setSummarySending(false); }
   };
 
+  // ── [BTL-2026-10-26c] Admin: delete many proposals (type DELETE to confirm) ──
+  const handleBulkDelete = async () => {
+    if (!isSuperAdmin || bulkDeleting || deleteSel.size === 0) return;
+    const list = proposals.filter((p) => deleteSel.has(p.id));
+    const approvedCount = list.filter((p) => p.status === "Approved").length;
+    const typed = window.prompt(
+      `Permanently delete ${list.length} proposal(s)?` +
+      (approvedCount ? `\n\n⚠ ${approvedCount} of them are APPROVED — their post-activity data, photos, invoices and approval history will also be deleted.` : "") +
+      "\n\nThis cannot be undone. Type DELETE to confirm:");
+    if (typed === null) return;
+    if (typed.trim().toUpperCase() !== "DELETE") { showToast("Not confirmed — nothing was deleted.", false); return; }
+    let ok = 0; const failed: string[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
+      setBulkDeleting(`Deleting ${i + 1}/${list.length}…`);
+      try {
+        await deleteProposal(p.id, instance);
+        ok++;
+        setProposals((prev) => prev.filter((x) => x.id !== p.id));
+        setSelectedIds((prev) => { const n = new Set(prev); n.delete(p.id); return n; });
+        setNotifySelectedIds((prev) => { const n = new Set(prev); n.delete(p.id); return n; });
+      } catch (err) {
+        failed.push(`${p.tokenNumber ?? p.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    setDeleteSel(new Set()); setBulkDeleting(null);
+    if (selected && list.some((p) => p.id === selected.id)) closeModal();
+    showToast(failed.length ? `${ok} deleted, ${failed.length} failed — see browser console.` : `✓ ${ok} proposal${ok !== 1 ? "s" : ""} deleted.`, failed.length === 0);
+    if (failed.length) console.warn("[BULK-DELETE] failures:\n" + failed.join("\n"));
+  };
+
   const toggleActuals=(activityId:string)=>
     setOpenActualsId((prev)=>prev===activityId?null:activityId);
   const forwardablePending  = pendingFiltered.filter(p=>!p.checkedByEmail);
@@ -1158,20 +1212,12 @@ export default function ApproverDashboard() {
             </div>
             <div className="ap-filters">
               <input className="ap-search" placeholder="Search dealer, RSM, location, token…" value={search} onChange={(e)=>setSearch(e.target.value)}/>
-              <select className="ap-select" value={filterStatus} onChange={(e)=>setFilterStatus(e.target.value)}>
-                {["All","Pending","Approved","Rejected","NeedsRevision"].map((s)=>(
-                  <option key={s} value={s}>{s==="All"?"All statuses":s==="NeedsRevision"?"Needs revision":s}</option>
-                ))}
-              </select>
-              <select className="ap-select" value={filterMonth} onChange={(e)=>setFilterMonth(e.target.value)}>
-                {months.map((m)=><option key={m} value={m}>{m==="All"?"All months":m}</option>)}
-              </select>
-              <select className="ap-select" value={filterYear} onChange={(e)=>setFilterYear(e.target.value)}>
-                {years.map((y)=><option key={y} value={y}>{y==="All"?"All years":y}</option>)}
-              </select>
-              <select className="ap-select" value={filterState} onChange={(e)=>setFilterState(e.target.value)}>
-                {statesList.map((s)=><option key={s} value={s}>{s==="All"?"All states":s}</option>)}
-              </select>
+              {/* [BTL-2026-10-26c] multi-select filters */}
+              <MultiSelectDropdown label="Statuses" options={["Pending","Approved","Rejected","NeedsRevision"]} value={statusSel} onChange={setStatusSel} width={150}/>
+              <MultiSelectDropdown label="Months" options={months} value={monthSel} onChange={setMonthSel} width={150}/>
+              <MultiSelectDropdown label="Years" options={years} value={yearSel} onChange={setYearSel} width={120}/>
+              <MultiSelectDropdown label="States" options={statesList.filter(s=>s!=="All")} value={stateSel} onChange={setStateSel} width={160}/>
+              <MultiSelectDropdown label="Dealer Status" options={["Active","Inactive"]} value={dealerStatusSel} onChange={setDealerStatusSel} width={150}/>
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
               {isChecker&&(
                 <button type="button" onClick={handleSendForwardSummary} disabled={summarySending||forwardedPendingCount===0}
@@ -1182,12 +1228,15 @@ export default function ApproverDashboard() {
                 </button>
               )}
               <div style={{ display:"flex",alignItems:"center",gap:6 }}>
-                <label style={{ fontSize:12,color:"#64748b",fontWeight:600 }}>Submitted Date:</label>
-                <input type="date" value={submittedDateFilter}
-                  onChange={e=>setSubmittedDateFilter(e.target.value)}
-                  style={{ height:32,padding:"0 8px",border:"1px solid #e2e8f0",borderRadius:6,fontSize:12 }}
-                  title="Filter proposals by the date shown in the Submitted column (when the RSM submitted it)"/>
-                {submittedDateFilter&&<button onClick={()=>setSubmittedDateFilter("")}
+                <label style={{ fontSize:12,color:"#64748b",fontWeight:600 }}>Submitted:</label>
+                <input type="date" value={submittedFrom} max={submittedTo||undefined} style={{ height:32,padding:"0 8px",border:"1px solid #e2e8f0",borderRadius:6,fontSize:12 }}
+                  title="Submitted FROM (date the RSM submitted). Picking a date clears the Month / Year filter."
+                  onChange={e=>{ setSubmittedFrom(e.target.value); if (e.target.value) { setMonthSel([]); setYearSel([]); } }}/>
+                <span style={{ fontSize:12,color:"#64748b" }}>to</span>
+                <input type="date" value={submittedTo} min={submittedFrom||undefined} style={{ height:32,padding:"0 8px",border:"1px solid #e2e8f0",borderRadius:6,fontSize:12 }}
+                  title="Submitted TO (inclusive)"
+                  onChange={e=>{ setSubmittedTo(e.target.value); if (e.target.value) { setMonthSel([]); setYearSel([]); } }}/>
+                {(submittedFrom||submittedTo)&&<button onClick={()=>{setSubmittedFrom("");setSubmittedTo("");}}
                   style={{ background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:12 }}>✕</button>}
               </div>
               <div style={{ display:"flex",alignItems:"center",gap:6 }}>
@@ -1277,6 +1326,29 @@ export default function ApproverDashboard() {
                 )}
               </div>
             )}
+            {/* [BTL-2026-10-26c] pending proposals outside the selected Month / Year */}
+            {pendingOutsidePeriod>0&&(monthSel.length>0||yearSel.length>0)&&(
+              <div style={{ background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"8px 14px",marginBottom:10,
+                fontSize:12,color:"#92400e",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap" }}>
+                ⚠ {pendingOutsidePeriod} pending proposal{pendingOutsidePeriod!==1?"s":""} from other months / years {pendingOutsidePeriod!==1?"are":"is"} hidden by the Month / Year filter.
+                <button onClick={()=>{setMonthSel([]);setYearSel([]);}}
+                  style={{ background:"#f59e0b",color:"#fff",border:"none",borderRadius:6,padding:"4px 12px",fontSize:11,fontWeight:700,cursor:"pointer" }}>
+                  Show all months</button>
+              </div>
+            )}
+            {/* [BTL-2026-10-26c] Admin bulk delete */}
+            {isSuperAdmin&&deleteSel.size>0&&(
+              <div style={{ background:"#7f1d1d",borderRadius:10,padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
+                <span style={{ color:"#fee2e2",fontSize:13,fontWeight:700 }}>🗑 {deleteSel.size} proposal{deleteSel.size>1?"s":""} selected for deletion</span>
+                <button onClick={handleBulkDelete} disabled={!!bulkDeleting}
+                  style={{ background:"#fff",color:"#991b1b",border:"none",borderRadius:7,padding:"8px 18px",fontWeight:800,fontSize:13,
+                    cursor:bulkDeleting?"wait":"pointer",opacity:bulkDeleting?0.7:1 }}>
+                  {bulkDeleting ?? `Delete ${deleteSel.size} permanently`}
+                </button>
+                <button onClick={()=>setDeleteSel(new Set())} disabled={!!bulkDeleting}
+                  style={{ background:"rgba(255,255,255,0.12)",color:"#fee2e2",border:"1px solid rgba(255,255,255,0.25)",borderRadius:7,padding:"8px 14px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
+              </div>
+            )}
             <div className="ap-table-wrap">
               <table className="ap-table">
                 <thead><tr>
@@ -1307,6 +1379,14 @@ export default function ApproverDashboard() {
                       </div>
                     </th>
                   )}
+                  {isSuperAdmin&&(
+                    <th style={{ width:40,textAlign:"center",padding:"8px 6px" }} title="Select proposals to delete (Admin)">
+                      <input type="checkbox" checked={filtered.length>0&&filtered.every(p=>deleteSel.has(p.id))}
+                        onChange={(e)=>setDeleteSel(e.target.checked?new Set(filtered.map(p=>p.id)):new Set())}
+                        style={{ width:15,height:15,cursor:"pointer",accentColor:"#dc2626" }}/>
+                      <div style={{ fontSize:9,color:"#dc2626" }}>🗑 all</div>
+                    </th>
+                  )}
                   <th>Action</th><th>Token</th><th>Submitted</th><th>Vendor</th>
                     {isAdmin&&<th>RSM / TSM</th>}
                   <th>Dealer &amp; location</th><th>Month</th><th>Year</th><th>Activities</th>
@@ -1316,7 +1396,7 @@ export default function ApproverDashboard() {
                   <th>Status</th>
                 </tr></thead>
                 <tbody>
-                  {filtered.length===0&&(<tr><td colSpan={isAdmin?(isChecker?17:16):12} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
+                  {filtered.length===0&&(<tr><td colSpan={(isAdmin?(isChecker?17:16):12)+(isSuperAdmin?1:0)} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
                   {filtered.map((p)=>{
                     const isPending=p.status==="Pending"; const isChecked=selectedIds.has(p.id);
                     return (
@@ -1368,6 +1448,13 @@ export default function ApproverDashboard() {
                                 style={{ width:15,height:15,cursor:"pointer",accentColor:"#16a34a" }}
                                 title="Select to bulk notify dealer"/>
                             )}
+                          </td>
+                        )}
+                        {isSuperAdmin&&(
+                          <td style={{ textAlign:"center",padding:"8px 6px" }} onClick={(e)=>e.stopPropagation()}>
+                            <input type="checkbox" checked={deleteSel.has(p.id)} title="Select to delete"
+                              onChange={()=>setDeleteSel(prev=>{ const n=new Set(prev); n.has(p.id)?n.delete(p.id):n.add(p.id); return n; })}
+                              style={{ width:15,height:15,cursor:"pointer",accentColor:"#dc2626" }}/>
                           </td>
                         )}
                         <td onClick={(e)=>e.stopPropagation()}>
