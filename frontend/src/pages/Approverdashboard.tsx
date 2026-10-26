@@ -8,7 +8,7 @@ import {
   fetchProposals, fetchMyProposals, decideProposal, updateProposal,
   sendBackProposal, updateProposalActuals, uploadActivityMedia,
   getGraphTokenForBulk,
-  forwardProposalToApprover, forwardProposalsBulk, notifyDealer, addActivityMedia,
+  forwardProposalToApprover, forwardProposalsBulk, notifyDealer, addActivityMedia, deleteProposal, sendForwardSummary, // [BTL-2026-10-26]
   type ActivityResponse, type ActivityMediaResponse, type ProposalResponse,
 } from "../services/proposalService";
 import {
@@ -333,6 +333,10 @@ export default function ApproverDashboard() {
   const isFinalApprover = FINAL_APPROVERS.includes(myEmail);
   const isChecker       = isAdmin && CHECKER_EMAILS.includes(myEmail);
   const isForwardOnly   = isAdmin && !isFinalApprover;
+  // ── [BTL-2026-10-26] Delete = Admin role only (not Manager) ──
+  const isSuperAdmin    = user?.role === "Admin";
+  const [deletingId,     setDeletingId]     = useState<string|null>(null);
+  const [summarySending, setSummarySending] = useState(false);
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [proposals,        setProposals]        = useState<ProposalResponse[]>([]);
@@ -935,6 +939,44 @@ export default function ApproverDashboard() {
     finally { setBudgetAddLoading(false); }
   };
 
+  // ── [BTL-2026-10-26] Admin: permanently delete a proposal (typed-token confirmation) ──
+  const handleDeleteProposal = async (p: ProposalResponse) => {
+    if (!isSuperAdmin || deletingId) return;
+    const token = p.tokenNumber ?? p.id.slice(-6);
+    const extra = p.status === "Approved"
+      ? "\n\n⚠ This proposal is APPROVED — its post-activity data, photos, invoices and approval history will also be deleted."
+      : "";
+    const typed = window.prompt(
+      `Delete proposal ${token} — ${p.dealerName} (${p.month} ${p.year})?${extra}\n\nThis cannot be undone. Type the token number to confirm:`);
+    if (typed === null) return;
+    if (typed.trim() !== token) { showToast("Token did not match — nothing was deleted.", false); return; }
+    setDeletingId(p.id);
+    try {
+      await deleteProposal(p.id, instance);
+      setProposals(prev => prev.filter(x => x.id !== p.id));
+      setSelectedIds(prev => { const n = new Set(prev); n.delete(p.id); return n; });
+      setNotifySelectedIds(prev => { const n = new Set(prev); n.delete(p.id); return n; });
+      if (selected?.id === p.id) closeModal();
+      showToast(`Proposal ${token} deleted.`, true);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Delete failed.", false);
+    } finally { setDeletingId(null); }
+  };
+
+  // ── [BTL-2026-10-26] Checker: ONE summary mail to the Final Approver (individual forward mails are off) ──
+  const forwardedPendingCount = proposals.filter(p => p.checkedByEmail && p.status === "Pending").length;
+  const handleSendForwardSummary = async () => {
+    if (summarySending) return;
+    if (!window.confirm(`Send ONE summary mail to the Final Approver covering ${forwardedPendingCount} forwarded proposal(s)?`)) return;
+    setSummarySending(true);
+    try {
+      const r = await sendForwardSummary(instance);
+      showToast(`Summary sent to Final Approver — ${r.proposals} proposal(s).`, true);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Summary mail failed.", false);
+    } finally { setSummarySending(false); }
+  };
+
   const toggleActuals=(activityId:string)=>
     setOpenActualsId((prev)=>prev===activityId?null:activityId);
   const forwardablePending  = pendingFiltered.filter(p=>!p.checkedByEmail);
@@ -1131,6 +1173,14 @@ export default function ApproverDashboard() {
                 {statesList.map((s)=><option key={s} value={s}>{s==="All"?"All states":s}</option>)}
               </select>
               <button className="ap-refresh-btn" onClick={loadProposals}>↻ Refresh</button>
+              {isChecker&&(
+                <button type="button" onClick={handleSendForwardSummary} disabled={summarySending||forwardedPendingCount===0}
+                  title="Send ONE summary mail to the Final Approver for all forwarded proposals pending approval"
+                  style={{ height:32,padding:"0 12px",background:forwardedPendingCount?"#1e3a5f":"#cbd5e1",color:"#fff",border:"none",
+                    borderRadius:6,fontSize:12,fontWeight:700,cursor:summarySending||!forwardedPendingCount?"not-allowed":"pointer" }}>
+                  {summarySending?"Sending…":`📤 Send summary to Final Approver (${forwardedPendingCount})`}
+                </button>
+              )}
               <div style={{ display:"flex",alignItems:"center",gap:6 }}>
                 <label style={{ fontSize:12,color:"#64748b",fontWeight:600 }}>Submitted Date:</label>
                 <input type="date" value={submittedDateFilter}
@@ -1324,6 +1374,14 @@ export default function ApproverDashboard() {
                           {!isAdmin && p.status==="NeedsRevision"
                             ? <button className="ap-review-btn" style={{background:"#f59e0b",color:"#fff",fontWeight:700}} onClick={()=>{ window.location.href=`/rsm-form?edit=${p.id}`; }}>✏ Edit</button>
                             : <button className="ap-review-btn" onClick={()=>openModal(p)}>{isAdmin?(isPending||p.status==="NeedsRevision"?"Review":"View"):"View"}</button>}
+                          {isSuperAdmin&&(
+                            <button type="button" title="Delete proposal (Admin)" disabled={deletingId===p.id}
+                              onClick={()=>handleDeleteProposal(p)}
+                              style={{ marginLeft:6,background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:6,
+                                padding:"4px 8px",fontSize:12,fontWeight:700,cursor:deletingId===p.id?"wait":"pointer" }}>
+                              {deletingId===p.id?"…":"🗑"}
+                            </button>
+                          )}
                         </td>
                         <td><span className="ap-id-chip">{p.tokenNumber??p.id.split("-").slice(-1)[0]}</span></td>
                         <td><span className="ap-cell-p">{fmtDate(p.createdAt)}</span>{isAdmin&&<span className="ap-cell-m">{p.submittedByDisplayName??p.submittedBy}</span>}</td>
@@ -1371,6 +1429,10 @@ export default function ApproverDashboard() {
             <div style={{ display:"flex",alignItems:"center",gap:8,flexShrink:0 }}>
               {isAdmin&&selected.status==="Pending"&&!isEditing&&<button onClick={()=>setIsEditing(true)} style={{ background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",borderRadius:7,padding:"6px 14px",fontSize:13,cursor:"pointer",fontWeight:600 }}>✏ Edit</button>}
               {isEditing&&<button onClick={()=>{ setEditData(toEditable(selected)); setIsEditing(false); }} style={{ background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",color:"#94a3b8",borderRadius:7,padding:"6px 14px",fontSize:13,cursor:"pointer" }}>✕ Cancel edit</button>}
+              {isSuperAdmin&&<button onClick={()=>handleDeleteProposal(selected)} disabled={deletingId===selected.id}
+                style={{ background:"#dc2626",border:"1px solid #ef4444",color:"#fff",borderRadius:7,padding:"6px 14px",fontSize:13,
+                  cursor:deletingId===selected.id?"wait":"pointer",fontWeight:700 }}>
+                {deletingId===selected.id?"Deleting…":"🗑 Delete"}</button>}
               <button onClick={closeModal} style={{ background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",color:"#fff",borderRadius:7,padding:"6px 14px",fontSize:13,cursor:"pointer",fontWeight:600 }}>✕ Close</button>
             </div>
           </div>

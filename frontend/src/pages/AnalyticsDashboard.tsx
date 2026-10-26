@@ -8,6 +8,11 @@ import DownloadReportButton from "../components/DownloadReportButton";
 import type { ExportColumn } from "../utils/exportReport";
 import { fetchLeadReport, type LeadReportApiRow } from "../services/leadReportService";
 import "./AnalyticsDashboard.css";
+// [BTL-2026-10-26] multi-select filters + custom date range + Daily PPT
+import MultiSelectDropdown from "../components/MultiSelectDropdown";
+import { buildDailyReportPpt } from "../utils/dailyReportPpt";
+import { buildDailyReportPdf } from "../utils/dailyReportPdf";       // [BTL-2026-10-26b]
+import { buildDailyReportExcel } from "../utils/dailyReportExcel";   // [BTL-2026-10-26b]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const inr = (v: number) => "₹" + Math.round(v).toLocaleString("en-IN");
@@ -223,6 +228,7 @@ interface DailySummaryRow {
   leads: number; punched: number; gap: number; convPct: number;
   proposalId: string; activityId: string; activityType: string;
   dailyEntries: DailyEntry[]; media: ProofMedia[];
+  allEntries: DailyEntry[]; allMedia: ProofMedia[];   // [BTL-2026-10-26] unfiltered — PPT needs MTD
 }
 
 interface LeadReportRow {
@@ -271,8 +277,35 @@ export default function AnalyticsDashboard() {
   const [selectedDealerDaily, setSelectedDealerDaily] = useState<DailySummaryRow|null>(null);
   const [reportSubTab, setReportSubTab] = useState<"summary"|"dealer-daily">("summary");
   const [dailySearch, setDailySearch] = useState("");
-  const [dailyStateFilter, setDailyStateFilter] = useState("All");
-  const [dailyActivityTypeFilter, setDailyActivityTypeFilter] = useState("All");
+  // ── [BTL-2026-10-26] Daily Activity Report filters: multi-select (empty = All) + custom date range ──
+  const [dailyStateSel,   setDailyStateSel]   = useState<string[]>([]);
+  const [dailyDealerSel,  setDailyDealerSel]  = useState<string[]>([]);
+  const [dailyActTypeSel, setDailyActTypeSel] = useState<string[]>([]);
+  const [dailyFrom,       setDailyFrom]       = useState("");   // yyyy-MM-dd, "" = no lower bound
+  const [dailyTo,         setDailyTo]         = useState("");   // yyyy-MM-dd, "" = no upper bound
+  const [pptBusy,         setPptBusy]         = useState<string | null>(null);
+  const dailyRangeActive = !!(dailyFrom || dailyTo);
+  const toLocalIso = (s: string) => {
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return (s || "").slice(0, 10);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  };
+  const inDailyRange = (iso: string) => {
+    const d = (iso || "").slice(0, 10);
+    const lo = dailyFrom && dailyTo && dailyFrom > dailyTo ? dailyTo : dailyFrom;
+    const hi = dailyFrom && dailyTo && dailyFrom > dailyTo ? dailyFrom : dailyTo;
+    return (!lo || d >= lo) && (!hi || d <= hi);
+  };
+  const dailyRowMatches = useMemo(() => (row: DailySummaryRow) => {
+    if (dailyStateSel.length   && !dailyStateSel.includes(row.state))         return false;
+    if (dailyDealerSel.length  && !dailyDealerSel.includes(row.dealer))       return false;
+    if (dailyActTypeSel.length && !dailyActTypeSel.includes(row.activityType)) return false;
+    if (dailySearch) {
+      const q = dailySearch.toLowerCase();
+      return (row.dealer+row.location+row.state+row.bgMember).toLowerCase().includes(q);
+    }
+    return true;
+  }, [dailyStateSel, dailyDealerSel, dailyActTypeSel, dailySearch]);
   const [anMediaViewer, setAnMediaViewer] = useState<{url:string;name:string;type:string|null}|null>(null);
   // ── FIX: moved above the early loading/error returns below — this hook
   // was previously declared AFTER `if (loading) return...` / `if (error) return...`,
@@ -466,8 +499,10 @@ export default function AnalyticsDashboard() {
     for (const p of approvedProposals) {
       for (const a of p.activities) {
         const dailyData = (a as any).dailyData;
-        let entries: DailyEntry[] = [];
-        if (dailyData) { try { entries = JSON.parse(dailyData); } catch {} }
+        let allEntries: DailyEntry[] = [];
+        if (dailyData) { try { allEntries = JSON.parse(dailyData); } catch {} }
+        // [BTL-2026-10-26] custom date range — rows, totals and the dealer sheet use only days inside the range
+        const entries = allEntries.filter(e => inDailyRange(e.date));
 
         const totalEnqPlanned = entries.reduce((s,e)=>s+(e.enquiryPlanned||0),0);
         const totalEnqActual  = entries.reduce((s,e)=>s+(e.enquiryActual||0),0);
@@ -479,11 +514,13 @@ export default function AnalyticsDashboard() {
         const totalLmsLeads   = entries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
 
         const rawMedia = (a as any).mediaFiles ?? [];
-        const media: ProofMedia[] = rawMedia.map((m: any) => ({
+        const allMedia: ProofMedia[] = rawMedia.map((m: any) => ({
           id: m.id, fileUrl: m.fileUrl, fileName: m.fileName, fileType: m.fileType ?? null,
           capturedAt: m.capturedAt ?? new Date().toISOString(),
           latitude: m.latitude ?? null, longitude: m.longitude ?? null,
         }));
+        const media = allMedia.filter(m => inDailyRange(toLocalIso(m.capturedAt)));
+        if (dailyRangeActive && entries.length === 0 && media.length === 0) continue;   // [BTL-2026-10-26]
 
         const canopy = (a as any).qty || 1;
         const totalSetupCount = entries.reduce((s,e)=>s+((e as any).setupCount||0),0);
@@ -527,16 +564,16 @@ export default function AnalyticsDashboard() {
           convPct: totalLmsLeads > 0 ? Math.round((retailMtdActivityVal/totalLmsLeads)*100) : 0,
           photos: media.length,
           proposalId: p.id, activityId: a.id, activityType: a.activityType,
-          dailyEntries: entries, media,
+          dailyEntries: entries, media, allEntries, allMedia,
         } as DailySummaryRow & { photos: number });
         sr++;
       }
     }
     return rows;
-  }, [approved]);
+  }, [approved, dailyFrom, dailyTo]);
 
   const dsTotals = useMemo(() => {
-    const src = liveDailySummary;
+    const src = liveDailySummary.filter(dailyRowMatches);
     const totalCanopy  = src.reduce((s, r) => s + r.canopy, 0);
     const totalSetupCount = src.reduce((s, r) => s + (r.setupCount||0), 0);
     const totalEnqAct  = src.reduce((s, r) => s + r.enquiryActual, 0);
@@ -565,7 +602,7 @@ export default function AnalyticsDashboard() {
       gap:            src.reduce((s, r) => s + r.gap, 0),
       convPct:        src.reduce((s, r) => s + (r.convPct||0), 0),
     };
-  }, [liveDailySummary]);
+  }, [liveDailySummary, dailyRowMatches]);
 
   // ── RSM-wise aggregation ─────────────────────────────────────────────────────
   const rsmRows = useMemo(() => {
@@ -601,15 +638,13 @@ export default function AnalyticsDashboard() {
     return ["All", ...types];
   }, [liveDailySummary]);
 
-  const filteredDailySummary = useMemo(() => liveDailySummary.filter(row => {
-    if (dailyStateFilter !== "All" && row.state !== dailyStateFilter) return false;
-    if (dailyActivityTypeFilter !== "All" && row.activityType !== dailyActivityTypeFilter) return false;
-    if (dailySearch) {
-      const q = dailySearch.toLowerCase();
-      return (row.dealer+row.location+row.state+row.bgMember).toLowerCase().includes(q);
-    }
-    return true;
-  }), [liveDailySummary, dailySearch, dailyStateFilter, dailyActivityTypeFilter]);
+  const filteredDailySummary = useMemo(
+    () => liveDailySummary.filter(dailyRowMatches), [liveDailySummary, dailyRowMatches]);   // [BTL-2026-10-26]
+  const dailyStateOptions = useMemo(
+    () => Array.from(new Set(liveDailySummary.map(r => r.state).filter(Boolean))).sort(), [liveDailySummary]);
+  const dailyDealerOptions = useMemo(() => Array.from(new Set(liveDailySummary
+    .filter(r => !dailyStateSel.length || dailyStateSel.includes(r.state))
+    .map(r => r.dealer).filter(Boolean))).sort(), [liveDailySummary, dailyStateSel]);
 
   const maxDealerBudget = Math.max(...dealerRows.map(r => r.budget), 1);
 
@@ -669,6 +704,36 @@ export default function AnalyticsDashboard() {
       };
     });
   }, [stateRows, lmsLeadReport, approved, manualRetailTargets]);
+
+  // ── [BTL-2026-10-26] Daily PPT — same format as "Project_Towns_<date>.pptx" ──
+  // Report day = "To" date (or today). Uses the State / Dealer / Activity filters.
+  // [BTL-2026-10-26b] same report as PPT, PDF (with photos) or Excel (with photos)
+  const exportDailyReport = async (format: "ppt" | "pdf" | "xlsx") => {
+    const t = new Date();
+    const today = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`;
+    const reportDate = dailyTo || dailyFrom || today;
+    setPptBusy("Preparing…");
+    try {
+      const opts = {
+        reportDate,
+        activities: filteredDailySummary.map(r => ({
+          dealer: r.dealer, location: r.location, state: r.state, zone: r.zone, bgMember: r.bgMember,
+          activityType: r.activityType, entries: r.allEntries, media: r.allMedia,
+        })),
+        leadRows: leadReportExportRows.filter(lr => !dailyStateSel.length || dailyStateSel.includes(lr.state)),
+        resolveUrl: resolveMediaUrl,
+        assetBase: `${import.meta.env.BASE_URL ?? "/"}ppt-assets/`,
+        onProgress: (m: string) => setPptBusy(m),
+      };
+      if (format === "ppt") await buildDailyReportPpt(opts);
+      else if (format === "pdf") await buildDailyReportPdf(opts);
+      else await buildDailyReportExcel(opts);
+    } catch (e) {
+      alert(`Report could not be created: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPptBusy(null);
+    }
+  };
 
   if (loading) return (
     <div className="an-loading">
@@ -1164,19 +1229,30 @@ export default function AnalyticsDashboard() {
             placeholder="🔍 Search dealer, location, state…"
             style={{ flex:"1 1 220px",height:36,padding:"0 12px",border:"1.5px solid #e2e8f0",
               borderRadius:8,fontSize:13,outline:"none",fontFamily:"inherit" }}/>
-          <select value={dailyStateFilter} onChange={e=>setDailyStateFilter(e.target.value)}
-            style={{ height:36,padding:"0 10px",border:"1.5px solid #e2e8f0",borderRadius:8,
-              fontSize:12,fontFamily:"inherit",outline:"none" }}>
-            <option value="All">All States</option>
-            {stateRows.map(s=><option key={s.state} value={s.state}>{s.state}</option>)}
-          </select>
-          <select value={dailyActivityTypeFilter} onChange={e=>setDailyActivityTypeFilter(e.target.value)}
-            style={{ height:36,padding:"0 10px",border:"1.5px solid #e2e8f0",borderRadius:8,
-              fontSize:12,fontFamily:"inherit",outline:"none" }}>
-            {dailyActivityTypes.map(t=><option key={t} value={t}>{t==="All"?"All Activity Types":t}</option>)}
-          </select>
-          {(dailySearch||dailyStateFilter!=="All"||dailyActivityTypeFilter!=="All")&&(
-            <button onClick={()=>{setDailySearch("");setDailyStateFilter("All");setDailyActivityTypeFilter("All");}}
+          {/* [BTL-2026-10-26] multi-select filters + custom date range */}
+          <MultiSelectDropdown label="States" options={dailyStateOptions} value={dailyStateSel}
+            onChange={(v)=>{ setDailyStateSel(v); setDailyDealerSel(prev=>prev.filter(d=>!v.length||liveDailySummary.some(r=>r.dealer===d&&v.includes(r.state)))); }} width={170}/>
+          <MultiSelectDropdown label="Dealers" options={dailyDealerOptions} value={dailyDealerSel} onChange={setDailyDealerSel} width={200}/>
+          <MultiSelectDropdown label="Activity Types" options={dailyActivityTypes.filter(t=>t!=="All")} value={dailyActTypeSel} onChange={setDailyActTypeSel} width={190}/>
+          <div style={{ display:"flex",alignItems:"center",gap:6,height:36,padding:"0 8px",border:`1.5px solid ${dailyRangeActive?"#2563eb":"#e2e8f0"}`,
+            borderRadius:8,background:dailyRangeActive?"#eff6ff":"#fff" }}>
+            <span style={{ fontSize:11,color:"#64748b",fontWeight:700 }}>From</span>
+            <input type="date" value={dailyFrom} max={dailyTo||undefined} onChange={e=>setDailyFrom(e.target.value)}
+              style={{ border:"none",background:"transparent",fontSize:12,fontFamily:"inherit",outline:"none" }}/>
+            <span style={{ fontSize:11,color:"#64748b",fontWeight:700 }}>To</span>
+            <input type="date" value={dailyTo} min={dailyFrom||undefined} onChange={e=>setDailyTo(e.target.value)}
+              style={{ border:"none",background:"transparent",fontSize:12,fontFamily:"inherit",outline:"none" }}/>
+          </div>
+          {(()=>{ const t=new Date(); const iso=(d:Date)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+            const y=new Date(t); y.setDate(t.getDate()-1);
+            const chip=(lbl:string,f:string,to:string)=>(
+              <button key={lbl} type="button" onClick={()=>{setDailyFrom(f);setDailyTo(to);}}
+                style={{ height:28,padding:"0 10px",borderRadius:14,border:"1px solid #e2e8f0",fontSize:11,fontWeight:600,cursor:"pointer",
+                  background:dailyFrom===f&&dailyTo===to?"#0a2540":"#fff",color:dailyFrom===f&&dailyTo===to?"#fff":"#374151" }}>{lbl}</button>);
+            return (<>{chip("Today",iso(t),iso(t))}{chip("Yesterday",iso(y),iso(y))}{chip("MTD",iso(new Date(t.getFullYear(),t.getMonth(),1)),iso(t))}</>);
+          })()}
+          {(dailySearch||dailyStateSel.length>0||dailyDealerSel.length>0||dailyActTypeSel.length>0||dailyRangeActive)&&(
+            <button onClick={()=>{setDailySearch("");setDailyStateSel([]);setDailyDealerSel([]);setDailyActTypeSel([]);setDailyFrom("");setDailyTo("");}}
               style={{ height:36,padding:"0 14px",background:"none",border:"1.5px solid #e2e8f0",
                 borderRadius:8,fontSize:12,cursor:"pointer",color:"#64748b" }}>Clear ✕</button>
           )}
@@ -1184,6 +1260,22 @@ export default function AnalyticsDashboard() {
             {filteredDailySummary.length} of {liveDailySummary.length} entries
           </span>
           <div style={{ marginLeft:"auto" }}>
+            {/* [BTL-2026-10-26b] Daily report — PPT / PDF / Excel, same format */}
+            {pptBusy ? (
+              <span style={{ display:"inline-flex",alignItems:"center",height:36,padding:"0 12px",marginRight:8,background:"#f1f5f9",
+                border:"1px solid #e2e8f0",borderRadius:8,fontSize:12,color:"#374151",fontWeight:600 }}>⏳ {pptBusy}</span>
+            ) : ([
+                ["ppt",  "⬇ PPT",   "#16a34a"],
+                ["pdf",  "⬇ PDF",   "#dc2626"],
+                ["xlsx", "⬇ Excel", "#15803d"],
+              ] as const).map(([f, label, bg]) => (
+                <button key={f} type="button" onClick={() => exportDailyReport(f)} disabled={filteredDailySummary.length===0}
+                  title={`Daily report (${f.toUpperCase()}): Daily Summary, Lead Report, dealer daily sheets and GPS photos`}
+                  style={{ height:36,padding:"0 12px",marginRight:6,background:filteredDailySummary.length?bg:"#cbd5e1",color:"#fff",border:"none",
+                    borderRadius:8,fontSize:12,fontWeight:700,cursor:filteredDailySummary.length?"pointer":"not-allowed" }}>
+                  {label}
+                </button>
+              ))}
             <DownloadReportButton
               filename="Daily_Activity_Sheet_Summary"
               title="Daily Activity Sheet Summary"

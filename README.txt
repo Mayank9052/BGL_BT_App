@@ -1,21 +1,22 @@
-BGauss BTL — auto refresh after every deployment (24.10.2026)
+BGauss BTL — Daily Activity Report: filters + Daily Report as PPT / PDF / Excel + Admin Delete (26.10.2026)
 
-1. frontend/vite-version-plugin.ts          → copy to frontend/ (next to vite.config.ts)
-2. frontend/vite.config.ts                  → add BUILD_ID define + versionFilePlugin() (see below)
-3. frontend/src/vite-env.d.ts               → add: declare const __APP_BUILD_ID__: string;
-4. frontend/src/utils/appVersion.ts         → copy
-5. frontend/src/main.tsx                    → call startVersionWatcher()
-6. Backend/Program.cs                       → apply Program.StaticFiles.snippet.cs
-7. Build frontend, copy dist/* (incl. version.json) to Backend/wwwroot, publish backend.
+COPY (new / updated files)
+  frontend/src/components/MultiSelectDropdown.tsx
+  frontend/src/utils/dailyReportCore.ts      (NEW  - one definition of every table, used by all 3 formats)
+  frontend/src/utils/dailyReportPpt.ts       (UPDATED - now built on dailyReportCore)
+  frontend/src/utils/dailyReportPdf.ts       (NEW)
+  frontend/src/utils/dailyReportExcel.ts     (NEW)
+  frontend/public/ppt-assets/*               (brand images from Project_Towns_15_August_2026.pptx)
+  Backend/Controllers/ProposalsController.cs (full file, with DELETE /api/proposals/{id})
 
-vite.config.ts:
-  import { BUILD_ID, versionFilePlugin } from "./vite-version-plugin";
-  export default defineConfig({
-    define:  { __APP_BUILD_ID__: JSON.stringify(BUILD_ID) },
-    plugins: [react(), versionFilePlugin()],
-    // ...rest unchanged
-  });
+PATCH existing files (from the BGL_BT_App folder)
+  node apply-changes.mjs frontend      (part 1: filters, date range, Daily PPT, Delete, Send summary; skips if already done)
+  node apply-changes-2.mjs frontend    (part 2: PPT / PDF / Excel buttons)
 
-main.tsx (top, after imports):
-  import { startVersionWatcher } from "./utils/appVersion";
-  startVersionWatcher();
+INSTALL + BUILD
+  cd frontend
+  npm i pptxgenjs@3.12.0 jspdf@2.5.2 jspdf-autotable@3.8.4 exceljs@4.4.0
+  npm run build
+  cd ../Backend && dotnet build
+
+SAMPLE_Daily_Report_test-data.(pptx|pdf|xlsx) = generator output with dummy figures (layout check only).

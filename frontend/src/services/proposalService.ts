@@ -547,3 +547,41 @@ export async function removeActivityMedia(
     throw new Error(text || `Failed to remove media (${res.status})`);
   }
 }
+
+// ── [BTL-2026-10-26] Admin: permanently delete a proposal (DELETE /api/proposals/{id}) ──
+export async function deleteProposal(
+  id: string,
+  instance: IPublicClientApplication,
+): Promise<void> {
+  const token = await getAccessToken(instance);
+  const res = await fetch(`${API_BASE_URL}/api/proposals/${id}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let msg = text;
+    try { msg = JSON.parse(text)?.message ?? text; } catch {}
+    throw new Error(msg || `Delete failed (${res.status})`);
+  }
+}
+
+// ── [BTL-2026-10-26] Checker: ONE summary mail to the Final Approver (POST /api/proposals/forward-summary) ──
+export async function sendForwardSummary(
+  instance: IPublicClientApplication,
+  since?: string,
+): Promise<{ sent: boolean; proposals: number }> {
+  const token = await getAccessToken(instance);
+  const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+  const res = await fetch(`${API_BASE_URL}/api/proposals/forward-summary${qs}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let msg = text;
+    try { msg = JSON.parse(text)?.message ?? text; } catch {}
+    throw new Error(msg || `Summary failed (${res.status})`);
+  }
+  return res.json();
+}
