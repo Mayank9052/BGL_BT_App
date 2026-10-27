@@ -8,6 +8,7 @@ import DownloadReportButton from "../components/DownloadReportButton";
 import type { ExportColumn } from "../utils/exportReport";
 import { fetchLeadReport, type LeadReportApiRow } from "../services/leadReportService";
 import "./AnalyticsDashboard.css";
+import { API_BASE_URL } from "../authConfig";   // [BTL-2026-10-27b] same media base as Approver / Staff dashboards
 import { fetchDealerStatus, buildInactiveMatcher } from "../services/dealerStatusService";   // [BTL-2026-10-26c]
 // [BTL-2026-10-26] multi-select filters + custom date range + Daily PPT
 import MultiSelectDropdown from "../components/MultiSelectDropdown";
@@ -203,16 +204,113 @@ interface ProofMedia {
   id: string; fileUrl: string; fileName: string; fileType: string | null;
   capturedAt: string; latitude?: number | null; longitude?: number | null;
 }
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+// [BTL-2026-10-27b] media URLs — same API base as the other dashboards; handles "\\", missing "/", spaces
+const API_BASE = String(API_BASE_URL || import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const cleanMediaPath = (url: string) => {
+  let p = url.trim().replace(/\\/g, "/").replace(/^~\//, "/");
+  if (!p.startsWith("/")) p = `/${p}`;
+  return /%[0-9a-f]{2}/i.test(p) ? p : encodeURI(p);
+};
 const resolveMediaUrl = (url: string | null | undefined): string => {
   if (!url) return "";
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `${API_BASE}${url.startsWith("/") ? url : `/${url}`}`;
+  if (/^(https?:|data:|blob:)/i.test(url)) return url;
+  return `${API_BASE}${cleanMediaPath(url)}`;
+};
+// Tried in order when a thumbnail fails to load
+const mediaUrlCandidates = (url: string | null | undefined): string[] => {
+  if (!url) return [];
+  if (/^(https?:|data:|blob:)/i.test(url)) return [url];
+  const p = cleanMediaPath(url);
+  const list = [`${API_BASE}${p}`, `${window.location.origin}${p}`];
+  if (!/\/uploads\//i.test(p)) list.push(`${API_BASE}/uploads${p}`);
+  return Array.from(new Set(list));
 };
 const mediaIconFor = (t: string | null) =>
   !t ? "📎" : t.startsWith("image/") ? "🖼" : t.includes("pdf") ? "📄" : t.startsWith("video/") ? "🎬" : "📎";
 const isImageType = (t: string | null) => !!t?.startsWith("image/");
 const isVideoType = (t: string | null) => !!t?.startsWith("video/");
+
+// ── [BTL-2026-10-27b] thumbnail (falls back through URL candidates, then an icon) ──
+function MediaThumb({ m, size = 30, onClick }: { m: ProofMedia; size?: number; onClick: () => void }) {
+  const urls = useMemo(() => mediaUrlCandidates(m.fileUrl), [m.fileUrl]);
+  const [i, setI] = useState(0);
+  const img = isImageType(m.fileType) && i < urls.length;
+  return (
+    <button type="button" className="an-thumb" style={{ width: size, height: size }} onClick={onClick}
+      title={`${m.fileName} · ${new Date(m.capturedAt).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true })} — click to view`}>
+      {img
+        ? <img src={urls[i]} alt="" loading="lazy" onError={() => setI((x) => x + 1)}/>
+        : <span className="an-thumb-icon">{isVideoType(m.fileType) ? "🎬" : isImageType(m.fileType) ? "🖼" : mediaIconFor(m.fileType)}</span>}
+    </button>
+  );
+}
+
+// ── [BTL-2026-10-27b] gallery: every photo / video / file viewable, ◀ ▶, keyboard, counter ──
+function MediaGallery({ items, index, title, onClose }: { items: ProofMedia[]; index: number; title: string; onClose: () => void }) {
+  const [i, setI] = useState(Math.min(Math.max(index, 0), Math.max(items.length - 1, 0)));
+  const [u, setU] = useState(0);
+  const m = items[i];
+  const urls = useMemo(() => (m ? mediaUrlCandidates(m.fileUrl) : []), [m]);
+  useEffect(() => { setU(0); }, [i]);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowRight") setI((x) => (x + 1) % items.length);
+      else if (e.key === "ArrowLeft") setI((x) => (x - 1 + items.length) % items.length);
+    };
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, [items.length, onClose]);
+  if (!m) return null;
+  const url = urls[Math.min(u, urls.length - 1)] ?? "";
+  const failed = u >= urls.length;
+  const when = new Date(m.capturedAt).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true });
+  return (
+    <div className="an-gal" onClick={onClose}>
+      <div className="an-gal-box" onClick={(e) => e.stopPropagation()}>
+        <div className="an-gal-head">
+          <div className="an-gal-title">{title}<span>{i + 1} / {items.length}</span></div>
+          <div className="an-gal-meta">
+            🕐 {when}
+            {m.latitude != null && m.longitude != null
+              ? <a href={`https://maps.google.com/?q=${m.latitude},${m.longitude}`} target="_blank" rel="noreferrer">📍 GPS {m.latitude.toFixed(5)}, {m.longitude.toFixed(5)}</a>
+              : <span className="an-gal-nogps">No GPS</span>}
+            <a href={url} target="_blank" rel="noreferrer">Open ↗</a>
+            <a href={url} download={m.fileName}>⬇ Download</a>
+          </div>
+          <button type="button" className="an-gal-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="an-gal-stage">
+          {items.length > 1 && <button type="button" className="an-gal-nav an-gal-prev" aria-label="Previous"
+            onClick={() => setI((x) => (x - 1 + items.length) % items.length)}>‹</button>}
+          {isImageType(m.fileType) && !failed
+            ? <img key={url} src={url} alt={m.fileName} onError={() => setU((x) => x + 1)}/>
+            : isVideoType(m.fileType)
+              ? <video key={url} src={url} controls autoPlay/>
+              : <div className="an-gal-file">
+                  <div style={{ fontSize: 48 }}>{isImageType(m.fileType) ? "🖼" : mediaIconFor(m.fileType)}</div>
+                  <div className="an-gal-fname">{m.fileName}</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 12 }}>
+                    {isImageType(m.fileType) ? "This image format can't be previewed in the browser." : "Preview not available."}</div>
+                  <a href={resolveMediaUrl(m.fileUrl)} target="_blank" rel="noreferrer">Open / Download ↗</a>
+                </div>}
+          {items.length > 1 && <button type="button" className="an-gal-nav an-gal-next" aria-label="Next"
+            onClick={() => setI((x) => (x + 1) % items.length)}>›</button>}
+        </div>
+        <div className="an-gal-name">{m.fileName}</div>
+        {items.length > 1 && (
+          <div className="an-gal-strip">
+            {items.map((x, k) => (
+              <div key={x.id} className={`an-gal-strip-item${k === i ? " is-active" : ""}`}>
+                <MediaThumb m={x} size={52} onClick={() => setI(k)}/>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 interface StateRow { state:string; proposals:number; budget:number; approved:number; lead:number; retail:number; cac:number; }
 interface ActivityRow { name:string; count:number; budget:number; lead:number; retail:number; atl:number; btl:number; }
@@ -320,7 +418,7 @@ export default function AnalyticsDashboard() {
     }
     return true;
   }, [dailyStateSel, dailyDealerSel, dailyActTypeSel, dailySearch]);
-  const [anMediaViewer, setAnMediaViewer] = useState<{url:string;name:string;type:string|null}|null>(null);
+  const [anGallery, setAnGallery] = useState<{ items: ProofMedia[]; index: number; title: string } | null>(null);   // [BTL-2026-10-27b]
   // ── FIX: moved above the early loading/error returns below — this hook
   // was previously declared AFTER `if (loading) return...` / `if (error) return...`,
   // which violates React's Rules of Hooks (a hook must be called on every render,
@@ -583,7 +681,7 @@ export default function AnalyticsDashboard() {
           leads: totalLmsLeads, punched: totalPunched,
           gap: totalLmsLeads - totalPunched,
           convPct: totalLmsLeads > 0 ? Math.round((retailMtdActivityVal/totalLmsLeads)*100) : 0,
-          photos: media.length,
+          photos: media.filter(m => isImageType(m.fileType) || isVideoType(m.fileType)).length,   // [BTL-2026-10-27b]
           proposalId: p.id, activityId: a.id, activityType: a.activityType,
           dailyEntries: entries, media, allEntries, allMedia,
         } as DailySummaryRow & { photos: number });
@@ -1271,28 +1369,21 @@ export default function AnalyticsDashboard() {
           <span style={{ fontSize:12,color:"#64748b" }}>
             {filteredDailySummary.length} of {liveDailySummary.length} entries
           </span>
-          <div style={{ marginLeft:"auto" }}>
-            {/* [BTL-2026-10-26b] Daily report — PPT / PDF / Excel, same format */}
-            {pptBusy ? (
-              <span style={{ display:"inline-flex",alignItems:"center",height:36,padding:"0 12px",marginRight:8,background:"#f1f5f9",
-                border:"1px solid #e2e8f0",borderRadius:8,fontSize:12,color:"#374151",fontWeight:600 }}>⏳ {pptBusy}</span>
-            ) : ([
-                ["ppt",  "⬇ PPT",   "#16a34a"],
-                ["pdf",  "⬇ PDF",   "#dc2626"],
-                ["xlsx", "⬇ Excel", "#15803d"],
-              ] as const).map(([f, label, bg]) => (
-                <button key={f} type="button" onClick={() => exportDailyReport(f)} disabled={filteredDailySummary.length===0}
-                  title={`Daily report (${f.toUpperCase()}): Daily Summary, Lead Report, dealer daily sheets and GPS photos`}
-                  style={{ height:36,padding:"0 12px",marginRight:6,background:filteredDailySummary.length?bg:"#cbd5e1",color:"#fff",border:"none",
-                    borderRadius:8,fontSize:12,fontWeight:700,cursor:filteredDailySummary.length?"pointer":"not-allowed" }}>
-                  {label}
-                </button>
-              ))}
+          <div style={{ marginLeft:"auto",display:"flex",alignItems:"center",gap:8 }}>
+            {/* [BTL-2026-10-27] ONE Download menu: PPT · Excel · PDF in the Project-Towns report format, CSV = this table */}
+            {pptBusy && <span className="an-busy-chip">⏳ {pptBusy}</span>}
             <DownloadReportButton
-              filename="Daily_Activity_Sheet_Summary"
+              filename="Daily_Activity_Report"
               title="Daily Activity Sheet Summary"
+              subtitle={dailyFrom || dailyTo ? `${dailyFrom || "…"} to ${dailyTo || "…"}` : undefined}
               columns={dailySummaryExportColumns}
               rows={filteredDailySummary as any}
+              disabled={!!pptBusy}
+              custom={{
+                ppt:  () => exportDailyReport("ppt"),
+                xlsx: () => exportDailyReport("xlsx"),
+                pdf:  () => exportDailyReport("pdf"),
+              }}
             />
           </div>
         </div>
@@ -1470,18 +1561,7 @@ export default function AnalyticsDashboard() {
       // ── dealer detail view, shown when reportSubTab === "dealer-daily" ──
       selectedDealerDaily && (
         <>
-          {anMediaViewer && (
-            <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:10000,
-              display:"flex",alignItems:"center",justifyContent:"center" }} onClick={()=>setAnMediaViewer(null)}>
-              <div style={{ maxWidth:"92vw",maxHeight:"92vh" }} onClick={(e)=>e.stopPropagation()}>
-                {isImageType(anMediaViewer.type)
-                  ? <img src={anMediaViewer.url} alt={anMediaViewer.name} style={{ maxWidth:"88vw",maxHeight:"82vh",borderRadius:8 }}/>
-                  : isVideoType(anMediaViewer.type)
-                    ? <video src={anMediaViewer.url} controls autoPlay style={{ maxWidth:"88vw",maxHeight:"82vh",borderRadius:8 }}/>
-                    : <a href={anMediaViewer.url} target="_blank" rel="noopener noreferrer" style={{ color:"#fff" }}>Open {anMediaViewer.name} ↗</a>}
-              </div>
-            </div>
-          )}
+          {anGallery && <MediaGallery items={anGallery.items} index={anGallery.index} title={anGallery.title} onClose={() => setAnGallery(null)}/>}
 
           <div style={{ marginBottom:14, display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
              <button
@@ -1525,6 +1605,18 @@ export default function AnalyticsDashboard() {
               the Avg row can never drift apart from each other again. ── */}
           {(() => {
             const entries = selectedDealerDaily.dailyEntries;
+            // [BTL-2026-10-27b] photos grouped by LOCAL (IST) date → day counts + "other dates" = Total
+            const sheetPhotos = selectedDealerDaily.media
+              .filter(m => isImageType(m.fileType) || isVideoType(m.fileType))
+              .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
+            const sheetFiles = selectedDealerDaily.media.filter(m => !isImageType(m.fileType) && !isVideoType(m.fileType));
+            const entryDates = new Set(entries.map(e => (e.date || "").slice(0, 10)));
+            const photosOn = (d: string) => sheetPhotos.filter(m => toLocalIso(m.capturedAt) === d);
+            const filesOn  = (d: string) => sheetFiles.filter(m => toLocalIso(m.capturedAt) === d);
+            const otherDayPhotos = sheetPhotos.filter(m => !entryDates.has(toLocalIso(m.capturedAt)));
+            const sheetName = `${selectedDealerDaily.dealer}, ${selectedDealerDaily.location}`;
+            const openGallery = (items: ProofMedia[], start: ProofMedia | number, title: string) =>
+              setAnGallery({ items, index: typeof start === "number" ? start : Math.max(0, items.indexOf(start)), title });
             const dayCount = entries.length || 1;
             const sum = (fn: (e: DailyEntry) => number) => entries.reduce((s,e)=>s+(fn(e)||0),0);
             const lastNonZero = (fn: (e: DailyEntry) => number) => {
@@ -1610,6 +1702,7 @@ export default function AnalyticsDashboard() {
                           ? (Math.round((totals.retail / totals.canopy) * 10) / 10).toFixed(1)
                           : "0.0" },
                     { label:"Activity Days", value: entries.length },
+                    { label:"Photos", value: sheetPhotos.length },
                   ].map((f) => (
                     <div key={f.label} style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 12px" }}>
                       <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>{f.label}</div>
@@ -1665,10 +1758,8 @@ export default function AnalyticsDashboard() {
                   </thead>
                   <tbody>
                     {entries.map((entry, i) => {
-                      const photosOnDay = selectedDealerDaily.media.filter(m =>
-                        m.capturedAt.startsWith(entry.date) && (isImageType(m.fileType) || isVideoType(m.fileType)));
-                      const invoicesOnDay = selectedDealerDaily.media.filter(m =>
-                        m.capturedAt.startsWith(entry.date) && !isImageType(m.fileType) && !isVideoType(m.fileType));
+                      const photosOnDay   = photosOn((entry.date || "").slice(0, 10));   // [BTL-2026-10-27b]
+                      const invoicesOnDay = filesOn((entry.date || "").slice(0, 10));
                       const hasData = entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||(entry.retailMtdActivity||0)>0||photosOnDay.length>0||invoicesOnDay.length>0;
                       const gapColor = (entry.enquiryGap||0) < 0 ? "#dc2626" : (entry.enquiryGap||0) > 0 ? "#16a34a" : "#64748b";
                       return (
@@ -1690,21 +1781,20 @@ export default function AnalyticsDashboard() {
                           {td(entry.retailMtdActivity || "", { color:"#c2410c", fontWeight:700 })}
                           {td(entry.retailMtd || "", { color:"#92400e", fontWeight:700 })}
                           {td(
-                            <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
-                              {photosOnDay.slice(0,3).map(m => {
-                                const url = resolveMediaUrl(m.fileUrl);
-                                return (
-                                  <div key={m.id} style={{ width:24,height:24,borderRadius:3,overflow:"hidden",cursor:"pointer",border:"1px solid #bbf7d0" }}
-                                    onClick={() => setAnMediaViewer({ url, name: m.fileName, type: m.fileType })}>
-                                    {isImageType(m.fileType)
-                                      ? <img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
-                                      : <span style={{ fontSize:13,lineHeight:"24px",display:"block",textAlign:"center" }}>{mediaIconFor(m.fileType)}</span>}
-                                  </div>
-                                );
-                              })}
-                              {photosOnDay.length > 3 && <span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-3}</span>}
-                              {invoicesOnDay.length > 0 && <span style={{ fontSize:10,color:"#64748b" }}>🧾{invoicesOnDay.length}</span>}
-                              {photosOnDay.length===0 && invoicesOnDay.length===0 && <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
+                            <div className="an-media-cell">
+                              {photosOnDay.slice(0, 3).map(m => (
+                                <MediaThumb key={m.id} m={m} size={30}
+                                  onClick={() => openGallery(photosOnDay, m, `${sheetName} · ${entry.date}`)}/>
+                              ))}
+                              {photosOnDay.length > 3 && (
+                                <button type="button" className="an-media-more" title={`View all ${photosOnDay.length} photos of ${entry.date}`}
+                                  onClick={() => openGallery(photosOnDay, 3, `${sheetName} · ${entry.date}`)}>+{photosOnDay.length - 3}</button>
+                              )}
+                              {invoicesOnDay.length > 0 && (
+                                <button type="button" className="an-media-more an-media-more--file" title={`${invoicesOnDay.length} invoice / file(s)`}
+                                  onClick={() => openGallery(invoicesOnDay, 0, `${sheetName} · ${entry.date} · invoices`)}>🧾{invoicesOnDay.length}</button>
+                              )}
+                              {photosOnDay.length === 0 && invoicesOnDay.length === 0 && <span style={{ color:"#cbd5e1",fontSize:10 }}>—</span>}
                             </div>
                           )}
                         </tr>
@@ -1729,7 +1819,10 @@ export default function AnalyticsDashboard() {
                       {td(totals.bookInHand, { background:"#93c5fd" })}
                       {td(totals.retail, { background:"#93c5fd" })}
                       {td(totals.retailMtd, { background:"#93c5fd" })}
-                      {td("📸"+selectedDealerDaily.media.filter(m=>isImageType(m.fileType)||isVideoType(m.fileType)).length, { background:"#93c5fd", fontSize:10 })}
+                      {td(sheetPhotos.length > 0
+                        ? <button type="button" className="an-media-total" title="View all photos of this sheet"
+                            onClick={() => openGallery(sheetPhotos, 0, `${sheetName} · all photos`)}>📸 {sheetPhotos.length} · View all</button>
+                        : "📸 0", { background:"#93c5fd", fontSize:10 })}
                     </tr>
 
                     {/* ── Average row ── */}
@@ -1750,7 +1843,11 @@ export default function AnalyticsDashboard() {
                       {td(avgRow.bookInHand, { background:"#fef9c3" })}
                       {td(avgRow.retail, { background:"#fef9c3" })}
                       {td(avgRow.retailMtd, { background:"#fef9c3" })}
-                      {td("—", { fontSize:10, color:"#94a3b8" })}
+                      {td(otherDayPhotos.length > 0
+                        ? <button type="button" className="an-media-more an-media-more--other"
+                            title="Photos whose capture date has no row in this sheet"
+                            onClick={() => openGallery(otherDayPhotos, 0, `${sheetName} · other dates`)}>📅 {otherDayPhotos.length} on other dates</button>
+                        : "—", { fontSize:10, color:"#94a3b8" })}
                     </tr>
                   </tbody>
                 </table>

@@ -321,6 +321,45 @@ function getActualDateRange(month?: string | null, year?: string | number | null
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── [BTL-2026-10-27c] table pager ──────────────────────────────────────────────────
+function ApPager({ page, pageSize, total, onPage, onPageSize, scrollTop }: {
+  page: number; pageSize: number; total: number;
+  onPage: (p: number) => void; onPageSize: (n: number) => void; scrollTop?: boolean;
+}) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const go = (p: number) => {
+    onPage(Math.min(Math.max(1, p), pages));
+    if (scrollTop) document.querySelector(".ap-table-wrap")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+  const nums: (number | "…")[] = [];
+  for (let p = 1; p <= pages; p++) {
+    if (p === 1 || p === pages || Math.abs(p - page) <= 1) nums.push(p);
+    else if (nums[nums.length - 1] !== "…") nums.push("…");
+  }
+  return (
+    <div className="ap-pager">
+      <span className="ap-pager-info">Showing <b>{from}–{to}</b> of <b>{total}</b></span>
+      <label className="ap-pager-size">Rows
+        <select value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))}>
+          {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </label>
+      <div className="ap-pager-btns">
+        <button type="button" disabled={page <= 1} onClick={() => go(1)} title="First page">«</button>
+        <button type="button" disabled={page <= 1} onClick={() => go(page - 1)} title="Previous page">‹</button>
+        {nums.map((n, i) => n === "…"
+          ? <span key={`e${i}`} className="ap-pager-gap">…</span>
+          : <button type="button" key={n} className={n === page ? "is-active" : ""} onClick={() => go(n)}
+              aria-current={n === page ? "page" : undefined}>{n}</button>)}
+        <button type="button" disabled={page >= pages} onClick={() => go(page + 1)} title="Next page">›</button>
+        <button type="button" disabled={page >= pages} onClick={() => go(pages)} title="Last page">»</button>
+      </div>
+    </div>
+  );
+}
+
 export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
   const navigate  = useNavigate();
@@ -1031,6 +1070,21 @@ export default function ApproverDashboard() {
     if (failed.length) console.warn("[BULK-DELETE] failures:\n" + failed.join("\n"));
   };
 
+  // ── [BTL-2026-10-27c] pagination ──
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(() => {
+    try { return Number(localStorage.getItem("ap_page_size")) || 25; } catch { return 25; }
+  });
+  const changePageSize = (n: number) => {
+    setPageSize(n); setPage(1);
+    try { localStorage.setItem("ap_page_size", String(n)); } catch { /* ignore */ }
+  };
+  useEffect(() => { setPage(1); },
+    [statusSel, monthSel, yearSel, stateSel, dealerStatusSel, search, submittedFrom, submittedTo, fwdDateFilter]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const curPage = Math.min(page, totalPages);
+  const paginate = <T,>(rows: T[]): T[] => rows.slice((curPage - 1) * pageSize, curPage * pageSize);
+
   const toggleActuals=(activityId:string)=>
     setOpenActualsId((prev)=>prev===activityId?null:activityId);
   const forwardablePending  = pendingFiltered.filter(p=>!p.checkedByEmail);
@@ -1349,6 +1403,8 @@ export default function ApproverDashboard() {
                   style={{ background:"rgba(255,255,255,0.12)",color:"#fee2e2",border:"1px solid rgba(255,255,255,0.25)",borderRadius:7,padding:"8px 14px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
               </div>
             )}
+            {/* [BTL-2026-10-27c] pager */}
+            {filtered.length > 0 && <ApPager page={curPage} pageSize={pageSize} total={filtered.length} onPage={setPage} onPageSize={changePageSize}/>}
             <div className="ap-table-wrap">
               <table className="ap-table">
                 <thead><tr>
@@ -1397,7 +1453,7 @@ export default function ApproverDashboard() {
                 </tr></thead>
                 <tbody>
                   {filtered.length===0&&(<tr><td colSpan={(isAdmin?(isChecker?17:16):12)+(isSuperAdmin?1:0)} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
-                  {filtered.map((p)=>{
+                  {paginate(filtered).map((p)=>{
                     const isPending=p.status==="Pending"; const isChecked=selectedIds.has(p.id);
                     return (
                       <tr key={p.id}
@@ -1457,18 +1513,20 @@ export default function ApproverDashboard() {
                               style={{ width:15,height:15,cursor:"pointer",accentColor:"#dc2626" }}/>
                           </td>
                         )}
-                        <td onClick={(e)=>e.stopPropagation()}>
+                        {/* [BTL-2026-10-27] Review / View / Delete = icon buttons; meaning shows on hover */}
+                        <td className="ap-action-cell" onClick={(e)=>e.stopPropagation()}>
+                          <div className="ap-action-group">
                           {!isAdmin && p.status==="NeedsRevision"
-                            ? <button className="ap-review-btn" style={{background:"#f59e0b",color:"#fff",fontWeight:700}} onClick={()=>{ window.location.href=`/rsm-form?edit=${p.id}`; }}>✏ Edit</button>
-                            : <button className="ap-review-btn" onClick={()=>openModal(p)}>{isAdmin?(isPending||p.status==="NeedsRevision"?"Review":"View"):"View"}</button>}
+                            ? <button type="button" className="ap-review-btn ap-icon-btn" style={{background:"#f59e0b",color:"#fff",fontWeight:700}} onClick={()=>{ window.location.href=`/rsm-form?edit=${p.id}`; }} aria-label="✏ Edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg><span className="ap-tip" role="tooltip">✏ Edit</span></button>
+                            : <button type="button" className="ap-review-btn ap-icon-btn" onClick={()=>openModal(p)} aria-label={String(isAdmin?(isPending||p.status==="NeedsRevision"?"Review":"View"):"View")}>{/review/i.test(String(isAdmin?(isPending||p.status==="NeedsRevision"?"Review":"View"):"View")) ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>}<span className="ap-tip" role="tooltip">{isAdmin?(isPending||p.status==="NeedsRevision"?"Review":"View"):"View"}</span></button>}
                           {isSuperAdmin&&(
-                            <button type="button" title="Delete proposal (Admin)" disabled={deletingId===p.id}
-                              onClick={()=>handleDeleteProposal(p)}
-                              style={{ marginLeft:6,background:"#fee2e2",color:"#991b1b",border:"1px solid #fecaca",borderRadius:6,
-                                padding:"4px 8px",fontSize:12,fontWeight:700,cursor:deletingId===p.id?"wait":"pointer" }}>
-                              {deletingId===p.id?"…":"🗑"}
+                            <button type="button" className="ap-icon-btn ap-icon-btn--danger" aria-label="Delete proposal"
+                              disabled={deletingId===p.id} onClick={()=>handleDeleteProposal(p)}>
+                              {deletingId===p.id ? <span className="ap-spin-sm"/> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>}
+                              <span className="ap-tip" role="tooltip">Delete proposal (Admin)</span>
                             </button>
                           )}
+                          </div>
                         </td>
                         <td><span className="ap-id-chip">{p.tokenNumber??p.id.split("-").slice(-1)[0]}</span></td>
                         <td><span className="ap-cell-p">{fmtDate(p.createdAt)}</span>{isAdmin&&<span className="ap-cell-m">{p.submittedByDisplayName??p.submittedBy}</span>}</td>
@@ -1490,6 +1548,7 @@ export default function ApproverDashboard() {
                 </tbody>
               </table>
             </div>
+            {filtered.length > pageSize && <ApPager page={curPage} pageSize={pageSize} total={filtered.length} onPage={setPage} onPageSize={changePageSize} scrollTop/>}
           </>
         )}
       </main>

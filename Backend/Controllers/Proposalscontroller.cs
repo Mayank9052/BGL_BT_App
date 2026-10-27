@@ -1159,8 +1159,10 @@ public class ProposalsController : ControllerBase
 
             bool   isNew;
             string source;
-            var    t = await _dealerType.ClassifyOneAsync(code);
-            if (t is not null) { isNew = t.IsNew; source = "RRERP"; }
+            var    t = mapping?.DealerTypeOverride == true ? null : await _dealerType.ClassifyOneAsync(code);
+            if (mapping?.DealerTypeOverride == true)           // Admin override after cross-check wins
+            { isNew = string.Equals(mapping.DealerType, "New", StringComparison.OrdinalIgnoreCase); source = "Dealer Mapping override"; }
+            else if (t is not null) { isNew = t.IsNew; source = "RRERP"; }
             else if (string.Equals(mapping?.DealerType, "New", StringComparison.OrdinalIgnoreCase)) { isNew = true; source = "Dealer Mapping"; }
             else if (mapping is not null || dealer is not null) { isNew = false; source = mapping?.DealerType is null ? "default" : "Dealer Mapping"; }
             else return (4000, null);

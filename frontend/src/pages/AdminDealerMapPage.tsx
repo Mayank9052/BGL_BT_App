@@ -399,6 +399,10 @@ export default function AdminDealerMapPage() {
   const [refreshing,  setRefreshing]  = useState(false);
   const [notice,      setNotice]      = useState<string | null>(null);
   const [statusBusy,  setStatusBusy]  = useState<number | null>(null);
+  // [BTL-2026-10-27] Admin override of an incorrect RRERP Old / New (after cross-check, reason required)
+  const [typeOverride,   setTypeOverride]   = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
+  const overrideRef = useRef(false);   // read inside autoType (async) — never overwrite an overridden type
   const isRowActive = (r: DealerTeamMappingRow) => (r as unknown as { isActive?: boolean }).isActive !== false;
   const visibleRows = useMemo(() => rows.filter((r) =>
     statusView === "all" || (statusView === "active") === isRowActive(r)), [rows, statusView]);
@@ -431,7 +435,7 @@ export default function AdminDealerMapPage() {
       const e = await fetchDealerEligibility(code, instance);
       const t: "Old" | "New" = e.dealerType === "New" ? "New" : "Old";
       setTypeAuto({ type: t, reason: e.eligibilityReason });
-      setForm((f) => ({ ...f, dealerType: t }));
+      if (!overrideRef.current) setForm((f) => ({ ...f, dealerType: t }));
     } catch { setTypeAuto(null); }
     finally { setTypeLoading(false); }
   };
@@ -534,7 +538,7 @@ export default function AdminDealerMapPage() {
 
   const openCreate = () => {
     setEditingId(null); setForm(emptyForm); setFormError(null);
-    setDealerSourceMode("erp"); setSelectedErpDealerCode(""); setTypeAuto(null);
+    setDealerSourceMode("erp"); setSelectedErpDealerCode(""); setTypeAuto(null); overrideRef.current = false; setTypeOverride(false); setOverrideReason("");
     setShowForm(true);
   };
   const openEdit = (row: DealerTeamMappingRow) => {
@@ -550,6 +554,9 @@ export default function AdminDealerMapPage() {
     // and overwrites Code/City/State/RSM/TSM/Commando from ERP, if needed.
     setDealerSourceMode("manual");
     setSelectedErpDealerCode(row.dealerCode ?? "");
+    { const ov = row as unknown as { dealerTypeOverride?: boolean; dealerTypeOverrideReason?: string | null };
+      overrideRef.current = !!ov.dealerTypeOverride; setTypeOverride(!!ov.dealerTypeOverride);
+      setOverrideReason(ov.dealerTypeOverrideReason ?? ""); }
     if (row.dealerCode) autoType(row.dealerCode); else setTypeAuto(null);   // [BTL-2026-10-26c]
     setFormError(null); setShowForm(true);
   };
@@ -563,6 +570,7 @@ export default function AdminDealerMapPage() {
       return;
     }
     setSelectedErpDealerCode(d.customerCode);
+    overrideRef.current = false; setTypeOverride(false); setOverrideReason("");
     autoType(d.customerCode);   // [BTL-2026-10-26c] Old/New from RRERP
     setForm((f) => ({
       ...f,
@@ -586,6 +594,7 @@ export default function AdminDealerMapPage() {
     if (isInactiveStaff(form.rsm, form.rsmEmail)) { setFormError(`RSM "${form.rsm}" is Inactive — pick an active RSM.`); return; }
     if (form.tsm?.trim() && isInactiveStaff(form.tsm, form.tsmEmail)) { setFormError(`TSM "${form.tsm}" is Inactive — pick an active TSM or "No TSM".`); return; }
     if (form.commando?.trim() && isInactiveStaff(form.commando, form.commandoEmail)) { setFormError(`Commando "${form.commando}" is Inactive — pick an active Commando or "No Commando".`); return; }
+    if (typeOverride && overrideReason.trim().length < 5) { setFormError("Give a reason (min 5 characters) for overriding the RRERP Dealer Type."); return; }
     setSaving(true); setFormError(null);
     try {
       // Blank optional team fields → NULL in DB (Edit clears; Excel import blank still = keep).
@@ -595,6 +604,8 @@ export default function AdminDealerMapPage() {
         tsmEmail:      form.tsmEmail?.trim()      || null,
         commando:      form.commando?.trim()      || null,
         commandoEmail: form.commandoEmail?.trim() || null,
+        dealerTypeOverride: typeOverride,                                   // [BTL-2026-10-27]
+        dealerTypeOverrideReason: typeOverride ? overrideReason.trim() : null,
       } as UpsertDealerTeamMapping;
       if (editingId !== null) await updateDealerTeamMapping(editingId, payload, instance);
       else                    await createDealerTeamMapping(payload, instance);
@@ -810,6 +821,11 @@ export default function AdminDealerMapPage() {
                     background: r.dealerType === "New" ? "#eff6ff" : "#f1f5f9", color: r.dealerType === "New" ? "#1e40af" : "#374151" }}>
                     {r.dealerType ?? "—"}
                   </span>
+                  {(r as unknown as { dealerTypeOverride?: boolean }).dealerTypeOverride && (
+                    <span title={`Overridden by ${(r as unknown as { dealerTypeOverrideBy?: string }).dealerTypeOverrideBy ?? "Admin"}: ${(r as unknown as { dealerTypeOverrideReason?: string }).dealerTypeOverrideReason ?? ""}`}
+                      style={{ marginLeft: 4, fontSize: 9, fontWeight: 800, color: "#92400e", background: "#fef3c7",
+                        border: "1px solid #fde68a", borderRadius: 4, padding: "0 4px", cursor: "help" }}>OVERRIDE</span>
+                  )}
                 </td>
                 <td style={{ padding: "9px 12px", whiteSpace: "nowrap" }}>
                   <div style={{ display: "inline-flex", border: "1px solid #e2e8f0", borderRadius: 7, overflow: "hidden" }}>
@@ -1055,21 +1071,40 @@ export default function AdminDealerMapPage() {
                     onChange={(e) => setForm((f) => ({ ...f, isEligible: e.target.value === "yes" }))}>
                     <option value="yes">Eligible</option><option value="no">Non-Eligible</option>
                   </select></div>
-                <div><label style={labelStyle}>Dealer Type{typeAuto && <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 6, color: "#16a34a" }}>🔒 from RRERP</span>}</label>
-                  <select style={{ ...inputStyle, background: typeAuto ? "#f0fdf4" : "#fff", cursor: typeAuto ? "not-allowed" : "pointer" }}
-                    value={form.dealerType ?? "Old"} disabled={!!typeAuto || typeLoading}
+                <div><label style={labelStyle}>Dealer Type
+                    {typeAuto && !typeOverride && <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 6, color: "#16a34a" }}>🔒 from RRERP</span>}
+                    {typeOverride && <span style={{ fontWeight: 700, textTransform: "none", marginLeft: 6, color: "#b45309" }}>✎ overridden</span>}</label>
+                  <select value={form.dealerType ?? "Old"} disabled={(!!typeAuto && !typeOverride) || typeLoading}
+                    style={{ ...inputStyle,
+                      background: typeOverride ? "#fffbeb" : typeAuto ? "#f0fdf4" : "#fff",
+                      borderColor: typeOverride ? "#f59e0b" : "#e2e8f0",
+                      cursor: typeAuto && !typeOverride ? "not-allowed" : "pointer" }}
                     onChange={(e) => setForm((f) => ({ ...f, dealerType: e.target.value }))}>
                     <option value="Old">Old</option><option value="New">New</option>
                   </select>
-                  <div style={{ fontSize: 10, color: typeAuto ? "#166534" : "#9ca3af", marginTop: 3 }}>
+                  <div style={{ fontSize: 10, marginTop: 3, color: typeOverride ? "#92400e" : typeAuto ? "#166534" : "#9ca3af" }}>
                     {typeLoading ? "Checking RRERP…"
-                      : typeAuto ? typeAuto.reason
+                      : typeOverride
+                        ? <>RRERP says <b>{typeAuto?.type ?? "—"}</b>{typeAuto ? ` — ${typeAuto.reason}` : ""} ·{" "}
+                            <button type="button" style={{ background: "none", border: "none", color: "#2563eb", fontSize: 10, fontWeight: 700, cursor: "pointer", padding: 0 }}
+                              onClick={() => { overrideRef.current = false; setTypeOverride(false); setOverrideReason("");
+                                if (typeAuto) setForm((f) => ({ ...f, dealerType: typeAuto.type })); }}>↺ Use RRERP value</button></>
+                      : typeAuto
+                        ? <>{typeAuto.reason} ·{" "}
+                            <button type="button" style={{ background: "none", border: "none", color: "#2563eb", fontSize: 10, fontWeight: 700, cursor: "pointer", padding: 0 }} title="Cross-checked and RRERP is wrong? Change it with a reason."
+                              onClick={() => { overrideRef.current = true; setTypeOverride(true); }}>Incorrect? Override</button></>
                       : form.dealerCode
-                        ? <button type="button" onClick={() => autoType(form.dealerCode ?? "")}
-                            style={{ background: "none", border: "none", color: "#2563eb", fontSize: 10, fontWeight: 600, cursor: "pointer", padding: 0 }}>
-                            Get Old / New from RRERP</button>
+                        ? <button type="button" style={{ background: "none", border: "none", color: "#2563eb", fontSize: 10, fontWeight: 700, cursor: "pointer", padding: 0 }} onClick={() => autoType(form.dealerCode ?? "")}>Get Old / New from RRERP</button>
                         : "Manual dealer (no Dealer Code) — choose Old / New"}
-                  </div></div>
+                  </div>
+                  {typeOverride && (
+                    <textarea rows={2} value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)}
+                      placeholder="Reason — what was cross-checked (e.g. first RRERP sale bill 12.08.2026 is a demo invoice; first retail 05.10.2026)"
+                      style={{ ...inputStyle, marginTop: 6, fontSize: 12, borderColor: overrideReason.trim().length >= 5 ? "#f59e0b" : "#ef4444", resize: "vertical" }}/>
+                  )}
+                  {typeOverride && <div style={{ fontSize: 10, color: "#92400e", marginTop: 2 }}>
+                    Override is kept: the 12-hourly RRERP refresh will not change it, and the CAC limit follows this type.</div>}
+                </div>
               </div>
               <p style={{ fontSize: 11, color: "#9ca3af", margin: "4px 0 18px" }}>
                 These two fields drive the RSM Form (auto-filled, locked) and the Dashboard bucket

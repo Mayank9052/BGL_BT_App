@@ -1,0 +1,827 @@
+/* frontend\src\pages\Approverdashboard.css */
+/* ─── Page ───────────────────────────────────────────────────────────────── */
+.ap-page {
+  min-height: 100vh;
+  background: #f1f5f9;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  font-size: 14px;
+  color: #0a2540;
+}
+.ap-main {
+  padding: 20px 20px 60px;
+  max-width: 1240px;
+  margin: 0 auto;
+}
+
+.ap-cac-warning {
+  background: #fefce8;
+  border: 1px solid #fde68a;
+  border-left: 3px solid #f59e0b;
+  border-radius: 7px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #92400e;
+  margin: 12px 0;
+}
+.ap-row--selected {
+  background: #f0fdf4 !important;
+  outline: 2px solid #16a34a;
+  outline-offset: -2px;
+}
+
+/* ── Add these rules to your existing ApproverDashboard.css ─────────────────
+   Clickable stat cards with active/hover states                              */
+
+/* Clickable card — pointer cursor + hover lift */
+.ap-stat--clickable {
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+  user-select: none;
+  position: relative;
+}
+.ap-stat--clickable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.10);
+}
+.ap-stat--clickable:active {
+  transform: translateY(0);
+}
+
+/* Active / selected state — highlighted border + light tint */
+.ap-stat--active {
+  border-color: #0a2540 !important;
+  background: #f0f6ff !important;
+  box-shadow: 0 0 0 2px rgba(10,37,64,0.12) !important;
+}
+
+/* Small dot indicator at bottom of active card */
+.ap-stat-active-dot {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0a2540;
+}
+/* ─── Page header ────────────────────────────────────────────────────────── */
+.ap-page-header {
+  display: flex; justify-content: space-between;
+  align-items: flex-start; margin-bottom: 18px;
+}
+.ap-page-title { font-size: 20px; font-weight: 700; color: #0a2540; margin: 0 0 3px; }
+.ap-page-sub   { font-size: 13px; color: #64748b; margin: 0; }
+.ap-new-btn {
+  background: #0a2540; color: #fff; border: none;
+  padding: 9px 18px; border-radius: 8px; font-size: 13px;
+  font-weight: 600; cursor: pointer; white-space: nowrap;
+  transition: background 0.15s; font-family: inherit;
+}
+.ap-new-btn:hover { background: #1e3a5f; }
+
+/* ─── Loading / Error ────────────────────────────────────────────────────── */
+.ap-loading {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: 60px 0; color: #64748b; gap: 12px;
+}
+.ap-spinner {
+  width: 30px; height: 30px;
+  border: 2.5px solid #e2e8f0; border-top-color: #1e3a5f;
+  border-radius: 50%; animation: ap-spin 0.75s linear infinite;
+}
+@keyframes ap-spin { to { transform: rotate(360deg); } }
+.ap-error-state {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 12px; padding: 60px 0; text-align: center;
+}
+.ap-error-msg  { color: #991b1b; font-size: 14px; font-weight: 500; margin: 0; }
+.ap-retry-btn  {
+  background: #0a2540; color: #fff; border: none;
+  padding: 8px 20px; border-radius: 7px; font-size: 13px;
+  font-weight: 500; cursor: pointer; transition: background 0.15s; font-family: inherit;
+}
+.ap-retry-btn:hover { background: #1e3a5f; }
+
+/* ─── Stats ──────────────────────────────────────────────────────────────── */
+.ap-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.ap-stat {
+  background: #fff; border-radius: 10px;
+  border: 1px solid #e2e8f0; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.ap-stat-val { font-size: 20px; font-weight: 700; }
+.ap-stat-lbl { font-size: 11px; color: #64748b; }
+.ap-navy   { color: #0a2540; }
+.ap-amber  { color: #92400e; }
+.ap-green  { color: #166534; }
+.ap-red    { color: #991b1b; }
+.ap-orange { color: #c2410c; }
+
+/* ─── Filters ────────────────────────────────────────────────────────────── */
+.ap-filters {
+  display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.ap-search {
+  flex: 1; min-width: 160px; padding: 7px 10px;
+  border-radius: 8px; border: 1.5px solid #e2e8f0;
+  font-size: 13px; background: #fff; color: #0a2540;
+  outline: none; transition: border-color 0.15s; font-family: inherit;
+}
+.ap-search:focus { border-color: #1e3a5f; }
+.ap-select {
+  padding: 7px 10px; border-radius: 8px;
+  border: 1.5px solid #e2e8f0; font-size: 13px;
+  background: #fff; color: #0a2540;
+  cursor: pointer; outline: none; font-family: inherit;
+}
+.ap-refresh-btn {
+  padding: 7px 12px; border-radius: 8px;
+  border: 1.5px solid #e2e8f0; background: #fff;
+  color: #0a2540; cursor: pointer; font-size: 13px;
+  transition: background 0.15s; font-family: inherit;
+}
+.ap-refresh-btn:hover { background: #f1f5f9; }
+
+
+/* Point #8: NeedsRevision row highlight in proposal list */
+.ap-row--revision {
+  border-left: 4px solid #f59e0b !important;
+  background: #fffbeb !important;
+}
+.ap-row--revision:hover {
+  background: #fef9c3 !important;
+}
+
+/* Point #8: NeedsRevision badge */
+.ap-badge-revision {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Point #6: Checker Reject button */
+.ap-reject-btn {
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: background 0.15s;
+}
+.ap-reject-btn:hover { background: #b91c1c; }
+
+/* Point #5: Checker remarks textarea highlight */
+.ap-checker-remarks-block {
+  margin-bottom: 16px;
+  background: #fffbeb;
+  border: 1.5px solid #fde68a;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.ap-checker-remarks-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #92400e;
+  display: block;
+  margin-bottom: 6px;
+}
+.ap-checker-remarks-textarea {
+  width: 100%;
+  font-size: 13px;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+  background: #fff;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+.ap-checker-remarks-textarea:focus {
+  outline: none;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+}
+
+/* ─── Table ──────────────────────────────────────────────────────────────── */
+.ap-table-wrap {
+  background: #fff; border-radius: 10px;
+  border: 1px solid #e2e8f0; overflow: hidden; overflow-x: auto;
+}
+.ap-table { width: 100%; border-collapse: collapse; min-width: 860px; }
+.ap-table thead tr { background: #0a2540; }
+.ap-table thead th {
+  padding: 9px 11px; text-align: left; color: #e2e8f0;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.2px; white-space: nowrap;
+}
+.ap-table .ap-num { text-align: right; }
+.ap-row {
+  border-bottom: 1px solid #f1f5f9; cursor: pointer;
+  transition: background 0.1s;
+}
+.ap-row:last-child { border-bottom: none; }
+.ap-row:hover      { background: #f8fafc; }
+.ap-table tbody td { padding: 9px 11px; font-size: 12px; vertical-align: middle; }
+.ap-num  { text-align: right; }
+.ap-bold { font-weight: 600; }
+.ap-id-chip {
+  background: #eff6ff; color: #1d4ed8;
+  border-radius: 4px; padding: 2px 6px;
+  font-weight: 600; font-size: 10px; white-space: nowrap;
+  font-family: monospace;
+}
+.ap-cell-p { display: block; font-weight: 500; font-size: 12px; }
+.ap-cell-m { display: block; color: #64748b; font-size: 11px; margin-top: 1px; }
+.ap-act-chip {
+  display: inline-block; background: #f1f5f9;
+  border: 1px solid #e2e8f0; border-radius: 4px;
+  padding: 1px 5px; font-size: 10px; margin: 1px 2px 1px 0;
+}
+.ap-act-chip--more { background: #e2e8f0; color: #64748b; }
+.ap-badge {
+  display: inline-block; padding: 2px 8px;
+  border-radius: 10px; font-weight: 600; font-size: 10px;
+}
+.ap-badge-pending  { background: #fef3c7; color: #92400e; }
+.ap-badge-approved { background: #d1fae5; color: #065f46; }
+.ap-badge-rejected { background: #fee2e2; color: #991b1b; }
+.ap-badge-revision { background: #fef9c3; color: #92400e; }
+.ap-elig {
+  display: inline-block; padding: 1px 7px;
+  border-radius: 10px; font-size: 10px; font-weight: 600;
+}
+.ap-elig-yes  { background: #d1fae5; color: #065f46; }
+.ap-elig-no   { background: #fee2e2; color: #991b1b; }
+.ap-elig-pend { background: #fef3c7; color: #92400e; }
+.ap-review-btn {
+  background: #0a2540; color: #fff; border: none;
+  padding: 4px 11px; border-radius: 6px; cursor: pointer;
+  font-size: 11px; font-weight: 500; transition: background 0.15s;
+  white-space: nowrap; font-family: inherit;
+}
+.ap-review-btn:hover { background: #1e3a5f; }
+.ap-empty {
+  text-align: center; padding: 36px; color: #64748b; font-size: 13px;
+}
+
+/* ─── Overlay ────────────────────────────────────────────────────────────── */
+.ap-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 200; display: flex; justify-content: flex-end;
+}
+
+/* ─── Drawer ─────────────────────────────────────────────────────────────── */
+.ap-drawer {
+  width: min(680px, 100vw);
+  background: #ffffff;
+  height: 100vh; display: flex; flex-direction: column;
+  border-left: 1px solid #e2e8f0;
+  animation: ap-slide-in 0.2s ease;
+  overflow: hidden;
+  box-shadow: -6px 0 24px rgba(0,0,0,0.12);
+  position: relative; z-index: 201;
+}
+@keyframes ap-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+.ap-drawer-topbar {
+  background: #0a2540; padding: 16px 20px;
+  display: flex; justify-content: space-between;
+  align-items: flex-start; gap: 12px; flex-shrink: 0;
+}
+.ap-drawer-topbar-left  { flex: 1; min-width: 0; }
+.ap-drawer-topbar-right { display: flex; gap: 8px; align-items: flex-start; flex-shrink: 0; }
+.ap-drawer-status-pill {
+  display: inline-block; background: rgba(255,255,255,0.15);
+  color: #fff; font-size: 9px; font-weight: 600; padding: 2px 8px;
+  border-radius: 4px; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 5px;
+}
+.ap-drawer-title { color: #fff; font-size: 15px; font-weight: 600; margin: 0 0 3px; }
+.ap-drawer-sub   { color: rgba(255,255,255,0.55); font-size: 11px; margin: 0; }
+.ap-dtitle-input {
+  font-family: inherit; font-size: 15px; font-weight: 600; color: #fff;
+  background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 6px; padding: 5px 8px; outline: none;
+  width: 100%; box-sizing: border-box; margin-bottom: 3px;
+}
+.ap-dtitle-input::placeholder { color: rgba(255,255,255,0.35); }
+.ap-dtitle-input:focus { border-color: rgba(255,255,255,0.55); }
+.ap-loc-row  { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.ap-loc-sep  { color: rgba(255,255,255,0.4); font-size: 11px; }
+.ap-sm-input {
+  font-family: inherit; font-size: 11px; color: #fff;
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 5px; padding: 3px 6px; outline: none; box-sizing: border-box;
+}
+.ap-sm-input::placeholder { color: rgba(255,255,255,0.3); }
+.ap-edit-trigger-btn {
+  background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.25);
+  color: #fff; padding: 5px 12px; border-radius: 6px;
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  white-space: nowrap; transition: background 0.15s; font-family: inherit;
+}
+.ap-edit-trigger-btn:hover { background: rgba(255,255,255,0.22); }
+.ap-cancel-edit-btn {
+  background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.4);
+  color: #fca5a5; padding: 5px 11px; border-radius: 6px;
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  white-space: nowrap; transition: background 0.15s; font-family: inherit;
+}
+.ap-cancel-edit-btn:hover { background: rgba(239,68,68,0.3); }
+.ap-close-btn {
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 6px; width: 28px; height: 28px; cursor: pointer;
+  color: rgba(255,255,255,0.65); font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; transition: background 0.15s;
+}
+.ap-close-btn:hover { background: rgba(255,255,255,0.18); }
+.ap-edit-banner {
+  background: #eff6ff; border-bottom: 1px solid #bfdbfe;
+  color: #1e40af; font-size: 12px; font-weight: 500;
+  padding: 9px 20px; flex-shrink: 0;
+}
+
+/* ─── Revision banner (RSM) ──────────────────────────────────────────────── */
+.ap-revision-banner {
+  background: #fef9c3; border-bottom: 1px solid #fde68a;
+  color: #92400e; font-size: 12px; font-weight: 500;
+  padding: 9px 20px; display: flex; align-items: center;
+  gap: 10px; flex-shrink: 0; flex-wrap: wrap;
+}
+.ap-goto-edit-btn {
+  background: #92400e; color: #fff; border: none;
+  padding: 4px 11px; border-radius: 5px; font-size: 11px;
+  font-weight: 500; cursor: pointer; white-space: nowrap;
+  transition: background 0.15s; margin-left: auto; font-family: inherit;
+}
+.ap-goto-edit-btn:hover { background: #78350f; }
+
+/* ─── Drawer body ────────────────────────────────────────────────────────── */
+.ap-drawer-body {
+  flex: 1; overflow-y: auto; overflow-x: hidden;
+  padding: 18px 20px; background: #ffffff;
+}
+
+/* ─── Meta grids ─────────────────────────────────────────────────────────── */
+.ap-meta-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 8px; }
+.ap-meta-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+.ap-meta-grid   { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.ap-meta-cell {
+  background: #f8fafc; border: 1px solid #e2e8f0;
+  border-radius: 7px; padding: 9px 11px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.ap-meta-lbl {
+  font-size: 10px; color: #64748b; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.ap-meta-val { font-size: 13px; font-weight: 500; }
+
+/* ─── Edit fields ────────────────────────────────────────────────────────── */
+.ap-field-input, .ap-field-select, .ap-field-textarea {
+  font-family: inherit; font-size: 12px; color: #0a2540;
+  background: #fff; border: 1.5px solid #e2e8f0;
+  border-radius: 6px; padding: 6px 8px; outline: none;
+  width: 100%; box-sizing: border-box; transition: border-color 0.15s;
+}
+.ap-field-input:focus, .ap-field-select:focus, .ap-field-textarea:focus { border-color: #1e3a5f; }
+.ap-field-textarea { resize: vertical; }
+
+/* ─── Remarks ────────────────────────────────────────────────────────────── */
+.ap-remarks {
+  background: #fffbeb; border: 1px solid #fde68a;
+  border-left: 3px solid #f59e0b;
+  border-radius: 7px; padding: 9px 12px; margin-bottom: 12px;
+}
+.ap-remarks-lbl {
+  display: block; font-size: 10px; font-weight: 600;
+  color: #92400e; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 3px;
+}
+.ap-remarks-text { margin: 0; font-size: 12px; color: #78350f; line-height: 1.5; }
+.ap-remarks-edit { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+
+/* ─── Section header ─────────────────────────────────────────────────────── */
+.ap-section-header {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
+}
+.ap-sec-head {
+  font-size: 11px; font-weight: 700; color: #0a2540;
+  text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 8px;
+}
+.ap-add-row-btn {
+  background: #0a2540; color: #fff; border: none;
+  border-radius: 6px; padding: 4px 11px; font-size: 11px;
+  font-weight: 500; cursor: pointer; transition: background 0.15s;
+  white-space: nowrap; font-family: inherit;
+}
+.ap-add-row-btn:hover { background: #1e3a5f; }
+
+/* ─── Activity table ─────────────────────────────────────────────────────── */
+.ap-itbl-wrap {
+  border: 1px solid #e2e8f0; border-radius: 8px;
+  overflow: hidden; overflow-x: auto; margin-bottom: 12px; background: #fff;
+}
+.ap-itbl { width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; }
+.ap-itbl thead tr { background: #f1f5f9; }
+.ap-itbl thead th {
+  padding: 8px 10px; text-align: left; font-weight: 600;
+  font-size: 11px; color: #475569; white-space: nowrap;
+  border-bottom: 1px solid #e2e8f0;
+}
+.ap-itbl thead th.ap-num { text-align: right; }
+.ap-itbl tbody tr { border-top: 1px solid #f1f5f9; }
+.ap-itbl tbody td { padding: 7px 10px; vertical-align: middle; }
+.ap-td     { padding: 7px 10px; vertical-align: middle; }
+.ap-td-num { padding: 7px 10px; text-align: right; vertical-align: middle; }
+.ap-erow-even { background: #fff; }
+.ap-erow-odd  { background: #f8fafc; }
+.ap-cell-select, .ap-cell-date, .ap-cell-num {
+  font-family: inherit; font-size: 11px; color: #0a2540;
+  background: #fff; border: 1.5px solid #e2e8f0;
+  border-radius: 5px; padding: 4px 6px; outline: none;
+  box-sizing: border-box; transition: border-color 0.15s;
+}
+.ap-cell-select:focus, .ap-cell-date:focus, .ap-cell-num:focus { border-color: #1e3a5f; }
+.ap-cell-select { width: 100%; }
+.ap-cell-num    { width: 78px; text-align: right; }
+.ap-cell-date   { width: 114px; }
+.ap-date-pair   { display: flex; gap: 4px; align-items: center; }
+.ap-date-arrow  { color: #94a3b8; font-size: 10px; flex-shrink: 0; }
+.ap-rm-btn, .ap-rm-row-btn {
+  background: #fee2e2; border: none; color: #991b1b;
+  width: 22px; height: 22px; border-radius: 50%; cursor: pointer;
+  font-weight: 500; font-size: 12px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s; margin: auto;
+}
+.ap-rm-btn:hover:not(:disabled), .ap-rm-row-btn:hover:not(:disabled) { background: #fecaca; }
+.ap-rm-btn:disabled, .ap-rm-row-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ─── Summary strip ──────────────────────────────────────────────────────── */
+.ap-summary {
+  display: flex; border: 1px solid #e2e8f0;
+  border-radius: 8px; overflow: hidden; margin-bottom: 14px; background: #fff;
+}
+.ap-sum-cell {
+  flex: 1; padding: 11px 13px; display: flex;
+  flex-direction: column; gap: 2px;
+  border-right: 1px solid #e2e8f0; background: #fff;
+}
+.ap-sum-last { border-right: none; }
+.ap-sum-lbl  { font-size: 10px; color: #64748b; font-weight: 600; }
+.ap-sum-val  { font-size: 15px; font-weight: 600; }
+
+/* ─── Action / Decision box ──────────────────────────────────────────────── */
+.ap-action-box {
+  background: #f8fafc; border: 1px solid #e2e8f0;
+  border-radius: 10px; padding: 14px;
+}
+.ap-note-input {
+  width: 100%; padding: 8px 10px; border-radius: 7px;
+  border: 1.5px solid #e2e8f0; font-size: 13px; font-family: inherit;
+  resize: vertical; margin-bottom: 10px; background: #fff; color: #0a2540;
+  outline: none; box-sizing: border-box; transition: border-color 0.15s;
+}
+.ap-note-input:focus { border-color: #1e3a5f; }
+.ap-btn-row { display: flex; gap: 8px; }
+.ap-approve-btn, .ap-reject-btn {
+  flex: 1; padding: 9px; border: none; border-radius: 7px;
+  font-weight: 600; font-size: 13px; cursor: pointer;
+  transition: background 0.15s, opacity 0.15s; font-family: inherit;
+}
+.ap-approve-btn:disabled, .ap-reject-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.ap-approve-btn { background: #166534; color: #fff; }
+.ap-approve-btn:hover:not(:disabled) { background: #14532d; }
+.ap-reject-btn  { background: #991b1b; color: #fff; }
+.ap-reject-btn:hover:not(:disabled) { background: #7f1d1d; }
+
+/* ─── Decision banners ───────────────────────────────────────────────────── */
+.ap-decision-banner { border-radius: 8px; padding: 12px 14px; }
+.ap-decision-approved { background: #d1fae5; border: 1px solid #86efac; color: #065f46; }
+.ap-decision-rejected { background: #fee2e2; border: 1px solid #fca5a5; color: #991b1b; }
+.ap-decision-revision { background: #fef9c3; border: 1px solid #fde68a; color: #92400e; }
+.ap-decision-head {
+  display: flex; justify-content: space-between;
+  align-items: center; flex-wrap: wrap; gap: 5px; font-weight: 600;
+}
+.ap-decision-date { font-size: 11px; font-weight: 400; opacity: 0.7; }
+.ap-decision-note { margin: 5px 0 0; font-size: 12px; font-weight: 400; }
+
+/* ─── Send back ──────────────────────────────────────────────────────────── */
+.ap-sendback-row {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0;
+}
+.ap-sendback-trigger {
+  background: none; border: 1.5px solid #e2e8f0; color: #64748b;
+  padding: 6px 13px; border-radius: 7px; font-size: 12px;
+  cursor: pointer; transition: all 0.15s; font-family: inherit;
+}
+.ap-sendback-trigger:hover { background: #f1f5f9; color: #0a2540; }
+.ap-sendback-box {
+  margin-top: 10px; padding: 12px; background: #fffbeb;
+  border: 1px solid #fde68a; border-radius: 7px;
+}
+.ap-sendback-label { font-size: 12px; font-weight: 600; color: #92400e; margin: 0 0 7px; }
+.ap-sendback-btn {
+  flex: 1; padding: 9px; border: none; border-radius: 7px;
+  font-weight: 600; font-size: 13px; cursor: pointer;
+  background: #92400e; color: #fff; transition: background 0.15s; font-family: inherit;
+}
+.ap-sendback-btn:hover:not(:disabled) { background: #78350f; }
+.ap-sendback-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ─── Sticky save footer ─────────────────────────────────────────────────── */
+.ap-save-footer {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 20px; background: #fff;
+  border-top: 1px solid #e2e8f0; flex-shrink: 0;
+}
+.ap-save-footer-hint { flex: 1; font-size: 11px; color: #64748b; }
+.ap-save-btn {
+  background: #166534; border: none; color: #fff;
+  padding: 8px 16px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  cursor: pointer; white-space: nowrap; transition: background 0.15s; font-family: inherit;
+}
+.ap-save-btn:hover:not(:disabled) { background: #14532d; }
+.ap-save-btn:disabled { background: #86efac; color: #166534; cursor: not-allowed; }
+.ap-discard-btn {
+  background: #f1f5f9; border: 1.5px solid #e2e8f0; color: #0a2540;
+  padding: 7px 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
+  cursor: pointer; white-space: nowrap; transition: background 0.15s; font-family: inherit;
+}
+.ap-discard-btn:hover { background: #e2e8f0; }
+
+/* ─── Status pill variants ───────────────────────────────────────────────── */
+.ap-pill-pending       { background: rgba(255,255,255,0.15); }
+.ap-pill-approved      { background: rgba(134,239,172,0.2); color: #bbf7d0; }
+.ap-pill-rejected      { background: rgba(252,165,165,0.2); color: #fca5a5; }
+.ap-pill-needsrevision { background: rgba(253,224,71,0.2); color: #fde047; }
+
+/* ─── Toast ──────────────────────────────────────────────────────────────── */
+.ap-toast {
+  position: fixed; bottom: 20px; right: 20px; z-index: 300;
+  padding: 9px 16px; border-radius: 8px; font-weight: 600;
+  font-size: 13px; color: #fff; animation: ap-toast-in 0.2s ease;
+}
+@keyframes ap-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.ap-toast-ok  { background: #166534; }
+.ap-toast-err { background: #991b1b; }
+
+/* ─── Post-approval Actuals Panel ───────────────────────────────────────── */
+.ap-actuals-box {
+  background: #f0fdf4; border: 1px solid #bbf7d0;
+  border-radius: 10px; padding: 16px; margin: 14px 0;
+}
+.ap-actuals-badge {
+  display: inline-block; background: #166534; color: #fff;
+  font-size: 10px; font-weight: 700; padding: 2px 10px;
+  border-radius: 10px; letter-spacing: 0.4px;
+}
+.ap-actuals-hint { font-size: 11px; color: #64748b; margin-bottom: 12px; font-style: italic; }
+.ap-actuals-list { display: flex; flex-direction: column; gap: 10px; }
+.ap-actual-row  {
+  background: #fff; border: 1px solid #e2e8f0;
+  border-radius: 8px; padding: 12px 14px;
+}
+.ap-actual-label { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; flex-wrap: wrap; }
+.ap-actual-num  {
+  width: 22px; height: 22px; background: #0a2540; color: #fff;
+  border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; flex-shrink: 0;
+}
+.ap-actual-type    { font-size: 13px; font-weight: 700; color: #0a2540; }
+.ap-actual-planned { font-size: 11px; color: #94a3b8; margin-left: auto; }
+.ap-actual-fields  { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; align-items: end; }
+.ap-actual-field   { display: flex; flex-direction: column; gap: 4px; }
+.ap-actual-flbl    { font-size: 10px; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: 0.4px; }
+.ap-actual-input   {
+  border: 1.5px solid #e2e8f0; border-radius: 6px; padding: 6px 9px;
+  font-size: 12px; color: #0a2540; outline: none; background: #fff;
+  transition: border-color 0.15s; font-family: inherit; height: 34px;
+}
+.ap-actual-input:focus { border-color: #3b82f6; }
+.ap-actual-saved     { margin-top: 7px; font-size: 11px; color: #64748b; display: flex; gap: 5px; }
+.ap-actual-saved-lbl { font-weight: 600; }
+
+/* Media upload */
+.ap-media-upload-btn {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: #fff; border: 1.5px dashed #94a3b8; border-radius: 6px;
+  padding: 7px 10px; font-size: 12px; color: #475569; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s; min-height: 34px;
+  font-family: inherit;
+}
+.ap-media-upload-btn:hover { border-color: #3b82f6; background: #eff6ff; color: #1d4ed8; }
+.ap-media-upload-btn--loading { cursor: not-allowed; opacity: 0.7; }
+.ap-media-uploaded {
+  display: flex; align-items: center; gap: 7px;
+  background: #f0fdf4; border: 1px solid #bbf7d0;
+  border-radius: 6px; padding: 6px 9px; flex-wrap: wrap; min-height: 34px;
+}
+.ap-media-icon  { font-size: 15px; flex-shrink: 0; }
+.ap-media-name  {
+  font-size: 11px; color: #166534; font-weight: 600; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px;
+}
+.ap-media-view  { font-size: 11px; color: #1d4ed8; text-decoration: none; font-weight: 600; flex-shrink: 0; }
+.ap-media-view:hover { text-decoration: underline; }
+.ap-media-replace { font-size: 11px; color: #64748b; cursor: pointer; text-decoration: underline; flex-shrink: 0; }
+.ap-media-uploading { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #64748b; }
+.ap-spin-sm {
+  width: 12px; height: 12px; border: 2px solid #e2e8f0; border-top-color: #1e3a5f;
+  border-radius: 50%; animation: ap-spin 0.75s linear infinite; display: inline-block; flex-shrink: 0;
+}
+.ap-actuals-footer { display: flex; justify-content: flex-end; margin-top: 14px; padding-top: 12px; border-top: 1px solid #bbf7d0; }
+.ap-save-actuals-btn {
+  background: #166534; color: #fff; border: none; border-radius: 7px;
+  padding: 9px 22px; font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: background 0.15s; font-family: inherit;
+}
+.ap-save-actuals-btn:hover:not(:disabled) { background: #14532d; }
+.ap-save-actuals-btn:disabled { background: #94a3b8; cursor: not-allowed; }
+
+/* ─── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .ap-main           { padding: 12px 12px 48px; }
+  .ap-stats          { grid-template-columns: repeat(2, 1fr); }
+  .ap-stats .ap-stat:last-child { grid-column: 1 / -1; }
+  .ap-stats--admin, .ap-stats--user { grid-template-columns: repeat(2, 1fr); }
+  .ap-meta-grid-4    { grid-template-columns: 1fr 1fr; }
+  .ap-meta-grid-3    { grid-template-columns: 1fr 1fr; }
+  .ap-meta-grid      { grid-template-columns: 1fr; }
+  .ap-summary        { flex-direction: column; }
+  .ap-sum-cell       { border-right: none; border-bottom: 1px solid #e2e8f0; }
+  .ap-sum-last       { border-bottom: none; }
+  .ap-btn-row        { flex-direction: column; }
+  .ap-drawer         { width: 100vw; }
+  .ap-actual-fields  { grid-template-columns: 1fr 1fr; }
+  .ap-actual-field--media { grid-column: 1 / -1; }
+  .ap-page-header    { flex-direction: column; gap: 10px; }
+  .ap-save-footer    { flex-wrap: wrap; }
+}
+
+/* ════════════════════════════════════════════════════════
+   PATCH: ApproverDashboard.css additions (Phase 1 fixes)
+   ADD these rules to your existing ApproverDashboard.css
+════════════════════════════════════════════════════════ */
+
+/* Point #8: NeedsRevision row highlight in proposal list */
+.ap-row--revision {
+  border-left: 4px solid #f59e0b !important;
+  background: #fffbeb !important;
+}
+.ap-row--revision:hover {
+  background: #fef9c3 !important;
+}
+
+/* Point #8: NeedsRevision badge */
+.ap-badge-revision {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* Point #6: Checker Reject button */
+.ap-reject-btn {
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: background 0.15s;
+}
+.ap-reject-btn:hover { background: #b91c1c; }
+
+/* Point #5: Checker remarks textarea highlight */
+.ap-checker-remarks-block {
+  margin-bottom: 16px;
+  background: #fffbeb;
+  border: 1.5px solid #fde68a;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.ap-checker-remarks-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #92400e;
+  display: block;
+  margin-bottom: 6px;
+}
+.ap-checker-remarks-textarea {
+  width: 100%;
+  font-size: 13px;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+  background: #fff;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+.ap-checker-remarks-textarea:focus {
+  outline: none;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+}
+
+/* ── StatCard click interactions ─────────────────────────────────────────── */
+.ap-stat-card { cursor: pointer; user-select: none; }
+.ap-stat-card:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  transform: translateY(-2px);
+}
+.ap-stat-card:active {
+  transform: translateY(0) scale(0.98);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+.ap-stat-card:focus-visible {
+  outline: 2px solid #16a34a;
+  outline-offset: 2px;
+}
+
+/* ── Forwarded row highlight (Final Approver view) ─────────────────────────── */
+.ap-row--forwarded {
+  background: #f0fdf4 !important;
+  border-left: 4px solid #16a34a !important;
+}
+.ap-row--forwarded:hover {
+  background: #dcfce7 !important;
+}
+.ap-row--forwarded.ap-row--selected {
+  background: #bbf7d0 !important;
+  border-left: 4px solid #15803d !important;
+}
+
+/* ═══ [BTL-2026-10-27] Action column: icon buttons + hover tooltip ═══ */
+.ap-action-cell  { white-space: nowrap; width: 1%; }
+.ap-action-group { display: inline-flex; align-items: center; gap: 6px; }
+.ap-icon-btn {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0 !important; margin: 0 !important;
+  border-radius: 8px; border: 1px solid transparent; cursor: pointer; flex-shrink: 0;
+  font-family: inherit; transition: background .15s, color .15s, box-shadow .15s, transform .1s;
+}
+.ap-icon-btn svg { width: 16px; height: 16px; display: block; }
+.ap-review-btn.ap-icon-btn { background: #0a2540; color: #fff; }
+.ap-review-btn.ap-icon-btn:hover { background: #1e3a5f; box-shadow: 0 2px 8px rgba(10,37,64,.30); }
+.ap-icon-btn--danger { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
+.ap-icon-btn--danger:hover:not(:disabled) { background: #dc2626; color: #fff; border-color: #dc2626; box-shadow: 0 2px 8px rgba(220,38,38,.30); }
+.ap-icon-btn:active:not(:disabled) { transform: scale(.94); }
+.ap-icon-btn:disabled { opacity: .55; cursor: wait; }
+.ap-icon-btn:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+
+/* tooltip — hidden until hover / keyboard focus; left-aligned so it is never cut off */
+.ap-tip {
+  position: absolute; left: 0; bottom: calc(100% + 8px); transform: translateY(4px);
+  background: #0a2540; color: #fff; font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 6px 9px; border-radius: 6px; white-space: nowrap; pointer-events: none;
+  opacity: 0; visibility: hidden; z-index: 30; box-shadow: 0 4px 12px rgba(0,0,0,.18);
+  transition: opacity .12s ease, transform .12s ease, visibility .12s;
+}
+.ap-tip::after {
+  content: ""; position: absolute; top: 100%; left: 10px;
+  border: 5px solid transparent; border-top-color: #0a2540;
+}
+.ap-icon-btn:hover .ap-tip, .ap-icon-btn:focus-visible .ap-tip { opacity: 1; visibility: visible; transform: translateY(0); }
+.ap-icon-btn--danger .ap-tip { background: #991b1b; }
+.ap-icon-btn--danger .ap-tip::after { border-top-color: #991b1b; }
+/* first row: show the tooltip BELOW so the dark table header never hides it */
+.ap-table tbody tr:first-child .ap-tip { bottom: auto; top: calc(100% + 8px); transform: translateY(-4px); }
+.ap-table tbody tr:first-child .ap-icon-btn:hover .ap-tip { transform: translateY(0); }
+.ap-table tbody tr:first-child .ap-tip::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: #0a2540; }
+.ap-table tbody tr:first-child .ap-icon-btn--danger .ap-tip::after { border-bottom-color: #991b1b; }
+@media (hover: none) { .ap-tip { display: none; } }   /* touch screens: aria-label is enough */
+
+/* ═══ [BTL-2026-10-27] fixes for rules that were defined twice in this file ═══ */
+/* .ap-reject-btn was redefined (padding 10px 22px, margin-top 8px) and broke the Approve / Reject row */
+.ap-btn-row .ap-reject-btn { flex: 1; padding: 9px; margin-top: 0; font-size: 13px; border-radius: 7px; background: #991b1b; }
+.ap-btn-row .ap-reject-btn:hover:not(:disabled) { background: #7f1d1d; }
+/* .ap-badge-revision was redefined bigger — keep the compact size inside the proposal table */
+.ap-table .ap-badge-revision { padding: 2px 8px; border-radius: 10px; font-size: 10px; }

@@ -1,8 +1,8 @@
 // src/utils/dailyReportPdf.ts
 // Daily BTL report as PDF — page-for-page the same as the PPT (13.33" × 7.5" landscape),
 // including the dealer daily sheets and GPS photos. Tables from dailyReportCore.ts.
-import { jsPDF } from "jspdf";
-import autoTable, { type CellDef, type RowInput } from "jspdf-autotable";
+import { jsPDF, autoTable } from "./pdfTable";          // safe in the production build (see pdfTable.ts)
+import type { CellDef, RowInput } from "jspdf-autotable/es";
 import {
   buildDailyReportModel, loadAssets, fit, photoCaption, browserSave, defaultLoadImage,
   NAVY, GREEN, GRID, type DailyReportOptions, type RTable, type RCell, type LoadedImage,

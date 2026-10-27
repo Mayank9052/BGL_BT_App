@@ -6,6 +6,9 @@
 //     on Create / Update / Bulk import — and refreshed automatically every 12 h (and on demand
 //     via POST refresh-dealer-types). The UI field is read-only for such rows.
 //   • Inactive RSM / TSM / Commando cannot be saved on a mapping (Create / Update).
+//   • Dealer Type OVERRIDE: if RRERP's Old/New is found wrong on cross-check, Admin can override
+//     it with a reason. Overridden rows are never changed by the RRERP refresh, and the CAC
+//     limit follows the overridden type. Clearing the override returns the row to RRERP.
 using System.Security.Claims;
 using System.Text.RegularExpressions;
 using BGL_BT_App.Backend.Data;
@@ -22,13 +25,15 @@ public record DealerTeamMappingDto(
     string Rsm, string? RsmEmail, string? Tsm, string? TsmEmail,
     string? Commando, string? CommandoEmail, string? DealerEmail,
     bool IsEligible, string? DealerType, DateTime UpdatedAt, string? UpdatedByEmail,
-    bool IsActive, DateTime? DealerTypeUpdatedAt);
+    bool IsActive, DateTime? DealerTypeUpdatedAt,
+    bool DealerTypeOverride, string? DealerTypeOverrideReason, string? DealerTypeOverrideBy, DateTime? DealerTypeOverrideAt);
 
 public record UpsertDealerTeamMappingDto(
     string DealerName, string? DealerCode, string? City, string? State,
     string Rsm, string? RsmEmail, string? Tsm, string? TsmEmail,
     string? Commando, string? CommandoEmail, string? DealerEmail,
-    bool IsEligible, string? DealerType);
+    bool IsEligible, string? DealerType,
+    bool DealerTypeOverride = false, string? DealerTypeOverrideReason = null);
 
 // Read-only shape for non-admin screens (RSM Form, dashboards).
 public record DealerTeamLookupDto(
@@ -405,13 +410,16 @@ public class DealerTeamMappingController : ControllerBase
         CommandoEmail: N(d.CommandoEmail) ?? e?.CommandoEmail,
         DealerEmail:   N(d.DealerEmail)   ?? e?.DealerEmail,
         IsEligible:    d.IsEligible       ?? e?.IsEligible ?? true,
-        DealerType:    N(d.DealerType)    ?? e?.DealerType);
+        DealerType:    N(d.DealerType)    ?? e?.DealerType,
+        DealerTypeOverride:       e?.DealerTypeOverride ?? false,          // Excel never changes an override
+        DealerTypeOverrideReason: e?.DealerTypeOverrideReason);
 
     // ── RRERP Old / New ────────────────────────────────────────────────────
     private async Task<UpsertDealerTeamMappingDto> WithRrerpTypeAsync(UpsertDealerTeamMappingDto dto)
     {
         var code = N(dto.DealerCode);
         if (code is null) return dto;                         // manual dealer → keep the chosen type
+        if (dto.DealerTypeOverride) return dto;               // Admin override after cross-check → keep it
         try
         {
             var t = await _dealerType.ClassifyOneAsync(code);
@@ -426,7 +434,9 @@ public class DealerTeamMappingController : ControllerBase
 
     private async Task<(int Checked, int Changed)> RefreshTypesAsync()
     {
-        var rows = await _db.Set<DealerTeamMapping>().Where(d => d.DealerCode != null && d.DealerCode != "").ToListAsync();
+        var rows = await _db.Set<DealerTeamMapping>()
+            .Where(d => d.DealerCode != null && d.DealerCode != "" && !d.DealerTypeOverride)   // overrides are kept
+            .ToListAsync();
         if (rows.Count == 0) return (0, 0);
         var types = await _dealerType.ClassifyAsync(rows.Select(r => r.DealerCode!));
         var changed = 0;
@@ -524,6 +534,10 @@ public class DealerTeamMappingController : ControllerBase
             var bad = FirstBadEmail(value);
             if (bad is not null) return $"{label} '{bad}' is not a valid email.";
         }
+        if (dto.DealerTypeOverride && NormalizeType(dto.DealerType) is null)
+            return "Choose Old or New when overriding the Dealer Type.";
+        if (dto.DealerTypeOverride && (N(dto.DealerTypeOverrideReason)?.Length ?? 0) < 5)
+            return "Give a reason (min 5 characters) for overriding the RRERP Dealer Type.";
         if (N(dto.TsmEmail) is not null && N(dto.Tsm) is null) return "TSM email given but TSM name is blank.";
         if (N(dto.CommandoEmail) is not null && N(dto.Commando) is null) return "Commando email given but Commando name is blank.";
         return null;
@@ -544,6 +558,21 @@ public class DealerTeamMappingController : ControllerBase
         row.DealerEmail    = NE(dto.DealerEmail);
         row.IsEligible     = dto.IsEligible;
         row.DealerType     = NormalizeType(dto.DealerType);
+        if (dto.DealerTypeOverride)
+        {
+            var reason = N(dto.DealerTypeOverrideReason);
+            if (!row.DealerTypeOverride || row.DealerTypeOverrideReason != reason)
+            { row.DealerTypeOverrideBy = by; row.DealerTypeOverrideAt = DateTime.UtcNow; }
+            row.DealerTypeOverride       = true;
+            row.DealerTypeOverrideReason = reason;
+        }
+        else
+        {
+            row.DealerTypeOverride       = false;
+            row.DealerTypeOverrideReason = null;
+            row.DealerTypeOverrideBy     = null;
+            row.DealerTypeOverrideAt     = null;
+        }
         row.UpdatedAt      = DateTime.UtcNow;
         row.UpdatedByEmail = by;
     }
@@ -557,13 +586,16 @@ public class DealerTeamMappingController : ControllerBase
         N(r.Commando) == N(d.Commando) && NE(r.CommandoEmail) == NE(d.CommandoEmail) &&
         NE(r.DealerEmail) == NE(d.DealerEmail) &&
         r.IsEligible == d.IsEligible &&
-        NormalizeType(r.DealerType) == NormalizeType(d.DealerType);
+        NormalizeType(r.DealerType) == NormalizeType(d.DealerType) &&
+        r.DealerTypeOverride == d.DealerTypeOverride &&
+        N(r.DealerTypeOverrideReason) == N(d.DealerTypeOverrideReason);
 
     private static DealerTeamMappingDto ToDto(DealerTeamMapping d) => new(
         d.Id, d.DealerName, d.DealerCode, d.City, d.State,
         d.Rsm, d.RsmEmail, d.Tsm, d.TsmEmail, d.Commando, d.CommandoEmail, d.DealerEmail,
         d.IsEligible, d.DealerType, d.UpdatedAt, d.UpdatedByEmail,
-        d.IsActive, d.DealerTypeUpdatedAt);
+        d.IsActive, d.DealerTypeUpdatedAt,
+        d.DealerTypeOverride, d.DealerTypeOverrideReason, d.DealerTypeOverrideBy, d.DealerTypeOverrideAt);
 
     private static DealerTeamLookupDto ToLookupDto(DealerTeamMapping d) => new(
         d.DealerName, d.DealerCode, d.City, d.State,
