@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using BGL_BT_App.Backend.Data;
 using BGL_BT_App.Backend.DTOs;
 using BGL_BT_App.Backend.Models;
@@ -19,7 +19,9 @@ public class ProposalsController : ControllerBase
     private readonly IEmailService _emailService;
     private readonly ILogger<ProposalsController> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly DailyDigestService _digestService; // ← NEW: immediate-send
+    private readonly DailyDigestService _digestService; // ← immediate-send
+    private readonly IConfiguration _config;             // ← NEW (1G): Email:SuppressIndividualForwardMails
+    private readonly DealerTypeService _dealerType;      // ← 26.10: RRERP Old/New rule (shared)
 
     private string GraphToken() =>
         Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
@@ -30,14 +32,18 @@ public class ProposalsController : ControllerBase
         IEmailService emailService,
         ILogger<ProposalsController> logger,
         IServiceScopeFactory scopeFactory,
-        DailyDigestService digestService) // ← NEW
+        DailyDigestService digestService,
+        IConfiguration config,              // ← NEW (1G)
+        DealerTypeService dealerType)       // ← 26.10
     {
         _db             = db;
         _bapl           = bapl;
         _emailService   = emailService;
         _logger         = logger;
         _scopeFactory   = scopeFactory;
-        _digestService  = digestService; // ← NEW
+        _digestService  = digestService;
+        _config         = config;
+        _dealerType     = dealerType;
     }
 
     // ── POST /api/proposals ───────────────────────────────────────────────────
@@ -452,6 +458,62 @@ public class ProposalsController : ControllerBase
         return Ok(ToResponse(updated));
     }
 
+    // ── DELETE /api/proposals/{id} ────────────────────────────────────────────
+    // [BTL-2026-10-26] Admin role only (Users.Role = "Admin"; Manager is NOT allowed).
+    // Hard delete in one transaction: AI reviews + flags, approval decisions,
+    // activity media, activities, proposal. Logged with who/what for audit.
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id)
+    {
+        var email  = CurrentUserEmail();
+        var caller = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Email == email);
+        if (caller is null || !string.Equals(caller.Role, "Admin", StringComparison.OrdinalIgnoreCase))
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = "Only Admin can delete proposals." });
+
+        var proposal = await _db.Proposals
+            .Include(p => p.Activities)
+                .ThenInclude(a => a.MediaFiles)
+            .FirstOrDefaultAsync(p => p.Id == id);
+        if (proposal is null) return NotFound(new { message = "Proposal not found." });
+
+        var token = proposal.TokenNumber ?? proposal.Id.ToString();
+        try
+        {
+            // EnableRetryOnFailure is on → user transactions must run inside the execution strategy.
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync();
+
+                var reviews = await _db.ProposalAiReviews
+                    .Include(r => r.Flags)
+                    .Where(r => r.ProposalId == id)
+                    .ToListAsync();
+                _db.RemoveRange(reviews.SelectMany(r => r.Flags).Cast<object>());
+                _db.RemoveRange(reviews);
+
+                var decisions = await _db.ApprovalDecisions.Where(d => d.ProposalId == id).ToListAsync();
+                _db.ApprovalDecisions.RemoveRange(decisions);
+
+                _db.ActivityMediaFiles.RemoveRange(proposal.Activities.SelectMany(a => a.MediaFiles));
+                _db.ProposalActivities.RemoveRange(proposal.Activities);
+                _db.Proposals.Remove(proposal);
+
+                await _db.SaveChangesAsync();
+                await tx.CommitAsync();
+            });
+        }
+        catch (DbUpdateException ex)
+        {
+            _logger.LogWarning(ex, "Delete blocked for proposal {Token} by {User}", token, email);
+            return Conflict(new { message = "Proposal could not be deleted — other records still refer to it (e.g. Credit Note data). Nothing was deleted." });
+        }
+
+        _logger.LogWarning("Proposal {Token} ({Dealer}, {Month} {Year}, status {Status}) DELETED by {User}",
+            token, proposal.DealerName, proposal.Month, proposal.Year, proposal.Status, email);
+        return Ok(new { deleted = true, token });
+    }
+
     // ── POST /api/proposals/{id}/dealer-sendback ──────────────────────────────
     [HttpPost("{id:guid}/dealer-sendback")]
     [Authorize(AuthenticationSchemes = "DealerJwt")]
@@ -804,7 +866,7 @@ public class ProposalsController : ControllerBase
         // ── BUDGET ADDITION re-approval: if dealer sent a budget request,
         // send the dedicated budget addition email (amber) instead of the
         // regular checker-forward email (navy), so Vijay knows it's a
-        // budget re-approval, not a fresh proposal.
+        // budget re-approval, not a fresh proposal. (Unchanged — still sent individually.)
         if (proposal.DealerSentBack && _emailService is GraphEmailService graphSvc)
         {
             try
@@ -827,35 +889,84 @@ public class ProposalsController : ControllerBase
         }
         else
         {
-            // Regular forward — try the delegated (X-Graph-Token) path first,
-            // since it sends from the Checker's own browser session exactly
-            // as before. Fall back to the app-only immediate-send path (still
-            // using the Checker's own email as sender) if no delegated token
-            // was attached to this request.
-            var graphToken = GraphToken();
-            bool sent; string? error;
+            // ── 1G (Shivam, 26.10.2026): individual "Forward to Final Approver" mails
+            // are switched OFF. The Checker reviews all proposals, then sends ONE
+            // summary via POST /api/proposals/forward-summary.
+            // Set "Email:SuppressIndividualForwardMails": false in appsettings.json
+            // to restore the old one-mail-per-proposal behaviour.
+            var suppressIndividual = _config.GetValue("Email:SuppressIndividualForwardMails", true);
 
-            if (!string.IsNullOrWhiteSpace(graphToken))
+            if (suppressIndividual)
             {
-                (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, graphToken);
-                if (!sent)
-                    _logger.LogWarning("Delegated checker-forward mail failed for {Id}: {Error} — trying immediate app-only send.", proposal.Id, error);
+                _logger.LogInformation(
+                    "Proposal {Token} forwarded by {Checker} — individual mail suppressed; will be included in the forward summary.",
+                    proposal.TokenNumber, proposal.CheckedByEmail);
             }
             else
             {
-                sent = false;
-            }
+                // Regular forward — try the delegated (X-Graph-Token) path first,
+                // since it sends from the Checker's own browser session exactly
+                // as before. Fall back to the app-only immediate-send path (still
+                // using the Checker's own email as sender) if no delegated token
+                // was attached to this request.
+                var graphToken = GraphToken();
+                bool sent; string? error;
 
-            if (!sent)
-            {
-                var (immSent, immError) = await _digestService.SendForwardDigestNowAsync(
-                    new List<Guid> { proposal.Id }, CurrentUserEmail());
-                if (!immSent)
-                    _logger.LogWarning("Immediate app-only forward mail also failed for {Id}: {Error}", proposal.Id, immError);
+                if (!string.IsNullOrWhiteSpace(graphToken))
+                {
+                    (sent, error) = await _emailService.SendCheckerForwardMailAsync(proposal, graphToken);
+                    if (!sent)
+                        _logger.LogWarning("Delegated checker-forward mail failed for {Id}: {Error} — trying immediate app-only send.", proposal.Id, error);
+                }
+                else
+                {
+                    sent = false;
+                }
+
+                if (!sent)
+                {
+                    var (immSent, immError) = await _digestService.SendForwardDigestNowAsync(
+                        new List<Guid> { proposal.Id }, CurrentUserEmail());
+                    if (!immSent)
+                        _logger.LogWarning("Immediate app-only forward mail also failed for {Id}: {Error}", proposal.Id, immError);
+                }
             }
         }
 
         return Ok(ToResponse(proposal));
+    }
+
+    // ── POST /api/proposals/forward-summary ──────────────────────────────────
+    // 1G: Checker clicks "Send summary to Final Approver" once all proposals are
+    // reviewed and confirmed. Sends ONE mail covering every proposal that has been
+    // forwarded and is still Pending with the Final Approver, ordered State → Dealer.
+    // Optional ?since=yyyy-MM-dd → only proposals forwarded on/after that date (IST).
+    [HttpPost("forward-summary")]
+    public async Task<IActionResult> SendForwardSummary([FromQuery] string? since)
+    {
+        var q = _db.Proposals.AsNoTracking()
+            .Where(p => p.Status == "Pending" && p.CheckedByEmail != null);
+
+        if (DateOnly.TryParse(since, out var sinceDate))
+        {
+            var sinceIst = new DateTimeOffset(sinceDate.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(5.5));
+            q = q.Where(p => p.CheckedAt >= sinceIst);
+        }
+
+        var ids = await q
+            .OrderBy(p => p.State).ThenBy(p => p.DealerName)
+            .Select(p => p.Id)
+            .ToListAsync();
+
+        if (ids.Count == 0)
+            return BadRequest(new { message = "No forwarded proposals are pending with the Final Approver." });
+
+        var (sent, error) = await _digestService.SendForwardDigestNowAsync(ids, CurrentUserEmail());
+        if (!sent)
+            return BadRequest(new { message = $"Summary mail not sent — {error ?? "unknown error"}." });
+
+        _logger.LogInformation("Forward summary sent by {Checker}: {Count} proposals.", CurrentUserEmail(), ids.Count);
+        return Ok(new { sent = true, proposals = ids.Count });
     }
 
         // ── GET /api/proposals/my-team-proposals ──────────────────────────────────
@@ -988,7 +1099,7 @@ public class ProposalsController : ControllerBase
     private static DateOnly? ParseDate(string? value) =>
         DateOnly.TryParse(value, out var date) ? date : null;
 
-        private static readonly string[] MonthNames = {
+    private static readonly string[] MonthNames = {
         "January","February","March","April","May","June",
         "July","August","September","October","November","December"
     };
@@ -1032,45 +1143,57 @@ public class ProposalsController : ControllerBase
         return (true, null);
     }
 
+    // Allowed CAC per vehicle: New ₹6,000 / Old ₹4,000.
+    // Old / New = RRERP rule in DealerTypeService (onboarding OR first sale within the last
+    // N months, default 3). Dealer Mapping type is used only when the dealer has no code.
     private async Task<(int AllowedCac, string? Warning)>
     GetCacLimitAsync(string dealerName, decimal actualCac)
     {
         try
         {
-            var cutoff = DateTime.UtcNow.AddMonths(-4).Date;
-
-            var dealer = await _bapl.DealerMasters
+            var mapping = await DealerNameMatcher.FindMappingAsync(_db, dealerName);
+            var dealer  = await _bapl.DealerMasters
                 .AsNoTracking()
                 .FirstOrDefaultAsync(d => d.CustomerName == dealerName && d.Active == "Y");
+            var code = dealer?.CustomerCode ?? mapping?.DealerCode;
 
-            if (dealer == null) return (4000, null);
+            bool   isNew;
+            string source;
+            var    t = mapping?.DealerTypeOverride == true ? null : await _dealerType.ClassifyOneAsync(code);
+            if (mapping?.DealerTypeOverride == true)           // Admin override after cross-check wins
+            { isNew = string.Equals(mapping.DealerType, "New", StringComparison.OrdinalIgnoreCase); source = "Dealer Mapping override"; }
+            else if (t is not null) { isNew = t.IsNew; source = "RRERP"; }
+            else if (string.Equals(mapping?.DealerType, "New", StringComparison.OrdinalIgnoreCase)) { isNew = true; source = "Dealer Mapping"; }
+            else if (mapping is not null || dealer is not null) { isNew = false; source = mapping?.DealerType is null ? "default" : "Dealer Mapping"; }
+            else return (4000, null);
 
-            bool isNew = dealer.OnboardedDate.HasValue &&
-                        dealer.OnboardedDate.Value.Date >= cutoff;
+            var months = _dealerType.WindowMonths;
+            double avg = 0;
+            if (!string.IsNullOrWhiteSpace(code))
+            {
+                var rows = await _bapl.Database
+                    .SqlQueryRaw<MonthlyCount>(@"
+                        SELECT
+                            YEAR(TRY_CONVERT(DATE, salebill_date, 105))  AS [Year],
+                            MONTH(TRY_CONVERT(DATE, salebill_date, 105)) AS [Month],
+                            COUNT(*) AS RetailCount
+                        FROM DMS_SaleBill
+                        WHERE dealer_code = {0}
+                        AND IsDelete    = 0
+                        AND TRY_CONVERT(DATE, salebill_date, 105) IS NOT NULL
+                        AND TRY_CONVERT(DATE, salebill_date, 105) >= {1}
+                        GROUP BY
+                            YEAR(TRY_CONVERT(DATE, salebill_date, 105)),
+                            MONTH(TRY_CONVERT(DATE, salebill_date, 105))",
+                        code, _dealerType.Cutoff)
+                    .ToListAsync();
+                avg = (double)rows.Sum(r => r.RetailCount) / months;
+            }
 
-            var rows = await _bapl.Database
-                .SqlQueryRaw<MonthlyCount>(@"
-                    SELECT
-                        YEAR(TRY_CONVERT(DATE, salebill_date, 105))  AS [Year],
-                        MONTH(TRY_CONVERT(DATE, salebill_date, 105)) AS [Month],
-                        COUNT(*) AS RetailCount
-                    FROM DMS_SaleBill
-                    WHERE dealer_code = {0}
-                    AND IsDelete    = 0
-                    AND TRY_CONVERT(DATE, salebill_date, 105) IS NOT NULL
-                    AND TRY_CONVERT(DATE, salebill_date, 105) >= {1}
-                    GROUP BY
-                        YEAR(TRY_CONVERT(DATE, salebill_date, 105)),
-                        MONTH(TRY_CONVERT(DATE, salebill_date, 105))",
-                    dealer.CustomerCode, cutoff)
-                .ToListAsync();
-
-            double avg        = (double)rows.Sum(r => r.RetailCount) / 4.0;
-            int    allowedCac = isNew ? 6000 : 4000;
-
+            int allowedCac = isNew ? 6000 : 4000;
             string? warning = actualCac > allowedCac
                 ? $"CAC/CPL ₹{actualCac:N0} exceeds allowed ₹{allowedCac}/vehicle " +
-                  $"({(isNew ? "New" : "Old")} dealer, avg {avg:N1} retails/month). " +
+                  $"({(isNew ? "New" : "Old")} dealer per {source}, avg {avg:N1} retails/month over {months} months). " +
                   "Deviation approval required."
                 : null;
 
@@ -1096,7 +1219,7 @@ public class ProposalsController : ControllerBase
         p.CheckedByEmail, p.CheckedAt, p.DealerNotified, p.DealerEmail,
         p.DealerSendBackNote, p.DealerSentBack, p.DealerSentBackAt,
         p.CheckerRemarks,
-        p.TeamNotified, p.TeamNotifiedAt,   // ← NEW
+        p.TeamNotified, p.TeamNotifiedAt,
         p.Activities.Select(a => new ActivityResponseDto(
             a.Id, a.ActivityType, a.Category,
             a.Subcategory, a.Qty, a.SalesPercent,

@@ -8,6 +8,13 @@ import DownloadReportButton from "../components/DownloadReportButton";
 import type { ExportColumn } from "../utils/exportReport";
 import { fetchLeadReport, type LeadReportApiRow } from "../services/leadReportService";
 import "./AnalyticsDashboard.css";
+import { API_BASE_URL } from "../authConfig";   // [BTL-2026-10-27b] same media base as Approver / Staff dashboards
+import { fetchDealerStatus, buildInactiveMatcher } from "../services/dealerStatusService";   // [BTL-2026-10-26c]
+// [BTL-2026-10-26] multi-select filters + custom date range + Daily PPT
+import MultiSelectDropdown from "../components/MultiSelectDropdown";
+import { buildDailyReportPpt } from "../utils/dailyReportPpt";
+import { buildDailyReportPdf } from "../utils/dailyReportPdf";       // [BTL-2026-10-26b]
+import { buildDailyReportExcel } from "../utils/dailyReportExcel";   // [BTL-2026-10-26b]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const inr = (v: number) => "₹" + Math.round(v).toLocaleString("en-IN");
@@ -197,16 +204,113 @@ interface ProofMedia {
   id: string; fileUrl: string; fileName: string; fileType: string | null;
   capturedAt: string; latitude?: number | null; longitude?: number | null;
 }
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+// [BTL-2026-10-27b] media URLs — same API base as the other dashboards; handles "\\", missing "/", spaces
+const API_BASE = String(API_BASE_URL || import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const cleanMediaPath = (url: string) => {
+  let p = url.trim().replace(/\\/g, "/").replace(/^~\//, "/");
+  if (!p.startsWith("/")) p = `/${p}`;
+  return /%[0-9a-f]{2}/i.test(p) ? p : encodeURI(p);
+};
 const resolveMediaUrl = (url: string | null | undefined): string => {
   if (!url) return "";
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `${API_BASE}${url.startsWith("/") ? url : `/${url}`}`;
+  if (/^(https?:|data:|blob:)/i.test(url)) return url;
+  return `${API_BASE}${cleanMediaPath(url)}`;
+};
+// Tried in order when a thumbnail fails to load
+const mediaUrlCandidates = (url: string | null | undefined): string[] => {
+  if (!url) return [];
+  if (/^(https?:|data:|blob:)/i.test(url)) return [url];
+  const p = cleanMediaPath(url);
+  const list = [`${API_BASE}${p}`, `${window.location.origin}${p}`];
+  if (!/\/uploads\//i.test(p)) list.push(`${API_BASE}/uploads${p}`);
+  return Array.from(new Set(list));
 };
 const mediaIconFor = (t: string | null) =>
   !t ? "📎" : t.startsWith("image/") ? "🖼" : t.includes("pdf") ? "📄" : t.startsWith("video/") ? "🎬" : "📎";
 const isImageType = (t: string | null) => !!t?.startsWith("image/");
 const isVideoType = (t: string | null) => !!t?.startsWith("video/");
+
+// ── [BTL-2026-10-27b] thumbnail (falls back through URL candidates, then an icon) ──
+function MediaThumb({ m, size = 30, onClick }: { m: ProofMedia; size?: number; onClick: () => void }) {
+  const urls = useMemo(() => mediaUrlCandidates(m.fileUrl), [m.fileUrl]);
+  const [i, setI] = useState(0);
+  const img = isImageType(m.fileType) && i < urls.length;
+  return (
+    <button type="button" className="an-thumb" style={{ width: size, height: size }} onClick={onClick}
+      title={`${m.fileName} · ${new Date(m.capturedAt).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true })} — click to view`}>
+      {img
+        ? <img src={urls[i]} alt="" loading="lazy" onError={() => setI((x) => x + 1)}/>
+        : <span className="an-thumb-icon">{isVideoType(m.fileType) ? "🎬" : isImageType(m.fileType) ? "🖼" : mediaIconFor(m.fileType)}</span>}
+    </button>
+  );
+}
+
+// ── [BTL-2026-10-27b] gallery: every photo / video / file viewable, ◀ ▶, keyboard, counter ──
+function MediaGallery({ items, index, title, onClose }: { items: ProofMedia[]; index: number; title: string; onClose: () => void }) {
+  const [i, setI] = useState(Math.min(Math.max(index, 0), Math.max(items.length - 1, 0)));
+  const [u, setU] = useState(0);
+  const m = items[i];
+  const urls = useMemo(() => (m ? mediaUrlCandidates(m.fileUrl) : []), [m]);
+  useEffect(() => { setU(0); }, [i]);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowRight") setI((x) => (x + 1) % items.length);
+      else if (e.key === "ArrowLeft") setI((x) => (x - 1 + items.length) % items.length);
+    };
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, [items.length, onClose]);
+  if (!m) return null;
+  const url = urls[Math.min(u, urls.length - 1)] ?? "";
+  const failed = u >= urls.length;
+  const when = new Date(m.capturedAt).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true });
+  return (
+    <div className="an-gal" onClick={onClose}>
+      <div className="an-gal-box" onClick={(e) => e.stopPropagation()}>
+        <div className="an-gal-head">
+          <div className="an-gal-title">{title}<span>{i + 1} / {items.length}</span></div>
+          <div className="an-gal-meta">
+            🕐 {when}
+            {m.latitude != null && m.longitude != null
+              ? <a href={`https://maps.google.com/?q=${m.latitude},${m.longitude}`} target="_blank" rel="noreferrer">📍 GPS {m.latitude.toFixed(5)}, {m.longitude.toFixed(5)}</a>
+              : <span className="an-gal-nogps">No GPS</span>}
+            <a href={url} target="_blank" rel="noreferrer">Open ↗</a>
+            <a href={url} download={m.fileName}>⬇ Download</a>
+          </div>
+          <button type="button" className="an-gal-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="an-gal-stage">
+          {items.length > 1 && <button type="button" className="an-gal-nav an-gal-prev" aria-label="Previous"
+            onClick={() => setI((x) => (x - 1 + items.length) % items.length)}>‹</button>}
+          {isImageType(m.fileType) && !failed
+            ? <img key={url} src={url} alt={m.fileName} onError={() => setU((x) => x + 1)}/>
+            : isVideoType(m.fileType)
+              ? <video key={url} src={url} controls autoPlay/>
+              : <div className="an-gal-file">
+                  <div style={{ fontSize: 48 }}>{isImageType(m.fileType) ? "🖼" : mediaIconFor(m.fileType)}</div>
+                  <div className="an-gal-fname">{m.fileName}</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 12 }}>
+                    {isImageType(m.fileType) ? "This image format can't be previewed in the browser." : "Preview not available."}</div>
+                  <a href={resolveMediaUrl(m.fileUrl)} target="_blank" rel="noreferrer">Open / Download ↗</a>
+                </div>}
+          {items.length > 1 && <button type="button" className="an-gal-nav an-gal-next" aria-label="Next"
+            onClick={() => setI((x) => (x + 1) % items.length)}>›</button>}
+        </div>
+        <div className="an-gal-name">{m.fileName}</div>
+        {items.length > 1 && (
+          <div className="an-gal-strip">
+            {items.map((x, k) => (
+              <div key={x.id} className={`an-gal-strip-item${k === i ? " is-active" : ""}`}>
+                <MediaThumb m={x} size={52} onClick={() => setI(k)}/>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 interface StateRow { state:string; proposals:number; budget:number; approved:number; lead:number; retail:number; cac:number; }
 interface ActivityRow { name:string; count:number; budget:number; lead:number; retail:number; atl:number; btl:number; }
@@ -223,6 +327,7 @@ interface DailySummaryRow {
   leads: number; punched: number; gap: number; convPct: number;
   proposalId: string; activityId: string; activityType: string;
   dailyEntries: DailyEntry[]; media: ProofMedia[];
+  allEntries: DailyEntry[]; allMedia: ProofMedia[];   // [BTL-2026-10-26] unfiltered — PPT needs MTD
 }
 
 interface LeadReportRow {
@@ -258,9 +363,22 @@ export default function AnalyticsDashboard() {
   const [proposals, setProposals] = useState<ProposalResponse[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState<string|null>(null);
-  const [yearFilter, setYearFilter] = useState(String(CURRENT_YEAR));
-  const [monthFilter, setMonthFilter] = useState("All");
-  const [statusFilter, setStatusFilter] = useState("All");
+  // ── [BTL-2026-10-26c] header filters: multi-select (empty = All); Month & Year default to the current month ──
+  const [yearSel,   setYearSel]   = useState<string[]>([String(CURRENT_YEAR)]);
+  const [monthSel,  setMonthSel]  = useState<string[]>([MONTHS[new Date().getMonth()]]);
+  const [statusSel, setStatusSel] = useState<string[]>([]);
+  const [dealerStatusSel, setDealerStatusSel] = useState<string[]>([]);
+  const [isDealerInactive, setIsDealerInactive] =
+    useState<(code?: string | null, name?: string | null) => boolean>(() => () => false);
+  useEffect(() => {
+    fetchDealerStatus(instance).then((rows) => setIsDealerInactive(() => buildInactiveMatcher(rows))).catch(() => {});
+  }, [instance]);
+  // single-value views kept for the KPI cards / month bars (one selected = that value, else "All")
+  const one = (a: string[]) => (a.length === 1 ? a[0] : "All");
+  const yearFilter = one(yearSel), monthFilter = one(monthSel), statusFilter = one(statusSel);
+  const setYearFilter   = (v: string) => setYearSel(v === "All" ? [] : [v]);
+  const setMonthFilter  = (v: string) => setMonthSel(v === "All" ? [] : [v]);
+  const setStatusFilter = (v: string) => setStatusSel(v === "All" ? [] : [v]);
   const [activeTab,   setActiveTab]   = useState<"overview"|"region"|"activity"|"daily"|"budget"|"daily-activity"|"lead-report">("overview");
   const [activeKpi,    setActiveKpi]    = useState<string|null>(null);
   const [stateFilter,  setStateFilter]  = useState<string|null>(null);
@@ -271,9 +389,36 @@ export default function AnalyticsDashboard() {
   const [selectedDealerDaily, setSelectedDealerDaily] = useState<DailySummaryRow|null>(null);
   const [reportSubTab, setReportSubTab] = useState<"summary"|"dealer-daily">("summary");
   const [dailySearch, setDailySearch] = useState("");
-  const [dailyStateFilter, setDailyStateFilter] = useState("All");
-  const [dailyActivityTypeFilter, setDailyActivityTypeFilter] = useState("All");
-  const [anMediaViewer, setAnMediaViewer] = useState<{url:string;name:string;type:string|null}|null>(null);
+  // ── [BTL-2026-10-26] Daily Activity Report filters: multi-select (empty = All) + custom date range ──
+  const [dailyStateSel,   setDailyStateSel]   = useState<string[]>([]);
+  const [dailyDealerSel,  setDailyDealerSel]  = useState<string[]>([]);
+  const [dailyActTypeSel, setDailyActTypeSel] = useState<string[]>([]);
+  const [dailyFrom,       setDailyFrom]       = useState(() => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-01`; });   // yyyy-MM-dd, "" = no lower bound
+  const [dailyTo,         setDailyTo]         = useState(() => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`; });   // yyyy-MM-dd, "" = no upper bound
+  const [pptBusy,         setPptBusy]         = useState<string | null>(null);
+  const dailyRangeActive = !!(dailyFrom || dailyTo);
+  const toLocalIso = (s: string) => {
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return (s || "").slice(0, 10);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  };
+  const inDailyRange = (iso: string) => {
+    const d = (iso || "").slice(0, 10);
+    const lo = dailyFrom && dailyTo && dailyFrom > dailyTo ? dailyTo : dailyFrom;
+    const hi = dailyFrom && dailyTo && dailyFrom > dailyTo ? dailyFrom : dailyTo;
+    return (!lo || d >= lo) && (!hi || d <= hi);
+  };
+  const dailyRowMatches = useMemo(() => (row: DailySummaryRow) => {
+    if (dailyStateSel.length   && !dailyStateSel.includes(row.state))         return false;
+    if (dailyDealerSel.length  && !dailyDealerSel.includes(row.dealer))       return false;
+    if (dailyActTypeSel.length && !dailyActTypeSel.includes(row.activityType)) return false;
+    if (dailySearch) {
+      const q = dailySearch.toLowerCase();
+      return (row.dealer+row.location+row.state+row.bgMember).toLowerCase().includes(q);
+    }
+    return true;
+  }, [dailyStateSel, dailyDealerSel, dailyActTypeSel, dailySearch]);
+  const [anGallery, setAnGallery] = useState<{ items: ProofMedia[]; index: number; title: string } | null>(null);   // [BTL-2026-10-27b]
   // ── FIX: moved above the early loading/error returns below — this hook
   // was previously declared AFTER `if (loading) return...` / `if (error) return...`,
   // which violates React's Rules of Hooks (a hook must be called on every render,
@@ -324,9 +469,10 @@ export default function AnalyticsDashboard() {
 
   // ── Filtered proposals ──────────────────────────────────────────────────────
   const filtered = useMemo(() => proposals.filter(p => {
-    if (yearFilter   !== "All"  && (p as any).year !== yearFilter)   return false;
-    if (monthFilter  !== "All"  && p.month  !== monthFilter)          return false;
-    if (statusFilter !== "All"  && p.status !== statusFilter)         return false;
+    if (yearSel.length   && !yearSel.includes(String((p as any).year ?? ""))) return false;
+    if (monthSel.length  && !monthSel.includes(p.month)) return false;
+    if (statusSel.length && !statusSel.includes(p.status)) return false;
+    if (dealerStatusSel.length && !dealerStatusSel.includes(isDealerInactive((p as any).dealerCode, p.dealerName) ? "Inactive" : "Active")) return false;
     if (stateFilter  !== null   && p.state  !== stateFilter)          return false;
     if (rsmFilter    !== null   && p.rsmName !== rsmFilter)           return false;
     if (dealerFilter !== null   && p.dealerName !== dealerFilter)     return false;
@@ -336,9 +482,15 @@ export default function AnalyticsDashboard() {
       else { if (!p.activities.some(a => a.activityType === actFilter)) return false; }
     }
     return true;
-  }), [proposals, yearFilter, monthFilter, statusFilter, stateFilter, rsmFilter, dealerFilter, actFilter]);
+  }), [proposals, yearSel, monthSel, statusSel, dealerStatusSel, isDealerInactive, stateFilter, rsmFilter, dealerFilter, actFilter]);
 
   const approved  = useMemo(() => filtered.filter(p => p.status === "Approved"),  [filtered]);
+  // [BTL-2026-10-26c] Daily Activity Report uses its own date range, so it ignores the header Month / Year / Status
+  const approvedAnyPeriod = useMemo(() => proposals.filter((p) => p.status === "Approved" &&
+    (!stateFilter || p.state === stateFilter) && (!rsmFilter || p.rsmName === rsmFilter) &&
+    (!dealerFilter || p.dealerName === dealerFilter) &&
+    (!dealerStatusSel.length || dealerStatusSel.includes(isDealerInactive((p as any).dealerCode, p.dealerName) ? "Inactive" : "Active"))),
+    [proposals, stateFilter, rsmFilter, dealerFilter, dealerStatusSel, isDealerInactive]);
   const pending   = useMemo(() => filtered.filter(p => p.status === "Pending"),   [filtered]);
   const rejected  = useMemo(() => filtered.filter(p => p.status === "Rejected"),  [filtered]);
   const revision  = useMemo(() => filtered.filter(p => p.status === "NeedsRevision"), [filtered]);
@@ -460,14 +612,16 @@ export default function AnalyticsDashboard() {
 
   // ── Daily Activity Summary (same as DashboardPage) ─────────────────────────
   const liveDailySummary = useMemo((): DailySummaryRow[] => {
-    const approvedProposals = approved;
+    const approvedProposals = approvedAnyPeriod;
     const rows: DailySummaryRow[] = [];
     let sr = 1;
     for (const p of approvedProposals) {
       for (const a of p.activities) {
         const dailyData = (a as any).dailyData;
-        let entries: DailyEntry[] = [];
-        if (dailyData) { try { entries = JSON.parse(dailyData); } catch {} }
+        let allEntries: DailyEntry[] = [];
+        if (dailyData) { try { allEntries = JSON.parse(dailyData); } catch {} }
+        // [BTL-2026-10-26] custom date range — rows, totals and the dealer sheet use only days inside the range
+        const entries = allEntries.filter(e => inDailyRange(e.date));
 
         const totalEnqPlanned = entries.reduce((s,e)=>s+(e.enquiryPlanned||0),0);
         const totalEnqActual  = entries.reduce((s,e)=>s+(e.enquiryActual||0),0);
@@ -479,11 +633,13 @@ export default function AnalyticsDashboard() {
         const totalLmsLeads   = entries.reduce((s,e)=>s+((e as any).lmsLeads||0),0);
 
         const rawMedia = (a as any).mediaFiles ?? [];
-        const media: ProofMedia[] = rawMedia.map((m: any) => ({
+        const allMedia: ProofMedia[] = rawMedia.map((m: any) => ({
           id: m.id, fileUrl: m.fileUrl, fileName: m.fileName, fileType: m.fileType ?? null,
           capturedAt: m.capturedAt ?? new Date().toISOString(),
           latitude: m.latitude ?? null, longitude: m.longitude ?? null,
         }));
+        const media = allMedia.filter(m => inDailyRange(toLocalIso(m.capturedAt)));
+        if (dailyRangeActive && entries.length === 0 && media.length === 0) continue;   // [BTL-2026-10-26]
 
         const canopy = (a as any).qty || 1;
         const totalSetupCount = entries.reduce((s,e)=>s+((e as any).setupCount||0),0);
@@ -525,18 +681,18 @@ export default function AnalyticsDashboard() {
           leads: totalLmsLeads, punched: totalPunched,
           gap: totalLmsLeads - totalPunched,
           convPct: totalLmsLeads > 0 ? Math.round((retailMtdActivityVal/totalLmsLeads)*100) : 0,
-          photos: media.length,
+          photos: media.filter(m => isImageType(m.fileType) || isVideoType(m.fileType)).length,   // [BTL-2026-10-27b]
           proposalId: p.id, activityId: a.id, activityType: a.activityType,
-          dailyEntries: entries, media,
+          dailyEntries: entries, media, allEntries, allMedia,
         } as DailySummaryRow & { photos: number });
         sr++;
       }
     }
     return rows;
-  }, [approved]);
+  }, [approvedAnyPeriod, dailyFrom, dailyTo]);
 
   const dsTotals = useMemo(() => {
-    const src = liveDailySummary;
+    const src = liveDailySummary.filter(dailyRowMatches);
     const totalCanopy  = src.reduce((s, r) => s + r.canopy, 0);
     const totalSetupCount = src.reduce((s, r) => s + (r.setupCount||0), 0);
     const totalEnqAct  = src.reduce((s, r) => s + r.enquiryActual, 0);
@@ -565,7 +721,7 @@ export default function AnalyticsDashboard() {
       gap:            src.reduce((s, r) => s + r.gap, 0),
       convPct:        src.reduce((s, r) => s + (r.convPct||0), 0),
     };
-  }, [liveDailySummary]);
+  }, [liveDailySummary, dailyRowMatches]);
 
   // ── RSM-wise aggregation ─────────────────────────────────────────────────────
   const rsmRows = useMemo(() => {
@@ -601,15 +757,13 @@ export default function AnalyticsDashboard() {
     return ["All", ...types];
   }, [liveDailySummary]);
 
-  const filteredDailySummary = useMemo(() => liveDailySummary.filter(row => {
-    if (dailyStateFilter !== "All" && row.state !== dailyStateFilter) return false;
-    if (dailyActivityTypeFilter !== "All" && row.activityType !== dailyActivityTypeFilter) return false;
-    if (dailySearch) {
-      const q = dailySearch.toLowerCase();
-      return (row.dealer+row.location+row.state+row.bgMember).toLowerCase().includes(q);
-    }
-    return true;
-  }), [liveDailySummary, dailySearch, dailyStateFilter, dailyActivityTypeFilter]);
+  const filteredDailySummary = useMemo(
+    () => liveDailySummary.filter(dailyRowMatches), [liveDailySummary, dailyRowMatches]);   // [BTL-2026-10-26]
+  const dailyStateOptions = useMemo(
+    () => Array.from(new Set(liveDailySummary.map(r => r.state).filter(Boolean))).sort(), [liveDailySummary]);
+  const dailyDealerOptions = useMemo(() => Array.from(new Set(liveDailySummary
+    .filter(r => !dailyStateSel.length || dailyStateSel.includes(r.state))
+    .map(r => r.dealer).filter(Boolean))).sort(), [liveDailySummary, dailyStateSel]);
 
   const maxDealerBudget = Math.max(...dealerRows.map(r => r.budget), 1);
 
@@ -670,6 +824,41 @@ export default function AnalyticsDashboard() {
     });
   }, [stateRows, lmsLeadReport, approved, manualRetailTargets]);
 
+  // ── [BTL-2026-10-26] Daily PPT — same format as "Project_Towns_<date>.pptx" ──
+  // Report day = "To" date (or today). Uses the State / Dealer / Activity filters.
+  // [BTL-2026-10-26b] same report as PPT, PDF (with photos) or Excel (with photos)
+  const exportDailyReport = async (format: "ppt" | "pdf" | "xlsx") => {
+    const t = new Date();
+    const today = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`;
+    const reportDate = dailyTo || dailyFrom || today;
+    setPptBusy("Preparing…");
+    try {
+      const opts = {
+        reportDate,
+        activities: filteredDailySummary.map(r => ({
+          dealer: r.dealer, location: r.location, state: r.state, zone: r.zone, bgMember: r.bgMember,
+          activityType: r.activityType, entries: r.allEntries, media: r.allMedia,
+        })),
+        leadRows: leadReportExportRows.filter(lr => !dailyStateSel.length || dailyStateSel.includes(lr.state)),
+        resolveUrl: resolveMediaUrl,
+        assetBase: `${import.meta.env.BASE_URL ?? "/"}ppt-assets/`,
+        // [BTL-2026-10-27d] photos = EVERY photo captured inside the From–To range shown on screen
+        ...(dailyFrom || dailyTo ? {
+          photoFrom: dailyFrom && dailyTo && dailyFrom > dailyTo ? dailyTo : (dailyFrom || undefined),
+          photoTo:   dailyFrom && dailyTo && dailyFrom > dailyTo ? dailyFrom : (dailyTo || reportDate),
+        } : {}),
+        onProgress: (m: string) => setPptBusy(m),
+      };
+      if (format === "ppt") await buildDailyReportPpt(opts);
+      else if (format === "pdf") await buildDailyReportPdf(opts);
+      else await buildDailyReportExcel(opts);
+    } catch (e) {
+      alert(`Report could not be created: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPptBusy(null);
+    }
+  };
+
   if (loading) return (
     <div className="an-loading">
       <div className="an-spinner"/>
@@ -713,23 +902,14 @@ export default function AnalyticsDashboard() {
           </div>
         </div>
         <div className="an-filters">
-          <select className="an-select" value={yearFilter} onChange={e => setYearFilter(e.target.value)}>
-            {years.map(y => <option key={y} value={y}>{y === "All" ? "All Years" : y}</option>)}
-          </select>
-          <select className="an-select" value={monthFilter} onChange={e => setMonthFilter(e.target.value)}>
-            <option value="All">All Months</option>
-            {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
-          <select className="an-select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-            <option value="All">All Statuses</option>
-            <option value="Approved">Approved</option>
-            <option value="Pending">Pending</option>
-            <option value="Rejected">Rejected</option>
-            <option value="NeedsRevision">Needs Revision</option>
-          </select>
-          {(yearFilter !== "All" || monthFilter !== "All" || statusFilter !== "All" || stateFilter || rsmFilter || dealerFilter || actFilter) && (
+          {/* [BTL-2026-10-26c] multi-select header filters */}
+          <MultiSelectDropdown label="Years" options={Array.from(new Set([...years.filter(y=>y!=="All"), String(CURRENT_YEAR)])).sort()} value={yearSel} onChange={setYearSel} width={120}/>
+          <MultiSelectDropdown label="Months" options={MONTHS} value={monthSel} onChange={setMonthSel} width={150}/>
+          <MultiSelectDropdown label="Statuses" options={["Approved","Pending","Rejected","NeedsRevision"]} value={statusSel} onChange={setStatusSel} width={150}/>
+          <MultiSelectDropdown label="Dealer Status" options={["Active","Inactive"]} value={dealerStatusSel} onChange={setDealerStatusSel} width={150}/>
+          {(yearSel.length > 0 || monthSel.length > 0 || statusSel.length > 0 || dealerStatusSel.length > 0 || stateFilter || rsmFilter || dealerFilter || actFilter) && (
             <button className="an-clear" onClick={() => {
-              setYearFilter(String(CURRENT_YEAR)); setMonthFilter("All"); setStatusFilter("All");
+              setYearSel([]); setMonthSel([]); setStatusSel([]); setDealerStatusSel([]);
               setStateFilter(null); setRsmFilter(null); setDealerFilter(null); setActFilter(null);
             }}>
               Clear all ✕
@@ -1164,31 +1344,51 @@ export default function AnalyticsDashboard() {
             placeholder="🔍 Search dealer, location, state…"
             style={{ flex:"1 1 220px",height:36,padding:"0 12px",border:"1.5px solid #e2e8f0",
               borderRadius:8,fontSize:13,outline:"none",fontFamily:"inherit" }}/>
-          <select value={dailyStateFilter} onChange={e=>setDailyStateFilter(e.target.value)}
-            style={{ height:36,padding:"0 10px",border:"1.5px solid #e2e8f0",borderRadius:8,
-              fontSize:12,fontFamily:"inherit",outline:"none" }}>
-            <option value="All">All States</option>
-            {stateRows.map(s=><option key={s.state} value={s.state}>{s.state}</option>)}
-          </select>
-          <select value={dailyActivityTypeFilter} onChange={e=>setDailyActivityTypeFilter(e.target.value)}
-            style={{ height:36,padding:"0 10px",border:"1.5px solid #e2e8f0",borderRadius:8,
-              fontSize:12,fontFamily:"inherit",outline:"none" }}>
-            {dailyActivityTypes.map(t=><option key={t} value={t}>{t==="All"?"All Activity Types":t}</option>)}
-          </select>
-          {(dailySearch||dailyStateFilter!=="All"||dailyActivityTypeFilter!=="All")&&(
-            <button onClick={()=>{setDailySearch("");setDailyStateFilter("All");setDailyActivityTypeFilter("All");}}
+          {/* [BTL-2026-10-26] multi-select filters + custom date range */}
+          <MultiSelectDropdown label="States" options={dailyStateOptions} value={dailyStateSel}
+            onChange={(v)=>{ setDailyStateSel(v); setDailyDealerSel(prev=>prev.filter(d=>!v.length||liveDailySummary.some(r=>r.dealer===d&&v.includes(r.state)))); }} width={170}/>
+          <MultiSelectDropdown label="Dealers" options={dailyDealerOptions} value={dailyDealerSel} onChange={setDailyDealerSel} width={200}/>
+          <MultiSelectDropdown label="Activity Types" options={dailyActivityTypes.filter(t=>t!=="All")} value={dailyActTypeSel} onChange={setDailyActTypeSel} width={190}/>
+          <div style={{ display:"flex",alignItems:"center",gap:6,height:36,padding:"0 8px",border:`1.5px solid ${dailyRangeActive?"#2563eb":"#e2e8f0"}`,
+            borderRadius:8,background:dailyRangeActive?"#eff6ff":"#fff" }}>
+            <span style={{ fontSize:11,color:"#64748b",fontWeight:700 }}>From</span>
+            <input type="date" value={dailyFrom} max={dailyTo||undefined} onChange={e=>setDailyFrom(e.target.value)}
+              style={{ border:"none",background:"transparent",fontSize:12,fontFamily:"inherit",outline:"none" }}/>
+            <span style={{ fontSize:11,color:"#64748b",fontWeight:700 }}>To</span>
+            <input type="date" value={dailyTo} min={dailyFrom||undefined} onChange={e=>setDailyTo(e.target.value)}
+              style={{ border:"none",background:"transparent",fontSize:12,fontFamily:"inherit",outline:"none" }}/>
+          </div>
+          {(()=>{ const t=new Date(); const iso=(d:Date)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+            const y=new Date(t); y.setDate(t.getDate()-1);
+            const chip=(lbl:string,f:string,to:string)=>(
+              <button key={lbl} type="button" onClick={()=>{setDailyFrom(f);setDailyTo(to);}}
+                style={{ height:28,padding:"0 10px",borderRadius:14,border:"1px solid #e2e8f0",fontSize:11,fontWeight:600,cursor:"pointer",
+                  background:dailyFrom===f&&dailyTo===to?"#0a2540":"#fff",color:dailyFrom===f&&dailyTo===to?"#fff":"#374151" }}>{lbl}</button>);
+            return (<>{chip("Today",iso(t),iso(t))}{chip("Yesterday",iso(y),iso(y))}{chip("MTD",iso(new Date(t.getFullYear(),t.getMonth(),1)),iso(t))}</>);
+          })()}
+          {(dailySearch||dailyStateSel.length>0||dailyDealerSel.length>0||dailyActTypeSel.length>0||dailyRangeActive)&&(
+            <button onClick={()=>{setDailySearch("");setDailyStateSel([]);setDailyDealerSel([]);setDailyActTypeSel([]);setDailyFrom("");setDailyTo("");}}
               style={{ height:36,padding:"0 14px",background:"none",border:"1.5px solid #e2e8f0",
                 borderRadius:8,fontSize:12,cursor:"pointer",color:"#64748b" }}>Clear ✕</button>
           )}
           <span style={{ fontSize:12,color:"#64748b" }}>
             {filteredDailySummary.length} of {liveDailySummary.length} entries
           </span>
-          <div style={{ marginLeft:"auto" }}>
+          <div style={{ marginLeft:"auto",display:"flex",alignItems:"center",gap:8 }}>
+            {/* [BTL-2026-10-27] ONE Download menu: PPT · Excel · PDF in the Project-Towns report format, CSV = this table */}
+            {pptBusy && <span className="an-busy-chip">⏳ {pptBusy}</span>}
             <DownloadReportButton
-              filename="Daily_Activity_Sheet_Summary"
+              filename="Daily_Activity_Report"
               title="Daily Activity Sheet Summary"
+              subtitle={dailyFrom || dailyTo ? `${dailyFrom || "…"} to ${dailyTo || "…"}` : undefined}
               columns={dailySummaryExportColumns}
               rows={filteredDailySummary as any}
+              disabled={!!pptBusy}
+              custom={{
+                ppt:  () => exportDailyReport("ppt"),
+                xlsx: () => exportDailyReport("xlsx"),
+                pdf:  () => exportDailyReport("pdf"),
+              }}
             />
           </div>
         </div>
@@ -1366,18 +1566,7 @@ export default function AnalyticsDashboard() {
       // ── dealer detail view, shown when reportSubTab === "dealer-daily" ──
       selectedDealerDaily && (
         <>
-          {anMediaViewer && (
-            <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:10000,
-              display:"flex",alignItems:"center",justifyContent:"center" }} onClick={()=>setAnMediaViewer(null)}>
-              <div style={{ maxWidth:"92vw",maxHeight:"92vh" }} onClick={(e)=>e.stopPropagation()}>
-                {isImageType(anMediaViewer.type)
-                  ? <img src={anMediaViewer.url} alt={anMediaViewer.name} style={{ maxWidth:"88vw",maxHeight:"82vh",borderRadius:8 }}/>
-                  : isVideoType(anMediaViewer.type)
-                    ? <video src={anMediaViewer.url} controls autoPlay style={{ maxWidth:"88vw",maxHeight:"82vh",borderRadius:8 }}/>
-                    : <a href={anMediaViewer.url} target="_blank" rel="noopener noreferrer" style={{ color:"#fff" }}>Open {anMediaViewer.name} ↗</a>}
-              </div>
-            </div>
-          )}
+          {anGallery && <MediaGallery items={anGallery.items} index={anGallery.index} title={anGallery.title} onClose={() => setAnGallery(null)}/>}
 
           <div style={{ marginBottom:14, display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
              <button
@@ -1421,6 +1610,18 @@ export default function AnalyticsDashboard() {
               the Avg row can never drift apart from each other again. ── */}
           {(() => {
             const entries = selectedDealerDaily.dailyEntries;
+            // [BTL-2026-10-27b] photos grouped by LOCAL (IST) date → day counts + "other dates" = Total
+            const sheetPhotos = selectedDealerDaily.media
+              .filter(m => isImageType(m.fileType) || isVideoType(m.fileType))
+              .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
+            const sheetFiles = selectedDealerDaily.media.filter(m => !isImageType(m.fileType) && !isVideoType(m.fileType));
+            const entryDates = new Set(entries.map(e => (e.date || "").slice(0, 10)));
+            const photosOn = (d: string) => sheetPhotos.filter(m => toLocalIso(m.capturedAt) === d);
+            const filesOn  = (d: string) => sheetFiles.filter(m => toLocalIso(m.capturedAt) === d);
+            const otherDayPhotos = sheetPhotos.filter(m => !entryDates.has(toLocalIso(m.capturedAt)));
+            const sheetName = `${selectedDealerDaily.dealer}, ${selectedDealerDaily.location}`;
+            const openGallery = (items: ProofMedia[], start: ProofMedia | number, title: string) =>
+              setAnGallery({ items, index: typeof start === "number" ? start : Math.max(0, items.indexOf(start)), title });
             const dayCount = entries.length || 1;
             const sum = (fn: (e: DailyEntry) => number) => entries.reduce((s,e)=>s+(fn(e)||0),0);
             const lastNonZero = (fn: (e: DailyEntry) => number) => {
@@ -1506,6 +1707,7 @@ export default function AnalyticsDashboard() {
                           ? (Math.round((totals.retail / totals.canopy) * 10) / 10).toFixed(1)
                           : "0.0" },
                     { label:"Activity Days", value: entries.length },
+                    { label:"Photos", value: sheetPhotos.length },
                   ].map((f) => (
                     <div key={f.label} style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 12px" }}>
                       <div style={{ fontSize:10, color:"#6b7280", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>{f.label}</div>
@@ -1561,10 +1763,8 @@ export default function AnalyticsDashboard() {
                   </thead>
                   <tbody>
                     {entries.map((entry, i) => {
-                      const photosOnDay = selectedDealerDaily.media.filter(m =>
-                        m.capturedAt.startsWith(entry.date) && (isImageType(m.fileType) || isVideoType(m.fileType)));
-                      const invoicesOnDay = selectedDealerDaily.media.filter(m =>
-                        m.capturedAt.startsWith(entry.date) && !isImageType(m.fileType) && !isVideoType(m.fileType));
+                      const photosOnDay   = photosOn((entry.date || "").slice(0, 10));   // [BTL-2026-10-27b]
+                      const invoicesOnDay = filesOn((entry.date || "").slice(0, 10));
                       const hasData = entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||(entry.retailMtdActivity||0)>0||photosOnDay.length>0||invoicesOnDay.length>0;
                       const gapColor = (entry.enquiryGap||0) < 0 ? "#dc2626" : (entry.enquiryGap||0) > 0 ? "#16a34a" : "#64748b";
                       return (
@@ -1586,21 +1786,20 @@ export default function AnalyticsDashboard() {
                           {td(entry.retailMtdActivity || "", { color:"#c2410c", fontWeight:700 })}
                           {td(entry.retailMtd || "", { color:"#92400e", fontWeight:700 })}
                           {td(
-                            <div style={{ display:"flex",gap:3,flexWrap:"wrap",justifyContent:"center",alignItems:"center" }}>
-                              {photosOnDay.slice(0,3).map(m => {
-                                const url = resolveMediaUrl(m.fileUrl);
-                                return (
-                                  <div key={m.id} style={{ width:24,height:24,borderRadius:3,overflow:"hidden",cursor:"pointer",border:"1px solid #bbf7d0" }}
-                                    onClick={() => setAnMediaViewer({ url, name: m.fileName, type: m.fileType })}>
-                                    {isImageType(m.fileType)
-                                      ? <img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
-                                      : <span style={{ fontSize:13,lineHeight:"24px",display:"block",textAlign:"center" }}>{mediaIconFor(m.fileType)}</span>}
-                                  </div>
-                                );
-                              })}
-                              {photosOnDay.length > 3 && <span style={{ fontSize:9,color:"#16a34a",fontWeight:700 }}>+{photosOnDay.length-3}</span>}
-                              {invoicesOnDay.length > 0 && <span style={{ fontSize:10,color:"#64748b" }}>🧾{invoicesOnDay.length}</span>}
-                              {photosOnDay.length===0 && invoicesOnDay.length===0 && <span style={{ color:"#e2e8f0",fontSize:10 }}>—</span>}
+                            <div className="an-media-cell">
+                              {photosOnDay.slice(0, 3).map(m => (
+                                <MediaThumb key={m.id} m={m} size={30}
+                                  onClick={() => openGallery(photosOnDay, m, `${sheetName} · ${entry.date}`)}/>
+                              ))}
+                              {photosOnDay.length > 3 && (
+                                <button type="button" className="an-media-more" title={`View all ${photosOnDay.length} photos of ${entry.date}`}
+                                  onClick={() => openGallery(photosOnDay, 3, `${sheetName} · ${entry.date}`)}>+{photosOnDay.length - 3}</button>
+                              )}
+                              {invoicesOnDay.length > 0 && (
+                                <button type="button" className="an-media-more an-media-more--file" title={`${invoicesOnDay.length} invoice / file(s)`}
+                                  onClick={() => openGallery(invoicesOnDay, 0, `${sheetName} · ${entry.date} · invoices`)}>🧾{invoicesOnDay.length}</button>
+                              )}
+                              {photosOnDay.length === 0 && invoicesOnDay.length === 0 && <span style={{ color:"#cbd5e1",fontSize:10 }}>—</span>}
                             </div>
                           )}
                         </tr>
@@ -1625,7 +1824,10 @@ export default function AnalyticsDashboard() {
                       {td(totals.bookInHand, { background:"#93c5fd" })}
                       {td(totals.retail, { background:"#93c5fd" })}
                       {td(totals.retailMtd, { background:"#93c5fd" })}
-                      {td("📸"+selectedDealerDaily.media.filter(m=>isImageType(m.fileType)||isVideoType(m.fileType)).length, { background:"#93c5fd", fontSize:10 })}
+                      {td(sheetPhotos.length > 0
+                        ? <button type="button" className="an-media-total" title="View all photos of this sheet"
+                            onClick={() => openGallery(sheetPhotos, 0, `${sheetName} · all photos`)}>📸 {sheetPhotos.length} · View all</button>
+                        : "📸 0", { background:"#93c5fd", fontSize:10 })}
                     </tr>
 
                     {/* ── Average row ── */}
@@ -1646,7 +1848,11 @@ export default function AnalyticsDashboard() {
                       {td(avgRow.bookInHand, { background:"#fef9c3" })}
                       {td(avgRow.retail, { background:"#fef9c3" })}
                       {td(avgRow.retailMtd, { background:"#fef9c3" })}
-                      {td("—", { fontSize:10, color:"#94a3b8" })}
+                      {td(otherDayPhotos.length > 0
+                        ? <button type="button" className="an-media-more an-media-more--other"
+                            title="Photos whose capture date has no row in this sheet"
+                            onClick={() => openGallery(otherDayPhotos, 0, `${sheetName} · other dates`)}>📅 {otherDayPhotos.length} on other dates</button>
+                        : "—", { fontSize:10, color:"#94a3b8" })}
                     </tr>
                   </tbody>
                 </table>

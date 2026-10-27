@@ -1,5 +1,6 @@
 using BGL_BT_App.Backend.Data;
 using BGL_BT_App.Backend.Models;
+using BGL_BT_App.Backend.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -13,26 +14,28 @@ namespace BGL_BT_App.Backend.Controllers;
 public class DealerEligibilityController : ControllerBase
 {
     private readonly BaplDbContext                        _bapl;
+    private readonly DealerTypeService                    _dealerType;   // shared RRERP Old/New rule
     private readonly ILogger<DealerEligibilityController> _logger;
 
     public DealerEligibilityController(
         BaplDbContext bapl,
+        DealerTypeService dealerType,
         ILogger<DealerEligibilityController> logger)
     {
-        _bapl   = bapl;
-        _logger = logger;
+        _bapl       = bapl;
+        _dealerType = dealerType;
+        _logger     = logger;
     }
 
     // GET /api/dealer-eligibility?dealerCode=CUS0011
     [HttpGet]
-    public async Task<ActionResult<DealerEligibilityDto>> Check(
-        [FromQuery] string dealerCode)
+    public async Task<ActionResult<DealerEligibilityDto>> Check([FromQuery] string dealerCode)
     {
         if (string.IsNullOrWhiteSpace(dealerCode))
             return BadRequest(new { message = "dealerCode is required." });
         try
         {
-            return Ok(await ComputeAsync(dealerCode));
+            return Ok(await ComputeAsync(dealerCode.Trim()));
         }
         catch (Exception ex)
         {
@@ -48,19 +51,14 @@ public class DealerEligibilityController : ControllerBase
     // ── Core eligibility logic ────────────────────────────────────────────
     private async Task<DealerEligibilityDto> ComputeAsync(string dealerCode)
     {
-        var cutoff = DateTime.UtcNow.AddMonths(-3).Date;
+        var months = _dealerType.WindowMonths;   // default 3 (appsettings "DealerType:NewWindowMonths")
+        var cutoff = _dealerType.Cutoff;
 
-        // Step 1 — get dealer master
-        var dealer = await _bapl.DealerMasters
-            .AsNoTracking()
-            .FirstOrDefaultAsync(d => d.CustomerCode == dealerCode);
+        // Old / New — shared RRERP rule: onboarding OR first sale within the window
+        var type  = await _dealerType.ClassifyOneAsync(dealerCode);
+        var isNew = type?.IsNew ?? false;
 
-        // Step 2 — new dealer check (inaugurated within last 3 months)
-        bool isNew = dealer?.OnboardedDate.HasValue == true &&
-                     dealer.OnboardedDate!.Value.Date >= cutoff;
-
-        // Step 3 — count retails using raw SQL
-        // salebill_date is nvarchar "dd-MM-yyyy" so use TRY_CONVERT(DATE, ..., 105)
+        // Retails over the same window
         var rows = await _bapl.Database
             .SqlQueryRaw<MonthlyCount>(@"
                 SELECT
@@ -78,17 +76,17 @@ public class DealerEligibilityController : ControllerBase
                 dealerCode, cutoff)
             .ToListAsync();
 
-        // Step 4 — average always divided by 3 (missing months = 0)
-        double avg            = (double)rows.Sum(r => r.RetailCount) / 3.0;
+        // Average always divided by the window (missing months = 0)
+        double avg              = (double)rows.Sum(r => r.RetailCount) / months;
         bool   eligibleByRetail = avg >= 8;
         bool   isEligible       = isNew || eligibleByRetail;
         int    baseCac          = isNew ? 6000 : 4000;
 
         string reason = isNew
-            ? "New dealer — onboarded within last 3 months"
+            ? $"New dealer — {type?.Reason}"
             : eligibleByRetail
-                ? $"Avg {avg:N1} retails/month over last 3 months (≥8 required)"
-                : $"Not eligible — avg {avg:N1} retails/month (minimum 8 required)";
+                ? $"Avg {avg:N1} retails/month over last {months} months (≥8 required) · {type?.Reason}"
+                : $"Not eligible — avg {avg:N1} retails/month (minimum 8 required) · {type?.Reason}";
 
         return new DealerEligibilityDto(
             dealerCode, isEligible, isNew,

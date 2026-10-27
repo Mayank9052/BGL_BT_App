@@ -8,6 +8,7 @@ using BGL_BT_App.Backend.Auth;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
@@ -201,6 +202,8 @@ builder.Services.AddHttpClient("cn-graph", c => c.Timeout = TimeSpan.FromMinutes
 builder.Services.AddHttpClient("cn-media", c => c.Timeout = TimeSpan.FromMinutes(2));
 builder.Services.AddScoped<CnAttachmentLoader>();
 builder.Services.AddScoped<CnEmailService>();
+// ── Dealer Old/New from RRERP (shared by eligibility, CAC limit, Dealer Mapping) ──
+builder.Services.AddScoped<DealerTypeService>();
 // ── Chat — SignalR + AI bot with DB access ────────────────────────────────────
 builder.Services.AddSignalR(opts =>
 {
@@ -247,8 +250,48 @@ if (app.Environment.IsDevelopment())
     });
 }
 
+// ── NEW: API responses are never cached by the browser ───────────────────────
+// (proposal lists, dealer mapping etc. always fresh after a deploy or an edit)
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api"))
+    {
+        context.Response.OnStarting(() =>
+        {
+            context.Response.Headers.CacheControl = "no-store, no-cache, max-age=0";
+            context.Response.Headers.Pragma       = "no-cache";
+            return Task.CompletedTask;
+        });
+    }
+    await next();
+});
+
+// ── NEW: cache rules for the React build in wwwroot ──────────────────────────
+//   index.html, version.json, /template/*  → never cached (fresh after every deploy)
+//   /assets/*  (Vite files, hash in file name) → cached 1 year (name changes every build)
+//   /uploads/* and everything else          → unchanged (browser default)
+var staticOptions = new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        var path = ctx.Context.Request.Path;
+        var name = ctx.File.Name;
+
+        if (name.Equals("index.html",   StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("version.json", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments("/template"))
+        {
+            NoCache(ctx);
+        }
+        else if (path.StartsWithSegments("/assets"))
+        {
+            ctx.Context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+        }
+    },
+};
+
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(staticOptions);          // ← was app.UseStaticFiles();
 app.UseCors("FrontendPolicy");
 app.UseAuthentication();
 app.UseAuthorization();
@@ -256,5 +299,15 @@ app.MapControllers();
 app.MapHub<ChatHub>("/hubs/chat");
 // ── Health check endpoint ─────────────────────────────────────────────────────
 app.MapGet("/api/health", () => "Testing...").AllowAnonymous();
-app.MapFallbackToFile("index.html");
+// SPA fallback (deep links like /rsm-form, /cn-tracker) — index.html never cached
+app.MapFallbackToFile("index.html", new StaticFileOptions { OnPrepareResponse = NoCache });   // ← was app.MapFallbackToFile("index.html");
 app.Run();
+
+// ── Helper: "never cache this file" headers ──────────────────────────────────
+static void NoCache(StaticFileResponseContext ctx)
+{
+    var h = ctx.Context.Response.Headers;
+    h.CacheControl = "no-store, no-cache, must-revalidate, max-age=0";
+    h.Pragma       = "no-cache";
+    h.Expires      = "0";
+}

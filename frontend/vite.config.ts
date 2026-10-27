@@ -1,8 +1,31 @@
-import { defineConfig } from 'vite'
+// frontend\vite.config.ts
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// ── NEW: unique id for every `npm run build` (UTC yyyyMMddHHmmss) ────────────
+// Baked into the JS as __APP_BUILD_ID__ and written to wwwroot/version.json.
+// src/utils/appVersion.ts compares the two → new deploy detected → cache cleared + reload.
+const BUILD_ID = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
+
+function versionFilePlugin(): Plugin {
+  return {
+    name: 'bgauss-version-file',
+    apply: 'build',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify({ buildId: BUILD_ID, builtAt: new Date().toISOString() }, null, 2),
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react()],
+  define: {
+    __APP_BUILD_ID__: JSON.stringify(BUILD_ID),
+  },
+  plugins: [react(), versionFilePlugin()],
   build: {
     outDir: '../Backend/wwwroot',
     emptyOutDir: true,

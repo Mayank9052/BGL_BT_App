@@ -778,3 +778,73 @@
   background: #bbf7d0 !important;
   border-left: 4px solid #15803d !important;
 }
+
+/* ═══ [BTL-2026-10-27] Action column: icon buttons + hover tooltip ═══ */
+.ap-action-cell  { white-space: nowrap; width: 1%; }
+.ap-action-group { display: inline-flex; align-items: center; gap: 6px; }
+.ap-icon-btn {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0 !important; margin: 0 !important;
+  border-radius: 8px; border: 1px solid transparent; cursor: pointer; flex-shrink: 0;
+  font-family: inherit; transition: background .15s, color .15s, box-shadow .15s, transform .1s;
+}
+.ap-icon-btn svg { width: 16px; height: 16px; display: block; }
+.ap-review-btn.ap-icon-btn { background: #0a2540; color: #fff; }
+.ap-review-btn.ap-icon-btn:hover { background: #1e3a5f; box-shadow: 0 2px 8px rgba(10,37,64,.30); }
+.ap-icon-btn--danger { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
+.ap-icon-btn--danger:hover:not(:disabled) { background: #dc2626; color: #fff; border-color: #dc2626; box-shadow: 0 2px 8px rgba(220,38,38,.30); }
+.ap-icon-btn:active:not(:disabled) { transform: scale(.94); }
+.ap-icon-btn:disabled { opacity: .55; cursor: wait; }
+.ap-icon-btn:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+
+/* tooltip — hidden until hover / keyboard focus; left-aligned so it is never cut off */
+.ap-tip {
+  position: absolute; left: 0; bottom: calc(100% + 8px); transform: translateY(4px);
+  background: #0a2540; color: #fff; font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 6px 9px; border-radius: 6px; white-space: nowrap; pointer-events: none;
+  opacity: 0; visibility: hidden; z-index: 30; box-shadow: 0 4px 12px rgba(0,0,0,.18);
+  transition: opacity .12s ease, transform .12s ease, visibility .12s;
+}
+.ap-tip::after {
+  content: ""; position: absolute; top: 100%; left: 10px;
+  border: 5px solid transparent; border-top-color: #0a2540;
+}
+.ap-icon-btn:hover .ap-tip, .ap-icon-btn:focus-visible .ap-tip { opacity: 1; visibility: visible; transform: translateY(0); }
+.ap-icon-btn--danger .ap-tip { background: #991b1b; }
+.ap-icon-btn--danger .ap-tip::after { border-top-color: #991b1b; }
+/* first row: show the tooltip BELOW so the dark table header never hides it */
+.ap-table tbody tr:first-child .ap-tip { bottom: auto; top: calc(100% + 8px); transform: translateY(-4px); }
+.ap-table tbody tr:first-child .ap-icon-btn:hover .ap-tip { transform: translateY(0); }
+.ap-table tbody tr:first-child .ap-tip::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: #0a2540; }
+.ap-table tbody tr:first-child .ap-icon-btn--danger .ap-tip::after { border-bottom-color: #991b1b; }
+@media (hover: none) { .ap-tip { display: none; } }   /* touch screens: aria-label is enough */
+
+/* ═══ [BTL-2026-10-27] fixes for rules that were defined twice in this file ═══ */
+/* .ap-reject-btn was redefined (padding 10px 22px, margin-top 8px) and broke the Approve / Reject row */
+.ap-btn-row .ap-reject-btn { flex: 1; padding: 9px; margin-top: 0; font-size: 13px; border-radius: 7px; background: #991b1b; }
+.ap-btn-row .ap-reject-btn:hover:not(:disabled) { background: #7f1d1d; }
+/* .ap-badge-revision was redefined bigger — keep the compact size inside the proposal table */
+.ap-table .ap-badge-revision { padding: 2px 8px; border-radius: 10px; font-size: 10px; }
+
+/* ═══ [BTL-2026-10-27c] pagination ═══ */
+.ap-pager {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 4px; margin: 4px 0; font-size: 12px; color: #64748b;
+}
+.ap-pager-info b { color: #0a2540; }
+.ap-pager-size { display: inline-flex; align-items: center; gap: 6px; }
+.ap-pager-size select {
+  height: 30px; padding: 0 6px; border: 1.5px solid #e2e8f0; border-radius: 6px;
+  background: #fff; color: #0a2540; font-size: 12px; font-family: inherit; cursor: pointer;
+}
+.ap-pager-btns { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.ap-pager-btns button {
+  min-width: 30px; height: 30px; padding: 0 8px; border: 1.5px solid #e2e8f0; border-radius: 6px;
+  background: #fff; color: #0a2540; font-size: 12px; font-weight: 600; cursor: pointer;
+  font-family: inherit; transition: background .12s, border-color .12s;
+}
+.ap-pager-btns button:hover:not(:disabled):not(.is-active) { background: #f1f5f9; border-color: #cbd5e1; }
+.ap-pager-btns button.is-active { background: #0a2540; border-color: #0a2540; color: #fff; cursor: default; }
+.ap-pager-btns button:disabled { opacity: .4; cursor: not-allowed; }
+.ap-pager-gap { padding: 0 4px; color: #94a3b8; }
+@media (max-width: 640px) { .ap-pager-btns { margin-left: 0; width: 100%; justify-content: center; } }
