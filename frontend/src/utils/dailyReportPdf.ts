@@ -26,7 +26,7 @@ const toCell = (c: RCell, base: number): CellDef => ({
 
 export async function buildDailyReportPdf(o: DailyReportOptions): Promise<string> {
   const progress = o.onProgress ?? (() => {});
-  const loadPhoto = o.loadImage ?? ((u: string) => defaultLoadImage(u));
+  const loadPhoto = o.loadImage ?? ((u: string) => defaultLoadImage(u, 1100));   // smaller photos → manageable file with many images
   const resolve = o.resolveUrl ?? ((u: string) => u);
   const model = buildDailyReportModel(o);
 
@@ -111,6 +111,9 @@ export async function buildDailyReportPdf(o: DailyReportOptions): Promise<string
     for (let p = 0; p < d.photos.length; p += 4) {
       doc.addPage([W, H], "landscape"); bg(); logo(0.21); dealerTitle(d.title);
       const batch = d.photos.slice(p, p + 4);
+      progress(`Dealer ${i}/${model.dealers.length}: photos ${p + 1}–${p + batch.length} of ${d.photos.length}`);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(hex(NAVY));
+      doc.text(`Photos ${p + 1}–${p + batch.length} of ${d.photos.length}  ·  ${d.photoLabel}  ·  ${d.activityType}`, W / 2, 1.0, { align: "center" });
       const imgs = await Promise.all(batch.map((m) => loadPhoto(resolve(m.fileUrl))));
       const slotW = 3.0, slotH = 4.3, gap = (W - 0.6 - 4 * slotW) / 3;
       batch.forEach((m, j) => {

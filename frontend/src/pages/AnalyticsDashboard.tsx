@@ -842,6 +842,11 @@ export default function AnalyticsDashboard() {
         leadRows: leadReportExportRows.filter(lr => !dailyStateSel.length || dailyStateSel.includes(lr.state)),
         resolveUrl: resolveMediaUrl,
         assetBase: `${import.meta.env.BASE_URL ?? "/"}ppt-assets/`,
+        // [BTL-2026-10-27d] photos = EVERY photo captured inside the From–To range shown on screen
+        ...(dailyFrom || dailyTo ? {
+          photoFrom: dailyFrom && dailyTo && dailyFrom > dailyTo ? dailyTo : (dailyFrom || undefined),
+          photoTo:   dailyFrom && dailyTo && dailyFrom > dailyTo ? dailyFrom : (dailyTo || reportDate),
+        } : {}),
         onProgress: (m: string) => setPptBusy(m),
       };
       if (format === "ppt") await buildDailyReportPpt(opts);

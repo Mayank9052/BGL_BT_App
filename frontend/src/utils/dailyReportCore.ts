@@ -41,7 +41,9 @@ export interface DailyReportOptions {
   leadRows?: PptLeadRow[];                  // omit/empty → Lead Report skipped
   resolveUrl?: (url: string) => string;     // relative /uploads/... → absolute
   assetBase?: string;                       // default "/ppt-assets/"
-  maxPhotosPerDealer?: number;              // default 8
+  maxPhotosPerDealer?: number;              // default 0 = ALL photos (no limit)
+  photoFrom?: string;                       // yyyy-MM-dd — photos captured from this date (local / IST)
+  photoTo?: string;                         // yyyy-MM-dd — … up to and including this date
   loadImage?: (url: string) => Promise<LoadedImage | null>;   // override (tests)
   onProgress?: (msg: string) => void;
   fileName?: string;
@@ -75,6 +77,7 @@ export interface DealerSheet {
   sheetName: string;        // unique, Excel-safe
   table: RTable;
   photos: PptMedia[];
+  photoLabel: string;       // "01 Oct 2026 – 27 Oct 2026" — period the photos cover
 }
 export interface DailyReportModel {
   day: string; longDate: string; shortDate: string; fileBase: string;
@@ -219,7 +222,7 @@ function summarise(a: PptActivity, day: string): SummaryRow | null {
 // ═════════════════════════════════════════════════════════════════════════════
 export function buildDailyReportModel(o: DailyReportOptions): DailyReportModel {
   const day = o.reportDate;
-  const maxPhotos = o.maxPhotosPerDealer ?? 8;
+  const maxPhotos = o.maxPhotosPerDealer ?? 0;   // 0 = no limit
 
   // ── Daily Activity Sheet Summary ──────────────────────────────────────────
   const rows = o.activities.map((a) => summarise(a, day)).filter((r): r is SummaryRow => r !== null)
@@ -347,18 +350,32 @@ export function buildDailyReportModel(o: DailyReportOptions): DailyReportModel {
     const hb = (t: string, fill: string, extra: Omit<RCell, "v"> = {}) => C(t, { fill, bold: true, ...extra });
     const blank0 = (v: number) => (v ? v : "");
 
+    // Photos: EVERY photo in the selected From–To range (oldest first). Without a range:
+    // the report day's photos, else the month-to-date photos (previous behaviour).
     const imgs = a.media.filter((m) => isImage(m.fileType));
-    let photos = imgs.filter((m) => localIso(m.capturedAt) === day);
-    if (photos.length === 0) {
-      photos = imgs.filter((m) => localIso(m.capturedAt) <= day && localIso(m.capturedAt) >= monthStart)
-        .sort((x, y) => y.capturedAt.localeCompare(x.capturedAt));
+    let photos: PptMedia[];
+    let photoLabel: string;
+    if (o.photoFrom || o.photoTo) {
+      const lo = o.photoFrom || "0000-01-01", hi = o.photoTo || "9999-12-31";
+      photos = imgs.filter((m) => { const d = localIso(m.capturedAt); return d >= lo && d <= hi; })
+        .sort((x, y) => x.capturedAt.localeCompare(y.capturedAt));
+      photoLabel = o.photoFrom ? `${shortDate(lo)} – ${shortDate(o.photoTo || day)}` : `up to ${shortDate(hi)}`;
+    } else {
+      photos = imgs.filter((m) => localIso(m.capturedAt) === day);
+      photoLabel = shortDate(day);
+      if (photos.length === 0) {
+        photos = imgs.filter((m) => localIso(m.capturedAt) <= day && localIso(m.capturedAt) >= monthStart)
+          .sort((x, y) => x.capturedAt.localeCompare(y.capturedAt));
+        photoLabel = `${shortDate(monthStart)} – ${shortDate(day)}`;
+      }
     }
 
     return {
       title: `${a.dealer}, ${a.location}`,
       activityType: a.activityType,
       sheetName: sheetName(`${a.dealer}-${a.location}`),
-      photos: photos.slice(0, maxPhotos),
+      photos: maxPhotos > 0 ? photos.slice(0, maxPhotos) : photos,
+      photoLabel,
       table: {
         colW: [0.95, 0.65, 0.6, 0.7, 0.65, 0.65, 0.65, 0.6, 0.55, 0.85, 0.7, 0.65, 0.6, 0.65, 0.65, 0.7],
         fontSize: 9, rowsPerPage: 18,

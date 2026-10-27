@@ -115,7 +115,7 @@ export async function buildDailyReportExcel(o: DailyReportOptions): Promise<stri
 
     ws.mergeCells(r, 1, r, 16);
     const h = ws.getCell(r, 1);
-    h.value = `Photos (${model.longDate})`;
+    h.value = `Photos — ${d.photos.length} (${d.photoLabel})`;
     h.font = { name: "Calibri", size: 12, bold: true, color: { argb: "FFFFFFFF" } };
     h.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${GREEN}` } };
     h.alignment = { horizontal: "center" };

@@ -22,7 +22,7 @@ const toCell = (c: RCell): pptxgen.TableCell => ({
 
 export async function buildDailyReportPpt(o: DailyReportOptions): Promise<string> {
   const progress = o.onProgress ?? (() => {});
-  const loadPhoto = o.loadImage ?? ((u: string) => defaultLoadImage(u));
+  const loadPhoto = o.loadImage ?? ((u: string) => defaultLoadImage(u, 1100));   // smaller photos → manageable file with many images
   const resolve = o.resolveUrl ?? ((u: string) => u);
   const model = buildDailyReportModel(o);
 
@@ -102,6 +102,9 @@ export async function buildDailyReportPpt(o: DailyReportOptions): Promise<string
     for (let p = 0; p < d.photos.length; p += 4) {
       const s = bgSlide(); logo(s, 0.21); dealerTitle(s, d.title);
       const batch = d.photos.slice(p, p + 4);
+      progress(`Dealer ${i}/${model.dealers.length}: photos ${p + 1}–${p + batch.length} of ${d.photos.length}`);
+      s.addText(`Photos ${p + 1}–${p + batch.length} of ${d.photos.length}  ·  ${d.photoLabel}  ·  ${d.activityType}`,
+        { x: 2.33, y: 0.8, w: 8.67, h: 0.3, fontSize: 11, color: NAVY, align: "center", bold: true, isTextBox: true, margin: 0 });
       const imgs: (LoadedImage | null)[] = await Promise.all(batch.map((m) => loadPhoto(resolve(m.fileUrl))));
       const slotW = 3.0, slotH = 4.3, gap = (W - 0.6 - 4 * slotW) / 3;
       batch.forEach((m, j) => {
