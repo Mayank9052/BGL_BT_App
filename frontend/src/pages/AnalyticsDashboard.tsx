@@ -2,6 +2,8 @@
 // Full analytics dashboard — region/state/activity/budget/lead/daily data insights
 // [BTL-2026-10-28] Every table: sortable headers (click ▲ → ▼ → off) + pagination (10/25/50/100).
 //                  Totals / Avg rows always cover ALL filtered rows, not just the visible page.
+// [BTL-2026-10-31] Daily Activity Report + PPT / PDF / Excel now FOLLOW the header Year / Month filter
+//                  (e.g. 2026 + September → 01.09.2026 – 30.09.2026). From–To can still be changed by hand.
 import { useState, useMemo, useEffect } from "react";
 import { useMsal } from "@azure/msal-react";
 import { fetchProposals, type ProposalResponse } from "../services/proposalService";
@@ -386,7 +388,6 @@ export default function AnalyticsDashboard() {
   // single-value views kept for the KPI cards / month bars (one selected = that value, else "All")
   const one = (a: string[]) => (a.length === 1 ? a[0] : "All");
   const yearFilter = one(yearSel), monthFilter = one(monthSel), statusFilter = one(statusSel);
-  const setYearFilter   = (v: string) => setYearSel(v === "All" ? [] : [v]);
   const setMonthFilter  = (v: string) => setMonthSel(v === "All" ? [] : [v]);
   const setStatusFilter = (v: string) => setStatusSel(v === "All" ? [] : [v]);
   const [activeTab,   setActiveTab]   = useState<"overview"|"region"|"activity"|"daily"|"budget"|"daily-activity"|"lead-report">("overview");
@@ -395,7 +396,6 @@ export default function AnalyticsDashboard() {
   const [actFilter,    setActFilter]    = useState<string|null>(null);
   const [rsmFilter,    setRsmFilter]    = useState<string|null>(null);
   const [dealerFilter, setDealerFilter] = useState<string|null>(null);
-  const [highlightDay, setHighlightDay] = useState<string|null>(null);
   const [selectedDealerDaily, setSelectedDealerDaily] = useState<DailySummaryRow|null>(null);
   const [reportSubTab, setReportSubTab] = useState<"summary"|"dealer-daily">("summary");
   const [dailySearch, setDailySearch] = useState("");
@@ -418,6 +418,24 @@ export default function AnalyticsDashboard() {
     const hi = dailyFrom && dailyTo && dailyFrom > dailyTo ? dailyFrom : dailyTo;
     return (!lo || d >= lo) && (!hi || d <= hi);
   };
+  // ── [BTL-2026-10-31] keep the Daily Activity From–To in step with the header Year / Month ──
+  //    one month  → 1st … last day of that month (today if it is the running month)
+  //    many months→ 1st of the earliest … last day of the latest selected month
+  //    no month   → the whole selected year(s);  nothing selected → no date limit
+  useEffect(() => {
+    const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    const today = new Date();
+    const yrs = yearSel.map(Number).filter(Boolean);
+    const mIdx = monthSel.map(m => MONTHS.indexOf(m)).filter(i => i >= 0);
+    if (!yrs.length && !mIdx.length) { setDailyFrom(""); setDailyTo(""); return; }
+    const yMin = yrs.length ? Math.min(...yrs) : today.getFullYear();
+    const yMax = yrs.length ? Math.max(...yrs) : today.getFullYear();
+    const from = new Date(yMin, mIdx.length ? Math.min(...mIdx) : 0, 1);
+    let to     = new Date(yMax, mIdx.length ? Math.max(...mIdx) + 1 : 12, 0);
+    if (to > today && from <= today) to = today;   // running month → up to today
+    setDailyFrom(iso(from));
+    setDailyTo(iso(to));
+  }, [monthSel, yearSel]);
   const dailyRowMatches = useMemo(() => (row: DailySummaryRow) => {
     if (dailyStateSel.length   && !dailyStateSel.includes(row.state))         return false;
     if (dailyDealerSel.length  && !dailyDealerSel.includes(row.dealer))       return false;
@@ -1486,6 +1504,11 @@ export default function AnalyticsDashboard() {
               }}
             />
           </div>
+        </div>
+        <div style={{ fontSize:11,color:"#64748b",margin:"-4px 0 10px" }}>
+          📅 Dates follow the <b>Year / Month</b> filter at the top
+          {dailyFrom || dailyTo ? <> — now <b>{dailyFrom ? dailyFrom.split("-").reverse().join(".") : "…"}</b> to <b>{dailyTo ? dailyTo.split("-").reverse().join(".") : "…"}</b></> : " — no date limit"}.
+          {" "}PPT / PDF / Excel download this same period. Change From–To above for a custom range.
         </div>
         <Section title="Daily Activity Sheet Summary"
           subtitle={`Live · ${filteredDailySummary.length} activities · ${approved.length} approved proposals · click a header to sort`}>{liveDailySummary.length === 0 ? (

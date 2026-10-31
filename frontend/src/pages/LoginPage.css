@@ -1,4 +1,6 @@
 /* frontend/src/pages/LoginPage.css */
+/* [BTL-2026-10-31] Logo + scooty centred in the brand panel (desktop, tablet, mobile);
+                    Microsoft button shine kept inside the button. */
 
 :root {
   --volt: #00e676;
@@ -21,8 +23,8 @@
   flex: 1.1;
   background: linear-gradient(145deg, #0a2540 0%, #1e3a5f 55%, #2d5580 100%);
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: center;          /* vertical centre */
+  justify-content: center;      /* horizontal centre */
   padding: 3rem;
   position: relative;
   overflow: hidden;
@@ -53,13 +55,22 @@
   .login-brand::before, .login-brand::after { animation: none; opacity: 0; }
 }
 
+/* Logo + scooty stacked and centred */
 .login-brand-inner {
-  position: relative; z-index: 1; max-width: 420px; width: 100%;
+  position: relative; z-index: 1;
+  max-width: 440px; width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 
 .login-logo {
   display: flex;
   align-items: center;
+  justify-content: center;
+  width: 100%;
   margin-bottom: 2.5rem;
 }
 .login-logo-img {
@@ -67,6 +78,7 @@
   max-width: 85%;
   height: auto;
   display: block;
+  margin: 0 auto;
   object-fit: contain;
   background: transparent;
   border: none;
@@ -85,12 +97,18 @@
   line-height: 1.6; margin-bottom: 2rem;
 }
 
-/* Scooty — gentle idle float, like it's ready to roll */
+/* Scooty — centred under the logo, gentle idle float */
 .login-scooty-wrap {
-  margin-top: 2.5rem; display: flex; justify-content: center;
+  width: 100%;
+  margin-top: 1.5rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 .login-scooty-img {
-  width: 100%; max-width: 340px; height: auto; object-fit: contain;
+  width: 100%; max-width: 340px; height: auto;
+  display: block; margin: 0 auto;
+  object-fit: contain;
   filter: drop-shadow(0 8px 28px rgba(0,230,118,0.18)) drop-shadow(0 6px 20px rgba(0,0,0,0.35));
   animation: idleFloat 4.5s ease-in-out infinite;
 }
@@ -125,6 +143,7 @@
   max-width: 65%;
   height: auto;
   display: block;
+  margin: 0 auto;
   object-fit: contain;
   background: transparent;
   border: none;
@@ -145,7 +164,7 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.login-card-header { margin-bottom: 1.75rem; }
+.login-card-header { margin-bottom: 1.75rem; text-align: center; }
 .login-card-title {
   font-family: 'Space Grotesk', 'Inter', sans-serif;
   font-size: 1.65rem; font-weight: 700; color: var(--navy);
@@ -171,8 +190,10 @@
   border-bottom: 2px solid #1e3a5f;
 }
 
-/* Microsoft button — power-on glow on hover instead of stock MS blue-hover */
+/* Microsoft / Sign-in button — shine stays INSIDE the button */
 .btn-microsoft {
+  position: relative;
+  overflow: hidden;
   display: flex; align-items: center; justify-content: center; gap: 11px;
   width: 100%; padding: 0.82rem 1.25rem;
   background: #1e3a5f; color: #fff;
@@ -182,23 +203,21 @@
   box-shadow: 0 2px 8px rgba(30,58,95,0.3);
   font-family: inherit;
 }
-.btn-microsoft:hover:not(:disabled) {
-  background: #16304f;
-  box-shadow: 0 4px 14px rgba(30,58,95,0.4);
-  transform: translateY(-1px);
-}
+.btn-microsoft > * { position: relative; z-index: 1; }
 .btn-microsoft::after {
   content: '';
   position: absolute; inset: 0;
   background: linear-gradient(90deg, transparent, rgba(0,230,118,0.25), transparent);
   transform: translateX(-100%);
   transition: transform 0.5s ease;
+  pointer-events: none;
 }
-.btn-microsoft:hover:not(:disabled)::after { transform: translateX(100%); }
 .btn-microsoft:hover:not(:disabled) {
+  background: #16304f;
   box-shadow: 0 4px 18px rgba(0,230,118,0.28);
   transform: translateY(-1px);
 }
+.btn-microsoft:hover:not(:disabled)::after { transform: translateX(100%); }
 .btn-microsoft:active:not(:disabled) { transform: translateY(0); }
 .btn-microsoft:disabled { opacity: 0.6; cursor: not-allowed; }
 .btn-microsoft:focus-visible {
@@ -284,20 +303,21 @@
   .login-card-panel { flex: 0 0 380px; }
   .login-brand      { padding: 2.5rem; }
   .login-logo-img   { width: 260px; }
+  .login-scooty-img { max-width: 300px; }
 }
 
 /* ══════════════════════════════════════════════════════
-   RESPONSIVE — Mobile (≤ 768px)
+   RESPONSIVE — Mobile (≤ 768px): logo + scooty centred on top, card below
 ══════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
   .login-root { flex-direction: column; background: var(--ink); }
 
   .login-brand {
     flex: none;
-    align-items: flex-start;
-    justify-content: flex-start;
-    padding: 2rem 1.5rem 5rem;
-    min-height: 260px;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1.5rem 3.5rem;
+    min-height: 0;
   }
   .login-brand-inner  { max-width: 100%; }
   .login-logo         { margin-bottom: 1rem; }
@@ -306,12 +326,11 @@
   .login-brand-sub    { font-size: 0.88rem; margin-bottom: 0; }
 
   .login-scooty-wrap {
-    position: absolute;
-    bottom: 0; right: 0;
-    margin: 0;
-    justify-content: flex-end;
+    position: static;
+    margin-top: 0.5rem;
+    justify-content: center;
   }
-  .login-scooty-img { max-width: 200px; opacity: 0.9; }
+  .login-scooty-img { max-width: 200px; opacity: 0.95; }
 
   .login-card-panel {
     flex: 1;
@@ -340,7 +359,7 @@
 }
 
 @media (max-width: 480px) {
-  .login-brand          { padding: 1.5rem 1.25rem 4.5rem; min-height: 230px; }
+  .login-brand          { padding: 1.5rem 1.25rem 3rem; }
   .login-logo-img       { width: 190px; }
   .login-brand-headline { font-size: 1.65rem; }
   .login-brand-sub      { font-size: 0.83rem; }
