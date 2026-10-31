@@ -1,5 +1,7 @@
 // src/pages/AnalyticsDashboard.tsx
 // Full analytics dashboard — region/state/activity/budget/lead/daily data insights
+// [BTL-2026-10-28] Every table: sortable headers (click ▲ → ▼ → off) + pagination (10/25/50/100).
+//                  Totals / Avg rows always cover ALL filtered rows, not just the visible page.
 import { useState, useMemo, useEffect } from "react";
 import { useMsal } from "@azure/msal-react";
 import { fetchProposals, type ProposalResponse } from "../services/proposalService";
@@ -15,6 +17,7 @@ import MultiSelectDropdown from "../components/MultiSelectDropdown";
 import { buildDailyReportPpt } from "../utils/dailyReportPpt";
 import { buildDailyReportPdf } from "../utils/dailyReportPdf";       // [BTL-2026-10-26b]
 import { buildDailyReportExcel } from "../utils/dailyReportExcel";   // [BTL-2026-10-26b]
+import { useSortPage, SortTh, Pager, type SortGetter } from "../components/TableTools";   // [BTL-2026-10-28]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const inr = (v: number) => "₹" + Math.round(v).toLocaleString("en-IN");
@@ -24,6 +27,7 @@ const inrL = (v: number) => {
   if (v >= 1_000)       return `₹${(v / 1_000).toFixed(0)}K`;
   return `₹${Math.round(v)}`;
 };
+void inr;
 const pct = (a: number, b: number) => b > 0 ? Math.round((a / b) * 100) : 0;
 const clamp = (v: number, max = 100) => Math.min(v, max);
 
@@ -31,6 +35,12 @@ const MONTHS = ["January","February","March","April","May","June",
                 "July","August","September","October","November","December"];
 const MONTH_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const CURRENT_YEAR = new Date().getFullYear();
+
+// [BTL-2026-10-28] sort getters that just read a field of the row
+function byKeys<T>(keys: string[]): Record<string, SortGetter<T>> {
+  return Object.fromEntries(keys.map((k) => [k, (r: T) => (r as any)[k] as string | number | null])) as Record<string, SortGetter<T>>;
+}
+const EMPTY_ENTRIES: never[] = [];
 
 // ─── Bar component ────────────────────────────────────────────────────────────
 const Bar = ({ value, max, color, height = 8 }: { value: number; max: number; color: string; height?: number }) => (
@@ -419,11 +429,7 @@ export default function AnalyticsDashboard() {
     return true;
   }, [dailyStateSel, dailyDealerSel, dailyActTypeSel, dailySearch]);
   const [anGallery, setAnGallery] = useState<{ items: ProofMedia[]; index: number; title: string } | null>(null);   // [BTL-2026-10-27b]
-  // ── FIX: moved above the early loading/error returns below — this hook
-  // was previously declared AFTER `if (loading) return...` / `if (error) return...`,
-  // which violates React's Rules of Hooks (a hook must be called on every render,
-  // in the same order). That caused "Rendered more hooks than during the previous
-  // render" once loading flipped from true → false. ──
+  // ── Hooks must stay ABOVE the early loading / error returns (Rules of Hooks) ──
   const [manualRetailTargets, setManualRetailTargets] = useState<Record<string,string>>({});
   const [lmsLeadReport,        setLmsLeadReport]        = useState<LeadReportApiRow[]|null>(null);
   const [lmsLeadReportLoading, setLmsLeadReportLoading] = useState(false);
@@ -571,9 +577,7 @@ export default function AnalyticsDashboard() {
     const map: Record<string,ActivityRow> = {};
     for (const p of filtered) {
       for (const a of p.activities) {
-        // ── FIX: when ATL/BTL KPI filter is active, only include activities
-        // matching that category — previously the whole proposal was kept
-        // if ANY activity matched, letting the other category leak through. ──
+        // when ATL/BTL KPI filter is active, only include activities matching that category
         if (actFilter === "ATL_FILTER" && (a as any).category !== "ATL") continue;
         if (actFilter === "BTL_FILTER" && (a as any).category === "ATL") continue;
 
@@ -650,11 +654,7 @@ export default function AnalyticsDashboard() {
         const retailMtdActivityVal = lastMtdActivity?.retailMtdActivity ?? 0;
         const lastClosingStock = [...entries].reverse().find(e=>((e as any).closingStock||0)>0) as any;
         const closingStockVal = lastClosingStock?.closingStock ?? 0;
-        // ── Retail MTD and Retail Rate/Canopy are MANUAL, per-day open input
-        // fields in ApproverDashboard (entry.retailMtd / entry.retailRatePerCanopy)
-        // — not computed from retailActual or setupCount. Read the latest
-        // non-zero manually-entered value, matching ApproverDashboard's own
-        // footer logic. ──
+        // Retail MTD and Retail Rate/Canopy are MANUAL per-day fields — latest non-zero value
         const lastRetailMtd = [...entries].reverse().find(e=>((e as any).retailMtd||0)>0) as any;
         const retailMtdVal = lastRetailMtd?.retailMtd ?? 0;
         const lastRetailRate = [...entries].reverse().find(e=>((e as any).retailRatePerCanopy||0)>0) as any;
@@ -823,6 +823,75 @@ export default function AnalyticsDashboard() {
       };
     });
   }, [stateRows, lmsLeadReport, approved, manualRetailTargets]);
+
+  // ── [BTL-2026-10-28] Lead Report table rows (same formulas as before; moved out of the
+  //    JSX so the table can be sorted and paged). BTL MTD-A falls back to the
+  //    post-activity estimate when LMS has no row for the state. ──
+  const leadTableRows = useMemo((): LeadReportRow[] => {
+    const totalPunchedAll = dailyAgg.reduce((s,d)=>s+d.leadsPunched,0);
+    return leadReportExportRows.map((r) => {
+      const lmsRow = lmsLeadReport?.find(x => x.state === r.state);
+      if (lmsRow?.btlMtdAch != null) return r;
+      const sr = stateRows.find(x => x.state === r.state);
+      const btlMtdA = totalPunchedAll > 0 && sr ? Math.round(totalPunchedAll * (sr.lead / Math.max(totalLead,1))) : 0;
+      const totalReceived = r.totalReceived - r.btlMtdA + btlMtdA;
+      const variance = totalReceived - r.leadsMonthTarget;
+      return {
+        ...r, btlMtdA, totalReceived, variance,
+        achPct:    r.leadsMonthTarget>0 ? Math.round((totalReceived/r.leadsMonthTarget)*100) : 0,
+        achPctMtd: r.leadsMtdTarget>0   ? Math.round((totalReceived/r.leadsMtdTarget)*100)   : 0,
+        retailEnqPct: totalReceived>0 ? Math.round((r.mtdRetailAchieved/totalReceived)*100) : 0,
+      };
+    });
+  }, [leadReportExportRows, lmsLeadReport, stateRows, dailyAgg, totalLead]);
+
+  // ── [BTL-2026-10-28] extra columns needed for sorting the Region / Activity / Budget tables ──
+  const regionRows = useMemo(() => stateRows.map((r) => ({
+    ...r,
+    pendingCount:   filtered.filter(p => p.state===r.state && p.status==="Pending").length,
+    approvedBudget: filtered.filter(p => p.state===r.state && p.status==="Approved").reduce((s,p) => s+p.totalBudget,0),
+    rate:           pct(r.approved, r.proposals),
+  })), [stateRows, filtered]);
+  const totalAllActBudget = activityRows.reduce((s,a) => s+a.budget,0);
+  const activityTableRows = useMemo(() => activityRows.map((r) => ({
+    ...r, share: pct(r.budget, totalAllActBudget), cac: r.retail > 0 ? Math.round(r.budget / r.retail) : 0,
+  })), [activityRows, totalAllActBudget]);
+  const monthTableRows = useMemo(() => monthRows.filter(r => r.proposals > 0).map((r) => ({
+    ...r, monthIdx: MONTHS.indexOf(r.month),
+    cpl: r.lead > 0 ? Math.round(r.budget / r.lead) : 0,
+    cac: r.retail > 0 ? Math.round(r.budget / r.retail) : 0,
+  })), [monthRows]);
+  const topStateRows = useMemo(() => stateRows.slice(0, 8), [stateRows]);
+
+  // ── [BTL-2026-10-28] one sort + page state per table ──
+  const headerFilterKey = [yearSel, monthSel, statusSel, dealerStatusSel, stateFilter, rsmFilter, dealerFilter, actFilter];
+  const topStateTbl = useSortPage(topStateRows, useMemo(() => byKeys<StateRow>(["state","proposals","approved","budget","lead","retail","cac"]), []),
+    { storageKey: "an_top_states", pageSize: 100 });
+  const regionTbl = useSortPage(regionRows,
+    useMemo(() => byKeys<(typeof regionRows)[number]>(["state","proposals","approved","pendingCount","budget","approvedBudget","lead","retail","cac","rate"]), []),
+    { storageKey: "an_region", pageSize: 25, resetOn: headerFilterKey });
+  const actTbl = useSortPage(activityTableRows,
+    useMemo(() => byKeys<(typeof activityTableRows)[number]>(["name","count","atl","btl","share","budget","lead","retail","cac"]), []),
+    { storageKey: "an_activity", pageSize: 25, resetOn: headerFilterKey });
+  const monthTbl = useSortPage(monthTableRows,
+    useMemo(() => byKeys<(typeof monthTableRows)[number]>(["monthIdx","proposals","budget","lead","retail","cpl","cac"]), []),
+    { storageKey: "an_month", pageSize: 25, resetOn: headerFilterKey });
+  const dsTbl = useSortPage(filteredDailySummary,
+    useMemo(() => byKeys<DailySummaryRow>(["sr","dealer","activityType","location","state","setupCount","enquiryPlanned","enquiryActual","perCanopy","hot",
+      "trPlanned","trActual","trPerCanopy","bookToday","bookInHand","retailToday","retailMtdAct","retailMtd","retailRatePerCanopy",
+      "activityDay","closingStock","leads","punched","gap","convPct","photos"]), []),
+    { storageKey: "an_daily", pageSize: 25, resetOn: [dailySearch, dailyStateSel, dailyDealerSel, dailyActTypeSel, dailyFrom, dailyTo] });
+  const ddTbl = useSortPage<DailyEntry>(selectedDealerDaily?.dailyEntries ?? EMPTY_ENTRIES,
+    useMemo(() => byKeys<DailyEntry>(["date","openingStock","setupCount","enquiryPlanned","enquiryActual","walkIn","inLms","enquiryGap","enquiryHot","revisedHot",
+      "testDrivePlanned","testDriveActual","bookingActual","bookingInHand","retailMtdActivity","retailMtd"]), []),
+    { storageKey: "an_dealer_daily", pageSize: 50, resetOn: [selectedDealerDaily] });
+  const leadTbl = useSortPage(leadTableRows,
+    useMemo(() => byKeys<LeadReportRow>(["state","leadsMonthTarget","leadsMtdTarget","walkinTarget","walkinMtdT","walkinMtdA","btlTarget","btlMtdT","btlMtdA",
+      "referralTarget","referralMtdT","referralMtdA","atlTarget","atlMtdT","atlMtdA","digitalTarget","digitalMtdT","digitalMtdA",
+      "totalReceived","variance","achPct","achPctMtd","retailTarget","mtdRetailTarget","mtdRetailAchieved","mtdRetailAchPct","retailEnqPct"]), []),
+    { storageKey: "an_lead", pageSize: 50, resetOn: headerFilterKey });
+  const spOf = (t: { sortKey: string | null; sortDir: "asc" | "desc"; onSort: (k: string) => void }) =>
+    ({ sortKey: t.sortKey, sortDir: t.sortDir, onSort: t.onSort });
 
   // ── [BTL-2026-10-26] Daily PPT — same format as "Project_Towns_<date>.pptx" ──
   // Report day = "To" date (or today). Uses the State / Dealer / Activity filters.
@@ -1007,24 +1076,29 @@ export default function AnalyticsDashboard() {
 
           {/* Top states + top activities */}
           <div className="an-row-2">
-            <Section title="Top States by Budget" subtitle={`${stateRows.length} total states`}>
+            <Section title="Top States by Budget" subtitle={`${stateRows.length} total states · click a header to sort the top 8`}>
               <table className="an-table">
                 <thead><tr>
-                  <th>State</th><th>Proposals</th><th>Approved</th>
-                  <th>Budget</th><th>Lead</th><th>Retail</th><th>CAC</th>
+                  <SortTh k="state"     label="State"     {...spOf(topStateTbl)}/>
+                  <SortTh k="proposals" label="Proposals" align="center" {...spOf(topStateTbl)}/>
+                  <SortTh k="approved"  label="Approved"  align="center" {...spOf(topStateTbl)}/>
+                  <SortTh k="budget"    label="Budget"    align="right"  {...spOf(topStateTbl)}/>
+                  <SortTh k="lead"      label="Lead"      align="center" {...spOf(topStateTbl)}/>
+                  <SortTh k="retail"    label="Retail"    align="center" {...spOf(topStateTbl)}/>
+                  <SortTh k="cac"       label="CAC"       align="right"  {...spOf(topStateTbl)}/>
                 </tr></thead>
                 <tbody>
-                  {stateRows.slice(0,8).map(r => { const isSt=stateFilter===r.state; return (
+                  {topStateTbl.pageRows.map(r => { const isSt=stateFilter===r.state; return (
                     <tr key={r.state} onClick={()=>toggleFilter(stateFilter,r.state,setStateFilter)} className="an-tr-click" style={{ background:isSt?"#eff6ff":undefined,outline:isSt?"2px solid #2563eb":"none" }} title={`Drill into ${r.state}`}>
                       <td className="an-td-bold">{r.state}</td>
                       <td className="an-td-center">{r.proposals}</td>
                       <td className="an-td-center">
                         <span style={{ color:"#16a34a",fontWeight:700 }}>{r.approved}</span>
                       </td>
-                      <td className="an-td-right an-td-bold">{inrL(r.budget)}</td>
+                      <td className="an-td-right an-td-bold" style={{ whiteSpace:"nowrap" }}>{inrL(r.budget)}</td>
                       <td className="an-td-center">{r.lead}</td>
                       <td className="an-td-center">{r.retail}</td>
-                      <td className="an-td-right" style={{ color: r.cac > 4000 ? "#dc2626" : "#374151", fontWeight: r.cac > 4000 ? 700 : 400 }}>
+                      <td className="an-td-right" style={{ whiteSpace:"nowrap", color: r.cac > 4000 ? "#dc2626" : "#374151", fontWeight: r.cac > 4000 ? 700 : 400 }}>
                         {inrL(r.cac)}
                         {r.cac > 4000 && " ⚠"}
                       </td>
@@ -1071,31 +1145,37 @@ export default function AnalyticsDashboard() {
       ════════════════════════════════════════════════════════════════════════ */}
       {activeTab === "region" && (
         <>
-          <Section title="State-wise Performance" subtitle={`${stateRows.length} states · all metrics`}>
-            <div className="an-table-wrap">
+          <Section title="State-wise Performance" subtitle={`${stateRows.length} states · all metrics · click a header to sort`}>
+            <Pager page={regionTbl.page} pageSize={regionTbl.pageSize} total={regionTbl.total} onPage={regionTbl.setPage} onPageSize={regionTbl.setPageSize}/>
+            <div className="an-table-wrap" id="an-region-wrap">
               <table className="an-table an-table-full">
                 <thead><tr>
-                  <th>#</th><th>State</th><th>Proposals</th><th>Approved</th>
-                  <th>Pending</th><th>Budget</th><th>Approved Budget</th>
-                  <th>Lead Target</th><th>Retail Target</th><th>CAC</th>
-                  <th>Approval Rate</th>
+                  <th>#</th>
+                  <SortTh k="state"          label="State"           {...spOf(regionTbl)}/>
+                  <SortTh k="proposals"      label="Proposals"       align="center" {...spOf(regionTbl)}/>
+                  <SortTh k="approved"       label="Approved"        align="center" {...spOf(regionTbl)}/>
+                  <SortTh k="pendingCount"   label="Pending"         align="center" {...spOf(regionTbl)}/>
+                  <SortTh k="budget"         label="Budget"          align="right"  {...spOf(regionTbl)}/>
+                  <SortTh k="approvedBudget" label="Approved Budget" align="right"  {...spOf(regionTbl)}/>
+                  <SortTh k="lead"           label="Lead Target"     align="center" {...spOf(regionTbl)}/>
+                  <SortTh k="retail"         label="Retail Target"   align="center" {...spOf(regionTbl)}/>
+                  <SortTh k="cac"            label="CAC"             align="right"  {...spOf(regionTbl)}/>
+                  <SortTh k="rate"           label="Approval Rate"   {...spOf(regionTbl)}/>
                 </tr></thead>
                 <tbody>
-                  {stateRows.map((r,i) => { const isSt2=stateFilter===r.state; const approvedBudget = filtered.filter(p => p.state===r.state && p.status==="Approved").reduce((s,p) => s+p.totalBudget,0);
-                    const statePending   = filtered.filter(p => p.state===r.state && p.status==="Pending").length;
-                    const rate = pct(r.approved, r.proposals);
+                  {regionTbl.pageRows.map((r,i) => { const isSt2=stateFilter===r.state; const rate = r.rate;
                     return (
                       <tr key={r.state} onClick={()=>toggleFilter(stateFilter,r.state,setStateFilter)} className="an-tr-click" style={{ background:isSt2?"#eff6ff":undefined }} title={`Drill: ${r.state}`}>
-                        <td className="an-td-muted">{i+1}</td>
+                        <td className="an-td-muted">{(regionTbl.page-1)*regionTbl.pageSize+i+1}</td>
                         <td className="an-td-bold">{r.state}</td>
                         <td className="an-td-center">{r.proposals}</td>
                         <td className="an-td-center" style={{ color:"#16a34a",fontWeight:700 }}>{r.approved}</td>
-                        <td className="an-td-center" style={{ color:"#f59e0b" }}>{statePending}</td>
-                        <td className="an-td-right an-td-bold">{inrL(r.budget)}</td>
-                        <td className="an-td-right" style={{ color:"#16a34a" }}>{inrL(approvedBudget)}</td>
+                        <td className="an-td-center" style={{ color:"#f59e0b" }}>{r.pendingCount}</td>
+                        <td className="an-td-right an-td-bold" style={{ whiteSpace:"nowrap" }}>{inrL(r.budget)}</td>
+                        <td className="an-td-right" style={{ color:"#16a34a", whiteSpace:"nowrap" }}>{inrL(r.approvedBudget)}</td>
                         <td className="an-td-center">{r.lead}</td>
                         <td className="an-td-center">{r.retail}</td>
-                        <td className="an-td-right" style={{ color:r.cac>4000?"#dc2626":"#374151", fontWeight:r.cac>4000?700:400 }}>
+                        <td className="an-td-right" style={{ whiteSpace:"nowrap", color:r.cac>4000?"#dc2626":"#374151", fontWeight:r.cac>4000?700:400 }}>
                           {inrL(r.cac)}{r.cac>4000?" ⚠":""}
                         </td>
                         <td>
@@ -1114,16 +1194,17 @@ export default function AnalyticsDashboard() {
                     <td className="an-td-center" style={{ fontWeight:700 }}>{filtered.length}</td>
                     <td className="an-td-center" style={{ fontWeight:700,color:"#16a34a" }}>{approved.length}</td>
                     <td className="an-td-center" style={{ fontWeight:700,color:"#f59e0b" }}>{pending.length}</td>
-                    <td className="an-td-right" style={{ fontWeight:700 }}>{inrL(totalBudget)}</td>
-                    <td className="an-td-right" style={{ fontWeight:700,color:"#16a34a" }}>{inrL(approvedBudget)}</td>
+                    <td className="an-td-right" style={{ fontWeight:700, whiteSpace:"nowrap" }}>{inrL(totalBudget)}</td>
+                    <td className="an-td-right" style={{ fontWeight:700,color:"#16a34a", whiteSpace:"nowrap" }}>{inrL(approvedBudget)}</td>
                     <td className="an-td-center" style={{ fontWeight:700 }}>{totalLead}</td>
                     <td className="an-td-center" style={{ fontWeight:700 }}>{totalRetail}</td>
-                    <td className="an-td-right" style={{ fontWeight:700 }}>{inrL(avgCac)}</td>
+                    <td className="an-td-right" style={{ fontWeight:700, whiteSpace:"nowrap" }}>{inrL(avgCac)}</td>
                     <td style={{ fontWeight:700,color:"#16a34a" }}>{approvalRate}%</td>
                   </tr>
                 </tfoot>
               </table>
             </div>
+            {regionTbl.total > regionTbl.pageSize && <Pager page={regionTbl.page} pageSize={regionTbl.pageSize} total={regionTbl.total} onPage={regionTbl.setPage} onPageSize={regionTbl.setPageSize} scrollTo="#an-region-wrap"/>}
           </Section>
 
           {/* RSM-wise */}
@@ -1175,21 +1256,27 @@ export default function AnalyticsDashboard() {
             })()}
           </div>
 
-          <Section title="Activity Type Breakdown" subtitle="Budget, count and lead/retail by activity">
-            <div className="an-table-wrap">
+          <Section title="Activity Type Breakdown" subtitle="Budget, count and lead/retail by activity · click a header to sort">
+            <Pager page={actTbl.page} pageSize={actTbl.pageSize} total={actTbl.total} onPage={actTbl.setPage} onPageSize={actTbl.setPageSize}/>
+            <div className="an-table-wrap" id="an-activity-wrap">
               <table className="an-table an-table-full">
                 <thead><tr>
-                  <th>#</th><th>Activity Name</th><th>Count</th>
-                  <th>ATL</th><th>BTL</th>
-                  <th>Budget Share</th><th>Total Budget</th>
-                  <th>Lead Target</th><th>Retail Target</th><th>CAC</th>
+                  <th>#</th>
+                  <SortTh k="name"   label="Activity Name" {...spOf(actTbl)}/>
+                  <SortTh k="count"  label="Count"         align="center" {...spOf(actTbl)}/>
+                  <SortTh k="atl"    label="ATL"           align="center" {...spOf(actTbl)}/>
+                  <SortTh k="btl"    label="BTL"           align="center" {...spOf(actTbl)}/>
+                  <SortTh k="share"  label="Budget Share"  {...spOf(actTbl)}/>
+                  <SortTh k="budget" label="Total Budget"  align="right"  {...spOf(actTbl)}/>
+                  <SortTh k="lead"   label="Lead Target"   align="center" {...spOf(actTbl)}/>
+                  <SortTh k="retail" label="Retail Target" align="center" {...spOf(actTbl)}/>
+                  <SortTh k="cac"    label="CAC"           align="right"  {...spOf(actTbl)}/>
                 </tr></thead>
                 <tbody>
-                  {activityRows.map((r,i) => { const isAct2=actFilter===r.name; const totalAllBudget = activityRows.reduce((s,a) => s+a.budget,0);
-                    const cac = r.retail > 0 ? Math.round(r.budget / r.retail) : 0;
+                  {actTbl.pageRows.map((r,i) => { const isAct2=actFilter===r.name; const cac = r.cac;
                     return (
                       <tr key={r.name} onClick={()=>toggleFilter(actFilter,r.name,setActFilter)} className="an-tr-click" style={{ background:isAct2?"#eff6ff":undefined }} title={`Drill: ${r.name}`}>
-                        <td className="an-td-muted">{i+1}</td>
+                        <td className="an-td-muted">{(actTbl.page-1)*actTbl.pageSize+i+1}</td>
                         <td className="an-td-bold">{r.name}</td>
                         <td className="an-td-center">{r.count}</td>
                         <td className="an-td-center">
@@ -1200,14 +1287,14 @@ export default function AnalyticsDashboard() {
                         </td>
                         <td>
                           <div style={{ display:"flex",alignItems:"center",gap:6 }}>
-                            <Bar value={r.budget} max={totalAllBudget} color="#2563eb" height={6}/>
-                            <span style={{ fontSize:11,color:"#64748b",minWidth:30 }}>{pct(r.budget,totalAllBudget)}%</span>
+                            <Bar value={r.budget} max={totalAllActBudget} color="#2563eb" height={6}/>
+                            <span style={{ fontSize:11,color:"#64748b",minWidth:30 }}>{r.share}%</span>
                           </div>
                         </td>
-                        <td className="an-td-right an-td-bold">{inrL(r.budget)}</td>
+                        <td className="an-td-right an-td-bold" style={{ whiteSpace:"nowrap" }}>{inrL(r.budget)}</td>
                         <td className="an-td-center">{r.lead}</td>
                         <td className="an-td-center">{r.retail}</td>
-                        <td className="an-td-right" style={{ color:cac>4000?"#dc2626":"#374151",fontWeight:cac>4000?700:400 }}>
+                        <td className="an-td-right" style={{ whiteSpace:"nowrap", color:cac>4000?"#dc2626":"#374151",fontWeight:cac>4000?700:400 }}>
                           {inrL(cac)}{cac>4000?" ⚠":""}
                         </td>
                       </tr>
@@ -1216,6 +1303,7 @@ export default function AnalyticsDashboard() {
                 </tbody>
               </table>
             </div>
+            {actTbl.total > actTbl.pageSize && <Pager page={actTbl.page} pageSize={actTbl.pageSize} total={actTbl.total} onPage={actTbl.setPage} onPageSize={actTbl.setPageSize} scrollTo="#an-activity-wrap"/>}
           </Section>
 
           {/* Top dealers */}
@@ -1257,17 +1345,24 @@ export default function AnalyticsDashboard() {
           </div>
 
           {/* Month budget table */}
-          <Section title="Month-wise Budget Analysis" subtitle="Budget and lead breakdown per month">
+          <Section title="Month-wise Budget Analysis" subtitle="Budget and lead breakdown per month · click a header to sort">
+            <Pager page={monthTbl.page} pageSize={monthTbl.pageSize} total={monthTbl.total} onPage={monthTbl.setPage} onPageSize={monthTbl.setPageSize}/>
             <div className="an-table-wrap">
               <table className="an-table an-table-full">
                 <thead><tr>
-                  <th>Month</th><th>Proposals</th><th>Budget Share</th>
-                  <th>Total Budget</th><th>Lead Target</th><th>Retail Target</th><th>CPL</th><th>CAC</th>
+                  <SortTh k="monthIdx"  label="Month"         {...spOf(monthTbl)}/>
+                  <SortTh k="proposals" label="Proposals"     align="center" {...spOf(monthTbl)}/>
+                  <SortTh k="budget"    label="Budget Share"  {...spOf(monthTbl)}/>
+                  <SortTh k="budget"    label="Total Budget"  align="right"  {...spOf(monthTbl)}/>
+                  <SortTh k="lead"      label="Lead Target"   align="center" {...spOf(monthTbl)}/>
+                  <SortTh k="retail"    label="Retail Target" align="center" {...spOf(monthTbl)}/>
+                  <SortTh k="cpl"       label="CPL"           align="right"  {...spOf(monthTbl)}/>
+                  <SortTh k="cac"       label="CAC"           align="right"  {...spOf(monthTbl)}/>
                 </tr></thead>
                 <tbody>
-                  {monthRows.filter(r => r.proposals > 0).map(r => { const isMon2=monthFilter===r.month;
-                    const cpl = r.lead > 0 ? Math.round(r.budget / r.lead) : 0;
-                    const cac = r.retail > 0 ? Math.round(r.budget / r.retail) : 0;
+                  {monthTbl.pageRows.map(r => { const isMon2=monthFilter===r.month;
+                    const cpl = r.cpl;
+                    const cac = r.cac;
                     return (
                       <tr key={r.month} onClick={()=>setMonthFilter(isMon2?"All":r.month)} className="an-tr-click" style={{ background:isMon2?"#eff6ff":undefined }} title={`Drill: ${r.month}`}>
                         <td className="an-td-bold">{r.month}</td>
@@ -1278,11 +1373,11 @@ export default function AnalyticsDashboard() {
                             <span style={{ fontSize:11,color:"#64748b",minWidth:30 }}>{pct(r.budget,totalBudget)}%</span>
                           </div>
                         </td>
-                        <td className="an-td-right an-td-bold">{inrL(r.budget)}</td>
+                        <td className="an-td-right an-td-bold" style={{ whiteSpace:"nowrap" }}>{inrL(r.budget)}</td>
                         <td className="an-td-center">{r.lead}</td>
                         <td className="an-td-center">{r.retail}</td>
-                        <td className="an-td-right" style={{ color:"#7c3aed" }}>{inrL(cpl)}</td>
-                        <td className="an-td-right" style={{ color:cac>4000?"#dc2626":"#374151",fontWeight:cac>4000?700:400 }}>
+                        <td className="an-td-right" style={{ color:"#7c3aed", whiteSpace:"nowrap" }}>{inrL(cpl)}</td>
+                        <td className="an-td-right" style={{ whiteSpace:"nowrap", color:cac>4000?"#dc2626":"#374151",fontWeight:cac>4000?700:400 }}>
                           {inrL(cac)}{cac>4000?" ⚠":""}
                         </td>
                       </tr>
@@ -1294,13 +1389,13 @@ export default function AnalyticsDashboard() {
                     <td style={{ fontWeight:800,padding:"8px 12px" }}>TOTAL</td>
                     <td className="an-td-center" style={{ fontWeight:700 }}>{filtered.length}</td>
                     <td/>
-                    <td className="an-td-right" style={{ fontWeight:700 }}>{inrL(totalBudget)}</td>
+                    <td className="an-td-right" style={{ fontWeight:700, whiteSpace:"nowrap" }}>{inrL(totalBudget)}</td>
                     <td className="an-td-center" style={{ fontWeight:700 }}>{totalLead}</td>
                     <td className="an-td-center" style={{ fontWeight:700 }}>{totalRetail}</td>
-                    <td className="an-td-right" style={{ fontWeight:700,color:"#7c3aed" }}>
+                    <td className="an-td-right" style={{ fontWeight:700,color:"#7c3aed", whiteSpace:"nowrap" }}>
                       {inrL(totalLead>0?Math.round(totalBudget/totalLead):0)}
                     </td>
-                    <td className="an-td-right" style={{ fontWeight:700 }}>{inrL(avgCac)}</td>
+                    <td className="an-td-right" style={{ fontWeight:700, whiteSpace:"nowrap" }}>{inrL(avgCac)}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -1382,7 +1477,7 @@ export default function AnalyticsDashboard() {
               title="Daily Activity Sheet Summary"
               subtitle={dailyFrom || dailyTo ? `${dailyFrom || "…"} to ${dailyTo || "…"}` : undefined}
               columns={dailySummaryExportColumns}
-              rows={filteredDailySummary as any}
+              rows={dsTbl.sorted as any}
               disabled={!!pptBusy}
               custom={{
                 ppt:  () => exportDailyReport("ppt"),
@@ -1393,7 +1488,7 @@ export default function AnalyticsDashboard() {
           </div>
         </div>
         <Section title="Daily Activity Sheet Summary"
-          subtitle={`Live · ${filteredDailySummary.length} activities · ${approved.length} approved proposals`}>{liveDailySummary.length === 0 ? (
+          subtitle={`Live · ${filteredDailySummary.length} activities · ${approved.length} approved proposals · click a header to sort`}>{liveDailySummary.length === 0 ? (
             <div style={{ textAlign:"center",padding:"60px 24px",color:"#9ca3af" }}>
               <div style={{ fontSize:40,marginBottom:12 }}>📅</div>
               <div style={{ fontWeight:700,fontSize:15,color:"#0a2540",marginBottom:6 }}>No post-activity data yet</div>
@@ -1410,8 +1505,7 @@ export default function AnalyticsDashboard() {
                   {label:"Hot",           value:String(dsTotals.hot),         color:"#dc2626"},
                   {label:"TD Actual",     value:String(dsTotals.trActual),      color:"#7c3aed"},
                   {label:"Retail MTD",    value:String(dsTotals.retailMtd),        color:"#f59e0b"},
-                  // ── NEW: Retail Rate/Canopy = Σ Retail (daily) ÷ Σ Setup Count (Canopy)
-                  // e.g. Canopy total 33, Retail total 27 → 27/33 = 0.818 → 0.8
+                  // Retail Rate/Canopy = Σ Retail (daily) ÷ Σ Setup Count (Canopy)
                   {label:"Retail Rate/Canopy", value: dsTotals.setupCount>0
                     ? (Math.round((dsTotals.retailToday/dsTotals.setupCount)*10)/10).toFixed(1)
                     : "0.0", color:"#c2410c"},
@@ -1436,52 +1530,59 @@ export default function AnalyticsDashboard() {
                 const perCanopyBg    = (v:number) => v>=25?"#dcfce7":v>=15?"#fef9c3":v>0?"#fee2e2":"transparent";
                 const convBg = (v:number) => v>=10?"#dcfce7":v>=5?"#fef9c3":"#fee2e2";
                 const convColor = (v:number) => v>=10?"#166534":v>=5?"#854d0e":"#991b1b";
+                const sp = spOf(dsTbl);
+                const sub = (k: string, label: React.ReactNode, bg: string, color = "#e0f2fe") =>
+                  <SortTh k={k} label={label} align="center" style={{ background:bg,color,fontSize:11 }} {...sp}/>;
+                const top = (k: string, label: React.ReactNode, bg: string, align: "left"|"center" = "left") =>
+                  <SortTh k={k} label={label} rowSpan={2} align={align} style={{ background:bg,color:"#fff",verticalAlign:"middle" }} {...sp}/>;
 
                 return (
-                  <div className="an-table-wrap">
+                  <>
+                  <Pager page={dsTbl.page} pageSize={dsTbl.pageSize} total={dsTbl.total} onPage={dsTbl.setPage} onPageSize={dsTbl.setPageSize}/>
+                  <div className="an-table-wrap" id="an-daily-wrap">
                     <table className="an-table an-table-full" style={{ minWidth:2000, borderCollapse:"separate", borderSpacing:0 }}>
                       <thead>
                         {/* Row 1 — grouped section bands */}
                         <tr>
-                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 8px",textAlign:"center",verticalAlign:"middle" }}>Sr.No</th>
-                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 10px",textAlign:"left",verticalAlign:"middle" }}>Dealer</th>
-                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 10px",textAlign:"left",verticalAlign:"middle" }}>Activity Type</th>
-                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 10px",textAlign:"left",verticalAlign:"middle" }}>Location</th>
-                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"8px 10px",textAlign:"left",verticalAlign:"middle" }}>State</th>
+                          {top("sr","Sr.No","#0a2540","center")}
+                          {top("dealer","Dealer","#0a2540")}
+                          {top("activityType","Activity Type","#0a2540")}
+                          {top("location","Location","#0a2540")}
+                          {top("state","State","#0a2540")}
                           <th colSpan={5} style={{ background:bandEnquiry,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>Enquiry</th>
                           <th colSpan={3} style={{ background:bandTestRide,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>Test Rides</th>
                           <th colSpan={2} style={{ background:bandBooking,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>Bookings</th>
                           <th colSpan={4} style={{ background:bandRetail,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>Retail</th>
-                          <th rowSpan={2} style={{ background:"#334155",color:"#fff",padding:"6px 8px",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Activity<br/>Day</th>
-                          <th rowSpan={2} style={{ background:"#334155",color:"#fff",padding:"6px 8px",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Closing<br/>Stock</th>
+                          {top("activityDay",<>Activity<br/>Day</>,"#334155","center")}
+                          {top("closingStock",<>Closing<br/>Stock</>,"#334155","center")}
                           <th colSpan={3} style={{ background:bandLms,color:"#fff",padding:"6px 8px",textAlign:"center",borderBottom:"1px solid rgba(255,255,255,0.2)" }}>LMS</th>
-                          <th rowSpan={2} style={{ background:bandConv,color:"#fff",padding:"6px 8px",textAlign:"center",verticalAlign:"middle" }}>Conv%</th>
-                          <th rowSpan={2} style={{ background:"#0a2540",color:"#fff",padding:"6px 8px",textAlign:"center",verticalAlign:"middle" }}>Photos</th>
+                          {top("convPct","Conv%",bandConv,"center")}
+                          {top("photos","Photos","#0a2540","center")}
                         </tr>
-                        {/* Row 2 — individual column labels within each band */}
+                        {/* Row 2 — individual column labels within each band (sortable) */}
                         <tr>
-                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Setup<br/>Count</th>
-                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Planned</th>
-                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Actual</th>
-                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Per<br/>Canopy</th>
-                          <th style={{ background:bandEnquiry,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Hot</th>
-                          <th style={{ background:bandTestRide,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Planned</th>
-                          <th style={{ background:bandTestRide,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Actual</th>
-                          <th style={{ background:bandTestRide,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Per<br/>Canopy</th>
-                          <th style={{ background:bandBooking,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Today</th>
-                          <th style={{ background:bandBooking,color:"#e0f2fe",padding:"5px 6px",fontSize:11,textAlign:"center" }}>In Hand</th>
-                          <th style={{ background:bandRetail,color:"#ffedd5",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Today</th>
-                          <th style={{ background:bandRetail,color:"#ffedd5",padding:"5px 6px",fontSize:11,textAlign:"center" }}>MTD Retail<br/>(Activity)</th>
-                          <th style={{ background:bandRetail,color:"#ffedd5",padding:"5px 6px",fontSize:11,textAlign:"center" }}>MTD</th>
-                          <th style={{ background:bandRetail,color:"#ffedd5",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Rate/<br/>Canopy</th>
-                          <th style={{ background:bandLms,color:"#ffe4e6",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Leads</th>
-                          <th style={{ background:bandLms,color:"#ffe4e6",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Punched</th>
-                          <th style={{ background:bandLms,color:"#ffe4e6",padding:"5px 6px",fontSize:11,textAlign:"center" }}>Gap</th>
+                          {sub("setupCount",<>Setup<br/>Count</>,bandEnquiry)}
+                          {sub("enquiryPlanned","Planned",bandEnquiry)}
+                          {sub("enquiryActual","Actual",bandEnquiry)}
+                          {sub("perCanopy",<>Per<br/>Canopy</>,bandEnquiry)}
+                          {sub("hot","Hot",bandEnquiry)}
+                          {sub("trPlanned","Planned",bandTestRide)}
+                          {sub("trActual","Actual",bandTestRide)}
+                          {sub("trPerCanopy",<>Per<br/>Canopy</>,bandTestRide)}
+                          {sub("bookToday","Today",bandBooking)}
+                          {sub("bookInHand","In Hand",bandBooking)}
+                          {sub("retailToday","Today",bandRetail,"#ffedd5")}
+                          {sub("retailMtdAct",<>MTD Retail<br/>(Activity)</>,bandRetail,"#ffedd5")}
+                          {sub("retailMtd","MTD",bandRetail,"#ffedd5")}
+                          {sub("retailRatePerCanopy",<>Rate/<br/>Canopy</>,bandRetail,"#ffedd5")}
+                          {sub("leads","Leads",bandLms,"#ffe4e6")}
+                          {sub("punched","Punched",bandLms,"#ffe4e6")}
+                          {sub("gap","Gap",bandLms,"#ffe4e6")}
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredDailySummary.map((row,i)=>(
-                          <tr key={i} className="an-tr-click"
+                        {dsTbl.pageRows.map((row,i)=>(
+                          <tr key={row.activityId} className="an-tr-click"
                             onClick={()=>{ setSelectedDealerDaily(row); setReportSubTab("dealer-daily"); }}
                             style={{ background:i%2===0?"#fff":"#f8fafc" }}
                             title={`View ${row.dealer} daily sheet`}>
@@ -1556,6 +1657,8 @@ export default function AnalyticsDashboard() {
                       </tfoot>
                     </table>
                   </div>
+                  {dsTbl.total > dsTbl.pageSize && <Pager page={dsTbl.page} pageSize={dsTbl.pageSize} total={dsTbl.total} onPage={dsTbl.setPage} onPageSize={dsTbl.setPageSize} scrollTo="#an-daily-wrap"/>}
+                  </>
                 );
               })()}
             </>
@@ -1607,7 +1710,7 @@ export default function AnalyticsDashboard() {
 
           {/* ── Everything below (banner, KPI cards, table) is computed from
               ONE shared `totals` object so the KPI cards, the Total row, and
-              the Avg row can never drift apart from each other again. ── */}
+              the Avg row always agree. Totals cover ALL days, not just the page. ── */}
           {(() => {
             const entries = selectedDealerDaily.dailyEntries;
             // [BTL-2026-10-27b] photos grouped by LOCAL (IST) date → day counts + "other dates" = Total
@@ -1666,9 +1769,11 @@ export default function AnalyticsDashboard() {
               retailMtd:  Math.round((totals.retailMtd / dayCount) * 10) / 10,
             };
 
-            const th = (label:React.ReactNode, extra:React.CSSProperties = {}) => (
-              <th style={{ padding:"6px 8px", fontSize:11, fontWeight:700, textAlign:"center",
-                border:"1px solid #cbd5e1", background:"#bfdbfe", color:"#0a2540", ...extra }}>{label}</th>
+            const ddSp = spOf(ddTbl);
+            // sortable sub-header (light blue) / sortable rowSpan header
+            const th = (k: string, label:React.ReactNode, extra:React.CSSProperties = {}) => (
+              <SortTh k={k} label={label} align="center"
+                style={{ fontSize:11, fontWeight:700, border:"1px solid #cbd5e1", background:"#bfdbfe", color:"#0a2540", ...extra }} {...ddSp}/>
             );
             const td = (val: React.ReactNode, extra:React.CSSProperties = {}) => (
               <td style={{ padding:"5px 8px", fontSize:12, textAlign:"center",
@@ -1688,7 +1793,7 @@ export default function AnalyticsDashboard() {
                   </span>
                 </div>
 
-                {/* ── KPI summary cards — same fields as ApproverDashboard's post-activity totals ── */}
+                {/* ── KPI summary cards ── */}
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
                   {[
                     { label:"Canopy", value: totals.canopy },
@@ -1722,7 +1827,9 @@ export default function AnalyticsDashboard() {
                     <div style={{ fontWeight:700,fontSize:14,color:"#0a2540" }}>No daily entries yet for this activity</div>
                   </div>
                 ) : (
-              <div className="an-table-wrap">
+              <>
+              <Pager page={ddTbl.page} pageSize={ddTbl.pageSize} total={ddTbl.total} onPage={ddTbl.setPage} onPageSize={ddTbl.setPageSize}/>
+              <div className="an-table-wrap" id="an-dealer-daily-wrap">
                 <table style={{ width:"100%", borderCollapse:"collapse", minWidth:1700, background:"#fff" }}>
                   <thead>
                     {/* Row 0 — dealer / BG member strip */}
@@ -1739,10 +1846,10 @@ export default function AnalyticsDashboard() {
                     </tr>
                     {/* Row 1 — grouped bands */}
                     <tr>
-                      <th rowSpan={2} style={{ background:"#93c5fd", padding:"6px 8px", fontSize:11,
-                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Date</th>
-                      <th rowSpan={2} style={{ background:"#e2e8f0", padding:"6px 8px", fontSize:11,
-                        fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Opening<br/>Stock</th>
+                      <SortTh k="date" label="Date" rowSpan={2} align="center"
+                        style={{ background:"#93c5fd", fontSize:11, fontWeight:700, border:"1px solid #cbd5e1", color:"#0a2540" }} {...ddSp}/>
+                      <SortTh k="openingStock" label={<>Opening<br/>Stock</>} rowSpan={2} align="center"
+                        style={{ background:"#e2e8f0", fontSize:11, fontWeight:700, border:"1px solid #cbd5e1", color:"#0a2540" }} {...ddSp}/>
                       <th colSpan={8} style={{ background:"#93c5fd", padding:"5px 8px", fontSize:12,
                         fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Enquiry</th>
                       <th colSpan={2} style={{ background:"#fbbf24", padding:"5px 8px", fontSize:12,
@@ -1755,21 +1862,22 @@ export default function AnalyticsDashboard() {
                         fontWeight:700, textAlign:"center", border:"1px solid #cbd5e1" }}>Media</th>
                     </tr>
                     <tr>
-                      {th("Canopy")}{th("Planned")}{th("Actual")}{th("Walk in")}{th("In LMS")}{th("Gap")}{th("Hot")}{th("Revised Hot")}
-                      {th("Planned")}{th("Actual")}
-                      {th("Today")}{th("In hand")}
-                      {th("Retail")}{th("MTD Retail")}
+                      {th("setupCount","Canopy")}{th("enquiryPlanned","Planned")}{th("enquiryActual","Actual")}{th("walkIn","Walk in")}
+                      {th("inLms","In LMS")}{th("enquiryGap","Gap")}{th("enquiryHot","Hot")}{th("revisedHot","Revised Hot")}
+                      {th("testDrivePlanned","Planned")}{th("testDriveActual","Actual")}
+                      {th("bookingActual","Today")}{th("bookingInHand","In hand")}
+                      {th("retailMtdActivity","Retail")}{th("retailMtd","MTD Retail")}
                     </tr>
                   </thead>
                   <tbody>
-                    {entries.map((entry, i) => {
+                    {ddTbl.pageRows.map((entry, i) => {
                       const photosOnDay   = photosOn((entry.date || "").slice(0, 10));   // [BTL-2026-10-27b]
                       const invoicesOnDay = filesOn((entry.date || "").slice(0, 10));
                       const hasData = entry.enquiryActual>0||entry.testDriveActual>0||entry.bookingActual>0||(entry.retailMtdActivity||0)>0||photosOnDay.length>0||invoicesOnDay.length>0;
                       const gapColor = (entry.enquiryGap||0) < 0 ? "#dc2626" : (entry.enquiryGap||0) > 0 ? "#16a34a" : "#64748b";
                       return (
                         <tr key={entry.date} style={{ background:i%2===0?"#fff":"#f8fafc", opacity:hasData?1:0.6 }}>
-                          {td(entry.date, { textAlign:"left", fontWeight:600, color:"#374151" })}
+                          {td(entry.date, { textAlign:"left", fontWeight:600, color:"#374151", whiteSpace:"nowrap" })}
                           {td(entry.openingStock || "", { color:"#374151" })}
                           {td(entry.setupCount || "", { fontWeight:700, background:"#fefce8" })}
                           {td(entry.enquiryPlanned || 0)}
@@ -1806,7 +1914,7 @@ export default function AnalyticsDashboard() {
                       );
                     })}
 
-                    {/* ── Total row ── */}
+                    {/* ── Total row (all days) ── */}
                     <tr style={{ background:"#93c5fd", fontWeight:800 }}>
                       {td("Total", { textAlign:"left", background:"#93c5fd" })}
                       {td(totals.openingStock, { background:"#93c5fd" })}
@@ -1830,7 +1938,7 @@ export default function AnalyticsDashboard() {
                         : "📸 0", { background:"#93c5fd", fontSize:10 })}
                     </tr>
 
-                    {/* ── Average row ── */}
+                    {/* ── Average row (all days) ── */}
                     <tr style={{ fontWeight:700 }}>
                       {td("Average", { textAlign:"left" })}
                       {td("—", { fontSize:10, color:"#94a3b8" })}
@@ -1857,6 +1965,8 @@ export default function AnalyticsDashboard() {
                   </tbody>
                 </table>
               </div>
+              {ddTbl.total > ddTbl.pageSize && <Pager page={ddTbl.page} pageSize={ddTbl.pageSize} total={ddTbl.total} onPage={ddTbl.setPage} onPageSize={ddTbl.setPageSize} scrollTo="#an-dealer-daily-wrap"/>}
+              </>
                 )}
               </>
             );
@@ -1872,7 +1982,7 @@ export default function AnalyticsDashboard() {
       ════════════════════════════════════════════════════════════════════════ */}
       {activeTab === "lead-report" && (
         <Section title="Lead Report — State-wise"
-          subtitle="Planned vs Actual leads by source"
+          subtitle="Planned vs Actual leads by source · click a header to sort"
           action={
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
               {lmsLeadReportLoading && <span style={{ fontSize:11, color:"#64748b" }}>⏳ Syncing LMS data…</span>}
@@ -1886,126 +1996,53 @@ export default function AnalyticsDashboard() {
                 filename="Lead_Report_Statewise"
                 title="Lead Report — State-wise"
                 columns={leadReportExportColumns}
-                rows={leadReportExportRows}
+                rows={leadTbl.sorted}
               />
             </div>
           }>
-          <div className="an-table-wrap">
+          <Pager page={leadTbl.page} pageSize={leadTbl.pageSize} total={leadTbl.total} onPage={leadTbl.setPage} onPageSize={leadTbl.setPageSize}/>
+          <div className="an-table-wrap" id="an-lead-wrap">
             <table className="an-table an-table-full">
               <thead>
-                <tr style={{ background:"#0a2540" }}>
-                  <th rowSpan={2} style={{ padding:"8px 10px",color:"#e2e8f0",textAlign:"left",verticalAlign:"middle" }}>State</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#fde68a",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Leads Month<br/>Target</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#fde68a",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Leads MTD<br/>Target</th>
-                  <th colSpan={3} style={{ padding:"6px 8px",color:"#93c5fd",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Walk-in</th>
-                  <th colSpan={3} style={{ padding:"6px 8px",color:"#6ee7b7",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>BTL</th>
-                  <th colSpan={3} style={{ padding:"6px 8px",color:"#c4b5fd",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Referral</th>
-                  <th colSpan={3} style={{ padding:"6px 8px",color:"#f472b6",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>ATL</th>
-                  <th colSpan={3} style={{ padding:"6px 8px",color:"#fbbf24",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Digital</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Total Leads<br/>Received</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle" }}>Leads<br/>Variance</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#67e8f9",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Leads<br/>Ach%</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#67e8f9",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Leads<br/>Ach% MTD</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#fca5a5",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Retail<br/>Target</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>MTD Retail<br/>Target</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#e2e8f0",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>MTD Retail<br/>Achieved</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#86efac",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>MTD Retail<br/>Ach%</th>
-                  <th rowSpan={2} style={{ padding:"8px 8px",color:"#86efac",textAlign:"center",verticalAlign:"middle",fontSize:11 }}>Retails/<br/>Enquiries%</th>
-                </tr>
-                <tr style={{ background:"#0f172a" }}>
-                  {["Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A","Tgt","MTD-T","MTD-A"].map((h,i)=>(
-                    <th key={i} style={{ padding:"5px 6px",fontSize:9,textAlign:"center",color:"#94a3b8" }}>{h}</th>
-                  ))}
-                </tr>
+                {(() => {
+                  const sp = spOf(leadTbl);
+                  const big = (k: string, label: React.ReactNode, color: string, align: "left"|"center" = "center") =>
+                    <SortTh k={k} label={label} rowSpan={2} align={align} style={{ color, verticalAlign:"middle", fontSize:11 }} {...sp}/>;
+                  const small = (k: string, label: string) =>
+                    <SortTh key={k} k={k} label={label} align="center" style={{ fontSize:9, color:"#94a3b8" }} {...sp}/>;
+                  return (<>
+                    <tr style={{ background:"#0a2540" }}>
+                      {big("state","State","#e2e8f0","left")}
+                      {big("leadsMonthTarget",<>Leads Month<br/>Target</>,"#fde68a")}
+                      {big("leadsMtdTarget",<>Leads MTD<br/>Target</>,"#fde68a")}
+                      <th colSpan={3} style={{ padding:"6px 8px",color:"#93c5fd",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Walk-in</th>
+                      <th colSpan={3} style={{ padding:"6px 8px",color:"#6ee7b7",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>BTL</th>
+                      <th colSpan={3} style={{ padding:"6px 8px",color:"#c4b5fd",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Referral</th>
+                      <th colSpan={3} style={{ padding:"6px 8px",color:"#f472b6",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>ATL</th>
+                      <th colSpan={3} style={{ padding:"6px 8px",color:"#fbbf24",textAlign:"center",borderBottom:"1px solid #1e3a5f" }}>Digital</th>
+                      {big("totalReceived",<>Total Leads<br/>Received</>,"#e2e8f0")}
+                      {big("variance",<>Leads<br/>Variance</>,"#e2e8f0")}
+                      {big("achPct",<>Leads<br/>Ach%</>,"#67e8f9")}
+                      {big("achPctMtd",<>Leads<br/>Ach% MTD</>,"#67e8f9")}
+                      {big("retailTarget",<>Retail<br/>Target</>,"#fca5a5")}
+                      {big("mtdRetailTarget",<>MTD Retail<br/>Target</>,"#e2e8f0")}
+                      {big("mtdRetailAchieved",<>MTD Retail<br/>Achieved</>,"#e2e8f0")}
+                      {big("mtdRetailAchPct",<>MTD Retail<br/>Ach%</>,"#86efac")}
+                      {big("retailEnqPct",<>Retails/<br/>Enquiries%</>,"#86efac")}
+                    </tr>
+                    <tr style={{ background:"#0f172a" }}>
+                      {small("walkinTarget","Tgt")}{small("walkinMtdT","MTD-T")}{small("walkinMtdA","MTD-A")}
+                      {small("btlTarget","Tgt")}{small("btlMtdT","MTD-T")}{small("btlMtdA","MTD-A")}
+                      {small("referralTarget","Tgt")}{small("referralMtdT","MTD-T")}{small("referralMtdA","MTD-A")}
+                      {small("atlTarget","Tgt")}{small("atlMtdT","MTD-T")}{small("atlMtdA","MTD-A")}
+                      {small("digitalTarget","Tgt")}{small("digitalMtdT","MTD-T")}{small("digitalMtdA","MTD-A")}
+                    </tr>
+                  </>);
+                })()}
               </thead>
               <tbody>
                 {(()=>{
-                  const now = new Date();
-                  const daysElapsed = now.getDate();
-                  const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
-                  const monthFrac = daysElapsed / daysInMonth;
-
-                  // ── State-wise actual retail achieved from approved proposals' daily data ──
-                  const stateRetailAchieved: Record<string, number> = {};
-                  for (const p of approved) {
-                    const st = p.state || "Unknown";
-                    for (const a of p.activities) {
-                      const raw = (a as any).dailyData;
-                      if (!raw) continue;
-                      try {
-                        const entries: DailyEntry[] = JSON.parse(raw);
-                        const sum = entries.reduce((s,e)=>s+(e.retailActual||0),0);
-                        stateRetailAchieved[st] = (stateRetailAchieved[st]||0) + sum;
-                      } catch {}
-                    }
-                  }
-
-                  const leadRows: LeadReportRow[] = stateRows.map(sr => {
-                    // ── LIVE data from LMS, bucketed server-side by Source/SubSource
-                    // via LeadChannelMappings (Walkin/BTL/Referral/ATL/Digital).
-                    // Falls back to the old BTL-only-from-proposals estimate if the
-                    // LMS API hasn't loaded yet or errored out, so the tab never goes blank. ──
-                    const lmsRow = lmsLeadReport?.find(r => r.state === sr.state);
-
-                    const walkinTarget   = lmsRow?.walkinTarget   ?? 0;
-                    const walkinMtdT     = lmsRow?.walkinMtdTarget ?? 0;
-                    const walkinMtdA     = lmsRow?.walkinMtdAch   ?? 0;
-
-                    const btlTarget = lmsRow?.btlTarget ?? sr.lead;
-                    const btlMtdT   = lmsRow?.btlMtdTarget ?? Math.round(sr.lead * monthFrac);
-                    const btlMtdA   = lmsRow?.btlMtdAch ?? (
-                      dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) > 0
-                        ? Math.round(dailyAgg.reduce((s,d)=>s+d.leadsPunched,0) * (sr.lead / Math.max(totalLead,1)))
-                        : 0
-                    );
-
-                    const referralTarget = lmsRow?.referralTarget   ?? 0;
-                    const referralMtdT   = lmsRow?.referralMtdTarget ?? 0;
-                    const referralMtdA   = lmsRow?.referralMtdAch   ?? 0;
-
-                    const atlTarget = lmsRow?.atlTarget   ?? 0;
-                    const atlMtdT   = lmsRow?.atlMtdTarget ?? 0;
-                    const atlMtdA   = lmsRow?.atlMtdAch   ?? 0;
-
-                    const digitalTarget = lmsRow?.digitalTarget   ?? 0;
-                    const digitalMtdT   = lmsRow?.digitalMtdTarget ?? 0;
-                    const digitalMtdA   = lmsRow?.digitalMtdAch   ?? 0;
-
-                    // 1. Leads Month Target = sum of all 5 channel Targets
-                    const leadsMonthTarget = walkinTarget+btlTarget+referralTarget+atlTarget+digitalTarget;
-                    // Leads MTD Target = sum of all 5 channel MTD Targets
-                    const leadsMtdTarget = walkinMtdT+btlMtdT+referralMtdT+atlMtdT+digitalMtdT;
-                    // 2. Total Leads Received = sum of all 5 channel MTD Achieved
-                    const totalReceived = walkinMtdA+btlMtdA+referralMtdA+atlMtdA+digitalMtdA;
-                    // 3. Variance = Received - Month Target (negative = shortfall, positive = over-target)
-                    const variance = totalReceived - leadsMonthTarget;
-                    // 4/5. Achievement %
-                    const achPct    = leadsMonthTarget>0 ? Math.round((totalReceived/leadsMonthTarget)*100) : 0;
-                    const achPctMtd = leadsMtdTarget>0   ? Math.round((totalReceived/leadsMtdTarget)*100)   : 0;
-
-                    // 6. Retail Target — manual open field
-                    const retailTarget = parseFloat(manualRetailTargets[sr.state] ?? "0") || 0;
-                    // 7. MTD Retail Target — pro-rated to elapsed days in month
-                    const mtdRetailTarget = Math.round(retailTarget * monthFrac);
-                    // 8. MTD Retail Achieved — actual achieved-to-date from BTL data
-                    const mtdRetailAchieved = stateRetailAchieved[sr.state] || 0;
-                    // 9. MTD Retail Achievement %
-                    const mtdRetailAchPct = mtdRetailTarget>0 ? Math.round((mtdRetailAchieved/mtdRetailTarget)*100) : 0;
-                    // 10. Retails/Enquiries %
-                    const retailEnqPct = totalReceived>0 ? Math.round((mtdRetailAchieved/totalReceived)*100) : 0;
-
-                    return {
-                      state: sr.state,
-                      walkinTarget, walkinMtdT, walkinMtdA,
-                      btlTarget, btlMtdT, btlMtdA,
-                      referralTarget, referralMtdT, referralMtdA,
-                      atlTarget, atlMtdT, atlMtdA,
-                      digitalTarget, digitalMtdT, digitalMtdA,
-                      leadsMonthTarget, leadsMtdTarget, totalReceived, variance, achPct, achPctMtd,
-                      retailTarget, mtdRetailTarget, mtdRetailAchieved, mtdRetailAchPct, retailEnqPct,
-                    };
-                  });
-
+                  const leadRows = leadTableRows;   // all states — totals / averages
                   const totals = {
                     leadsMonthTarget: leadRows.reduce((s,r)=>s+r.leadsMonthTarget,0),
                     leadsMtdTarget:   leadRows.reduce((s,r)=>s+r.leadsMtdTarget,0),
@@ -2041,7 +2078,7 @@ export default function AnalyticsDashboard() {
                   const avgRetailAchPct = Math.round(leadRows.reduce((s,r)=>s+r.mtdRetailAchPct,0)/rowCount);
                   const avgRetailEnqPct = Math.round(leadRows.reduce((s,r)=>s+r.retailEnqPct,0)/rowCount);
 
-                  return (<>{leadRows.map((r, i: number)=>(
+                  return (<>{leadTbl.pageRows.map((r, i: number)=>(
                       <tr key={r.state} style={{ background:i%2===0?"#fff":"#f8fafc" }}>
                         <td className="an-td-bold">{r.state}</td>
                         <td className="an-td-center" style={{ fontWeight:700,color:"#92400e" }}>{r.leadsMonthTarget}</td>
@@ -2122,6 +2159,7 @@ export default function AnalyticsDashboard() {
               </tbody>
             </table>
           </div>
+          {leadTbl.total > leadTbl.pageSize && <Pager page={leadTbl.page} pageSize={leadTbl.pageSize} total={leadTbl.total} onPage={leadTbl.setPage} onPageSize={leadTbl.setPageSize} scrollTo="#an-lead-wrap"/>}
         </Section>
       )}
 

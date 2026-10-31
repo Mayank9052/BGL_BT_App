@@ -1,4 +1,7 @@
 // src/pages/DashboardPage.tsx
+// 28.10.2026: State-wise + Dealer-wise tables — every header sortable (click: ▲ → ▼ → off),
+// pagination (10/25/50/100), ₹ amounts on one line (column widens to fit the value).
+// Grand Totals rows always cover ALL filtered rows, not just the current page.
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMsal } from "@azure/msal-react";
@@ -15,10 +18,12 @@ import {
   downloadPdfReport,
   type ReportFilters,
 } from "../services/reportService";
+import { useSortPage, SortTh, Pager } from "../components/TableTools";
 import "./DashboardPage.css";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-const inr = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
+// No space after ₹ and cells carry "tt-inr" (white-space: nowrap) → never wraps.
+const inr = (v: number) => "₹" + Math.round(v).toLocaleString("en-IN");
 const inrCompact = (v: number): string => {
   if (v >= 1_00_000) return `₹${(v / 1_00_000).toFixed(1)}L`;
   if (v >= 1_000)    return `₹${(v / 1_000).toFixed(0)}K`;
@@ -115,20 +120,6 @@ function computeStats(proposals: ProposalResponse[]): SummaryStats {
   };
 }
 
-// ─── Color helpers ────────────────────────────────────────────────────────────
-function cellColor(actual: number, planned: number): string {
-  if (!planned || !actual) return "";
-  const r = actual / planned;
-  if (r >= 0.9) return "#d1fae5";
-  if (r >= 0.6) return "#fef3c7";
-  return "#fee2e2";
-}
-function achColor(p: number): string {
-  if (p >= 100) return "#bbf7d0";
-  if (p >= 50)  return "#fef3c7";
-  return "#fecaca";
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -162,6 +153,7 @@ function printSection(sectionId: string, title: string) {
         table { border-collapse: collapse; width: 100%; font-size: 10px; }
         th, td { border: 1px solid #e2e8f0; padding: 4px 6px; }
         th { background: #0a2540 !important; color: #fff !important; font-size: 9px; }
+        .tt-arrow { display: none; }
         tr:nth-child(even) { background: #f8fafc; }
         @page { size: A3 landscape; margin: 1cm; }
         @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
@@ -191,7 +183,7 @@ export default function DashboardPage() {
   const [loadingData,  setLoadingData]  = useState(true);
   const [dataError,    setDataError]    = useState<string | null>(null);
   const [baplCounts,   setBaplCounts]   = useState<DealerStateCount[]>([]);
-  const [downloading,  setDownloading]  = useState<"excel" | "pdf" | null>(null);
+  const [, setDownloading]  = useState<"excel" | "pdf" | null>(null);
   const [dlError,      setDlError]      = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("All");
   const [stateFilter,  setStateFilter]  = useState("All");
@@ -269,6 +261,7 @@ export default function DashboardPage() {
     state:  stateFilter !== "All" ? stateFilter : undefined,
   }), [stateFilter]);
 
+  // Kept for the Reports page shortcut (server-side Excel / PDF report)
   const handleDownload = async (type: "excel" | "pdf") => {
     setDownloading(type); setDlError(null);
     try {
@@ -277,6 +270,7 @@ export default function DashboardPage() {
     } catch (e) { setDlError(e instanceof Error ? e.message : "Download failed."); }
     finally { setDownloading(null); }
   };
+  void handleDownload;
 
   // ── State breakdown — POINT 7: includes revision count ────────────────────
   const stateBreakdown = useMemo(() => {
@@ -285,7 +279,7 @@ export default function DashboardPage() {
       newDealers: Set<string>; newRetail: number; newLead: number; newBudget: number;
       nonDealers: Set<string>; nonRetail: number; nonLead: number; nonBudget: number;
       pending: number; approved: number; rejected: number;
-      revision: number; // ← ADDED Point #7
+      revision: number;
       remarks: string;
     }
     const map: Record<string, StateRow> = {};
@@ -295,7 +289,7 @@ export default function DashboardPage() {
         newDealers: new Set(), newRetail: 0, newLead: 0, newBudget: 0,
         nonDealers: new Set(), nonRetail: 0, nonLead: 0, nonBudget: 0,
         pending: 0, approved: 0, rejected: 0,
-        revision: 0, // ← ADDED Point #7
+        revision: 0,
         remarks: "",
       };
     };
@@ -324,7 +318,7 @@ export default function DashboardPage() {
       if (p.status === "Pending")       r.pending++;
       if (p.status === "Approved")      r.approved++;
       if (p.status === "Rejected")      r.rejected++;
-      if (p.status === "NeedsRevision") r.revision++; // ← ADDED Point #7
+      if (p.status === "NeedsRevision") r.revision++;
       if (p.remarks) r.remarks = p.remarks;
     }
 
@@ -347,12 +341,7 @@ export default function DashboardPage() {
       const oldCountFinal    = Math.max(d.oldDealers.size, bapl?.eligibleOld ?? 0);
       const newCountFinal    = Math.max(d.newDealers.size, bapl?.eligibleNew ?? 0);
       const totalDealers     = oldCountFinal + newCountFinal + nonCountFinal;
-      // FIX: include nonBudget too — Total Retail/Total Lead already include
-      // their Non-Eligible counterparts, so Total Budget must too, or states
-      // where every dealer is Non-Eligible show Total Budget = ₹0 while
-      // Total Retail/Total Lead are non-zero, which then makes Overall CAC
-      // and Overall CPL (both = totalBudget ÷ totalRetail|totalLead) show 0
-      // as well — exactly what Delhi and Jharkhand were doing.
+      // Total Budget includes Non-Eligible, same as Total Retail / Total Lead.
       const totalBudget      = d.oldBudget + d.newBudget + d.nonBudget;
       const totalRetail      = d.oldRetail + d.newRetail + d.nonRetail;
       const totalLead        = d.oldLead + d.newLead + d.nonLead;
@@ -368,7 +357,7 @@ export default function DashboardPage() {
         overallCac: totalRetail > 0 ? totalBudget / totalRetail : 0,
         overallCpl: totalLead   > 0 ? totalBudget / totalLead   : 0,
         pending: d.pending, approved: d.approved, rejected: d.rejected,
-        revision: d.revision, // ← ADDED Point #7
+        revision: d.revision,
         remarks: d.remarks,
         baplEligibleOld: bapl?.eligibleOld ?? 0,
         baplEligibleNew: bapl?.eligibleNew ?? 0,
@@ -400,26 +389,26 @@ export default function DashboardPage() {
     };
   }, [stateBreakdown]);
 
-    const dealerRows = useMemo(() => {
-      const map: Record<string, {
-        state: string; dealerName: string; monthTarget: number;
-        eligibleOldBudget: number; eligibleNewBudget: number; nonBudget: number;
-        retailTarget: number; leadTarget: number; activities: number;
-        eligibility: string; type: string;
-        pending: number; approved: number; rejected: number; revision: number;
-        activityNames: Set<string>;
-        vendorNames: Set<string>; // ← NEW: tracks distinct vendors used across this dealer's proposals
-      }> = {};
+  const dealerRows = useMemo(() => {
+    const map: Record<string, {
+      state: string; dealerName: string; monthTarget: number;
+      eligibleOldBudget: number; eligibleNewBudget: number; nonBudget: number;
+      retailTarget: number; leadTarget: number; activities: number;
+      eligibility: string; type: string;
+      pending: number; approved: number; rejected: number; revision: number;
+      activityNames: Set<string>;
+      vendorNames: Set<string>;
+    }> = {};
     for (const p of searchFiltered) {
       const key = `${p.dealerName}__${p.state}`;
-        if (!map[key]) map[key] = {
+      if (!map[key]) map[key] = {
         state: p.state, dealerName: p.dealerName, monthTarget: 0,
         eligibleOldBudget: 0, eligibleNewBudget: 0, nonBudget: 0,
         retailTarget: 0, leadTarget: 0, activities: 0,
         eligibility: p.eligibility ?? "", type: p.type ?? "",
         pending: 0, approved: 0, rejected: 0, revision: 0,
         activityNames: new Set<string>(),
-        vendorNames: new Set<string>(), // ← NEW
+        vendorNames: new Set<string>(),
       };
       const d  = map[key];
       const ty = (p.type ?? "").toLowerCase();
@@ -429,7 +418,7 @@ export default function DashboardPage() {
       d.leadTarget   += p.totalLeadTarget;
       d.activities   += p.activities.length;
       p.activities.forEach(a => { if (a.activityType) d.activityNames.add(a.activityType); });
-      if (p.vendorName && p.vendorName.trim()) d.vendorNames.add(p.vendorName.trim()); // ← NEW
+      if (p.vendorName && p.vendorName.trim()) d.vendorNames.add(p.vendorName.trim());
       if (el.includes("not") || el.includes("non")) d.nonBudget         += p.totalBudget;
       else if (ty === "new")                         d.eligibleNewBudget += p.totalBudget;
       else                                           d.eligibleOldBudget += p.totalBudget;
@@ -445,9 +434,7 @@ export default function DashboardPage() {
     );
   }, [searchFiltered]);
 
-  // ── Grand totals for the dealer-wise table — same shape used both by the
-  // on-screen footer and by the Excel/PDF exports, so every surface always
-  // agrees on the same numbers. ──────────────────────────────────────────────
+  // ── Grand totals for the dealer-wise table (all rows, not just the page) ──
   const dealerGrandTotal = useMemo(() => {
     if (!dealerRows.length) return null;
     return {
@@ -463,6 +450,42 @@ export default function DashboardPage() {
       revision:     dealerRows.reduce((s, r) => s + (r.revision||0), 0),
     };
   }, [dealerRows]);
+
+  // ── 28.10: sorting + pagination for State-wise and Dealer-wise tables ─────
+  type StateRowT  = (typeof stateBreakdown)[number];
+  type DealerRowT = (typeof dealerRows)[number];
+  const isNonDealer = (r: DealerRowT) => { const el = (r.eligibility ?? "").toLowerCase(); return el.includes("not") || el.includes("non"); };
+  const stateGetters = useMemo(() => ({
+    state: (r: StateRowT) => r.state,
+    oldRetail: (r: StateRowT) => r.oldRetail, oldCount: (r: StateRowT) => r.oldCount,
+    oldBudget: (r: StateRowT) => r.oldBudget, oldCac: (r: StateRowT) => r.oldCac,
+    newRetail: (r: StateRowT) => r.newRetail, newCount: (r: StateRowT) => r.newCount,
+    newBudget: (r: StateRowT) => r.newBudget, newCac: (r: StateRowT) => r.newCac,
+    nonRetail: (r: StateRowT) => r.nonRetail, nonCount: (r: StateRowT) => r.nonCount,
+    nonBudget: (r: StateRowT) => r.nonBudget, nonCac: (r: StateRowT) => r.nonCac,
+    totalDealers: (r: StateRowT) => r.totalDealers, totalBudget: (r: StateRowT) => r.totalBudget,
+    totalRetail: (r: StateRowT) => r.totalRetail, totalLead: (r: StateRowT) => r.totalLead,
+    overallCac: (r: StateRowT) => r.overallCac, overallCpl: (r: StateRowT) => r.overallCpl,
+    pending: (r: StateRowT) => r.pending, approved: (r: StateRowT) => r.approved,
+    rejected: (r: StateRowT) => r.rejected, revision: (r: StateRowT) => r.revision,
+    remarks: (r: StateRowT) => r.remarks,
+  }), []);
+  const dealerGetters = useMemo(() => ({
+    state: (r: DealerRowT) => r.state, dealer: (r: DealerRowT) => r.dealerName,
+    vendor: (r: DealerRowT) => Array.from(r.vendorNames).join(", "),
+    monthTarget: (r: DealerRowT) => r.monthTarget,
+    category: (r: DealerRowT) => (isNonDealer(r) ? "Non Eligible" : "BTL Budget Eligible"),
+    btlCategory: (r: DealerRowT) => Array.from(r.activityNames).join(", "),
+    activities: (r: DealerRowT) => r.activities, retail: (r: DealerRowT) => r.retailTarget,
+    lead: (r: DealerRowT) => r.leadTarget,
+    budget: (r: DealerRowT) => r.eligibleOldBudget + r.eligibleNewBudget + r.nonBudget,
+    pending: (r: DealerRowT) => r.pending, approved: (r: DealerRowT) => r.approved,
+    rejected: (r: DealerRowT) => r.rejected, revision: (r: DealerRowT) => r.revision || 0,
+  }), []);
+  const stTbl = useSortPage(stateBreakdown, stateGetters, { storageKey: "dash_state", pageSize: 50, resetOn: [searchFiltered] });
+  const dlTbl = useSortPage(dealerRows, dealerGetters, { storageKey: "dash_dealer", pageSize: 25, resetOn: [searchFiltered] });
+  const stSp = { sortKey: stTbl.sortKey, sortDir: stTbl.sortDir, onSort: stTbl.onSort };
+  const dlSp = { sortKey: dlTbl.sortKey, sortDir: dlTbl.sortDir, onSort: dlTbl.onSort };
 
   const searchResultLabel = useMemo(() => {
     if (!sharedSearch.trim()) return null;
@@ -490,9 +513,7 @@ export default function DashboardPage() {
       activeFilter !== "All" ? activeFilter : "",
     ].filter(Boolean).join("_").replace(/\s+/g, "");
 
-  // ── Excel: State-wise Summary — built directly from `stateBreakdown`, the
-  // exact same filtered array driving the on-screen table, with a correct
-  // Grand Totals row (pure column sums / weighted CAC-CPL) appended at the end. ──
+  // ── Excel: State-wise Summary — all filtered rows, in the current sort order ──
   const downloadStateExcel = () => {
     const rows: (string | number)[][] = [[
       "State",
@@ -503,7 +524,7 @@ export default function DashboardPage() {
       "Overall CAC (₹)", "Overall CPL (₹)",
       "Pending", "Approved", "Rejected", "Needs Revision", "Remarks",
     ]];
-    for (const r of stateBreakdown) {
+    for (const r of stTbl.sorted) {
       rows.push([
         r.state,
         r.oldRetail, r.oldCount, Math.round(r.oldBudget), Math.round(r.oldCac),
@@ -514,8 +535,6 @@ export default function DashboardPage() {
         r.pending, r.approved, r.rejected, r.revision, r.remarks || "",
       ]);
     }
-    // Grand Totals row — same math as `stateGrandTotal`, so the file always
-    // agrees with whatever the app itself would show as the grand total.
     if (stateGrandTotal) {
       const oldCacTotal = stateGrandTotal.oldRetail > 0 ? stateGrandTotal.oldBudget / stateGrandTotal.oldRetail : 0;
       const newCacTotal = stateGrandTotal.newRetail > 0 ? stateGrandTotal.newBudget / stateGrandTotal.newRetail : 0;
@@ -541,23 +560,20 @@ export default function DashboardPage() {
     XLSX.writeFile(wb, `BTL_State_Summary${suffix ? `_${suffix}` : ""}.xlsx`);
   };
 
-  // ── Excel: Dealer-wise Data — built directly from `dealerRows`, with a
-  // correct Grand Totals row (pure column sums) appended at the end. ────────
+  // ── Excel: Dealer-wise Data — all filtered rows, in the current sort order ──
   const downloadDealerExcel = () => {
     const rows: (string | number)[][] = [[
       "State", "Dealer", "Vendor", "Month Target", "Category", "Activities / BTL Category",
       "Retail Target", "Lead Target", "Budget for BTL (₹)",
       "Pending", "Approved", "Rejected", "Needs Revision",
     ]];
-    for (const row of dealerRows) {
-      const el = (row.eligibility ?? "").toLowerCase();
-      const isNon = el.includes("not") || el.includes("non");
+    for (const row of dlTbl.sorted) {
       const btlBudget = row.eligibleOldBudget + row.eligibleNewBudget + row.nonBudget;
       rows.push([
         row.state, row.dealerName,
         row.vendorNames.size > 0 ? Array.from(row.vendorNames).join(", ") : "",
         Math.round(row.monthTarget),
-        isNon ? "Non Eligible" : "BTL Budget Eligible",
+        isNonDealer(row) ? "Non Eligible" : "BTL Budget Eligible",
         row.activityNames.size > 0 ? Array.from(row.activityNames).join(", ") : "",
         Math.round(row.retailTarget), Math.round(row.leadTarget), Math.round(btlBudget),
         row.pending, row.approved, row.rejected, row.revision || 0,
@@ -586,8 +602,7 @@ export default function DashboardPage() {
     [proposals],
   );
 
-  // ── All daily entries aggregated across every approved proposal (needed for
-  // the Lead Report's proportional BTL-channel distribution) ──────────────────
+  // ── All daily entries aggregated across every approved proposal ───────────
   const dailyAgg = useMemo(() => {
     const map: Record<string, DailyEntry> = {};
     for (const p of approvedProposals) {
@@ -616,10 +631,7 @@ export default function DashboardPage() {
     return Object.values(map).sort((a,b) => a.date.localeCompare(b.date));
   }, [approvedProposals]);
 
-  // ── Live daily summary — one row per activity, matching AnalyticsDashboard's
-  // exact (corrected) formulas: sums for real flows, "latest non-zero" for
-  // manual/cumulative snapshot fields (retailMtdAct, retailMtd, retailRatePerCanopy,
-  // closingStock, bookInHand), and Conv% = MTD Retail (Activity) ÷ LMS Leads. ──
+  // ── Live daily summary — one row per activity ──────────────────────────────
   const liveDailySummary = useMemo((): DailySummaryRow[] => {
     const rows: DailySummaryRow[] = [];
     let sr = 1;
@@ -682,7 +694,7 @@ export default function DashboardPage() {
           gap: totalLmsLeads - totalPunched,
           convPct: totalLmsLeads > 0 ? Math.round((retailMtdActivityVal/totalLmsLeads)*100) : 0,
           proposalId: p.id, activityId: a.id, activityType: a.activityType,
-          dailyEntries: entries, media, photos: media.length,
+          dailyEntries: entries, media, photos: media.filter(m => isImageType(m.fileType) || isVideoType(m.fileType)).length,
         });
         sr++;
       }
@@ -690,7 +702,7 @@ export default function DashboardPage() {
     return rows;
   }, [approvedProposals]);
 
-  // Daily summary totals — pure column sums, matching AnalyticsDashboard exactly
+  // Daily summary totals — pure column sums
   const dsTotals = useMemo(() => {
     const src = liveDailySummary;
     const totalSetupCount = src.reduce((s, r) => s + (r.setupCount||0), 0);
@@ -840,7 +852,7 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* ── POINT 4: Filter scope hint when month/state filter active ── */}
+          {/* ── Filter scope hint when month/state filter active ── */}
           {hasActiveFilter && (
             <div style={{
               background: "#eff6ff", border: "1px solid #bfdbfe",
@@ -870,8 +882,6 @@ export default function DashboardPage() {
             <div className="dash-report-tabs">
               {([
                 { id: "overview",      label: "📋 BTL Overview",   desc: "Proposals, state & dealer summary" },
-                // { id: "daily-summary", label: "📅 Daily Activity", desc: "Live canopy & activity sheet" },
-                // { id: "lead-report",   label: "🎯 Lead Report",    desc: "State-wise planned vs actual leads" },
               ] as { id: ReportTab; label: string; desc: string }[]).map(({ id, label, desc }) => (
                 <button key={id}
                   className={`dash-report-tab${reportTab === id ? " dash-report-tab--active" : ""}`}
@@ -982,7 +992,7 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              {/* ── State-wise table — POINT 7: Revision column ── */}
+              {/* ── State-wise table — sortable headers + pagination ── */}
               {stateBreakdown.length > 0 && (
                 <section className="dash-section">
                   <div className="dash-section-head">
@@ -1008,47 +1018,46 @@ export default function DashboardPage() {
                       </button>
                     </div>
                   </div>
-                  <div className="dash-table-wrap dash-table-wrap--wide">
+                  <Pager page={stTbl.page} pageSize={stTbl.pageSize} total={stTbl.total} onPage={stTbl.setPage} onPageSize={stTbl.setPageSize}/>
+                  <div className="dash-table-wrap dash-table-wrap--wide" id="dash-state-wrap">
                     <table id="dash-state-table" className="dash-table dash-table--summary">
                       <thead>
                         <tr className="dash-thead-group">
-                          <th className="dash-th dash-th--state" rowSpan={2}>States</th>
+                          <SortTh k="state" label="States" rowSpan={2} className="dash-th dash-th--state" {...stSp}/>
                           <th className="dash-th dash-th--group dash-th--old" colSpan={4}>Eligible Old Dealer</th>
                           <th className="dash-th dash-th--group dash-th--new" colSpan={4}>Eligible New Dealer</th>
                           <th className="dash-th dash-th--group dash-th--non" colSpan={4}>Non Eligible Dealer</th>
                           <th className="dash-th dash-th--group dash-th--tot" colSpan={6}>Totals</th>
-                          {/* POINT 7: Status group now has colSpan 4 (Pending/Approved/Rejected/Revision) */}
                           <th className="dash-th dash-th--group" colSpan={4}>Status</th>
-                          <th className="dash-th" rowSpan={2}>Remarks</th>
+                          <SortTh k="remarks" label="Remarks" rowSpan={2} className="dash-th" {...stSp}/>
                         </tr>
                         <tr className="dash-thead-sub">
-                          <th className="dash-th dash-th--old dash-th--right">Retail Target</th>
-                          <th className="dash-th dash-th--old dash-th--right">Count</th>
-                          <th className="dash-th dash-th--old dash-th--right">Budget (₹)</th>
-                          <th className="dash-th dash-th--old dash-th--right">CAC (₹)</th>
-                          <th className="dash-th dash-th--new dash-th--right">Retail Target</th>
-                          <th className="dash-th dash-th--new dash-th--right">Count</th>
-                          <th className="dash-th dash-th--new dash-th--right">Budget (₹)</th>
-                          <th className="dash-th dash-th--new dash-th--right">CAC (₹)</th>
-                          <th className="dash-th dash-th--non dash-th--right">Retail Target</th>
-                          <th className="dash-th dash-th--non dash-th--right">Count</th>
-                          <th className="dash-th dash-th--non dash-th--right">Budget (₹)</th>
-                          <th className="dash-th dash-th--non dash-th--right">CAC (₹)</th>
-                          <th className="dash-th dash-th--tot dash-th--right">Dealers for BTL</th>
-                          <th className="dash-th dash-th--tot dash-th--right">Total Budget (₹)</th>
-                          <th className="dash-th dash-th--tot dash-th--right">Total Retail</th>
-                          <th className="dash-th dash-th--tot dash-th--right">Total Lead</th>
-                          <th className="dash-th dash-th--tot dash-th--right">Overall CAC</th>
-                          <th className="dash-th dash-th--tot dash-th--right">Overall CPL</th>
-                          {/* POINT 7: 4 status sub-headers */}
-                          <th className="dash-th dash-th--right" style={{background:"#f59e0b22",color:"#92400e"}}>Pending</th>
-                          <th className="dash-th dash-th--right" style={{background:"#16a34a22",color:"#14532d"}}>Approved</th>
-                          <th className="dash-th dash-th--right" style={{background:"#dc262622",color:"#7f1d1d"}}>Rejected</th>
-                          <th className="dash-th dash-th--right" style={{background:"#f59e0b33",color:"#78350f"}}>Revision</th>
+                          <SortTh k="oldRetail" label="Retail Target" align="right" className="dash-th dash-th--old dash-th--right" {...stSp}/>
+                          <SortTh k="oldCount"  label="Count"         align="right" className="dash-th dash-th--old dash-th--right" {...stSp}/>
+                          <SortTh k="oldBudget" label="Budget (₹)"    align="right" className="dash-th dash-th--old dash-th--right" {...stSp}/>
+                          <SortTh k="oldCac"    label="CAC (₹)"       align="right" className="dash-th dash-th--old dash-th--right" {...stSp}/>
+                          <SortTh k="newRetail" label="Retail Target" align="right" className="dash-th dash-th--new dash-th--right" {...stSp}/>
+                          <SortTh k="newCount"  label="Count"         align="right" className="dash-th dash-th--new dash-th--right" {...stSp}/>
+                          <SortTh k="newBudget" label="Budget (₹)"    align="right" className="dash-th dash-th--new dash-th--right" {...stSp}/>
+                          <SortTh k="newCac"    label="CAC (₹)"       align="right" className="dash-th dash-th--new dash-th--right" {...stSp}/>
+                          <SortTh k="nonRetail" label="Retail Target" align="right" className="dash-th dash-th--non dash-th--right" {...stSp}/>
+                          <SortTh k="nonCount"  label="Count"         align="right" className="dash-th dash-th--non dash-th--right" {...stSp}/>
+                          <SortTh k="nonBudget" label="Budget (₹)"    align="right" className="dash-th dash-th--non dash-th--right" {...stSp}/>
+                          <SortTh k="nonCac"    label="CAC (₹)"       align="right" className="dash-th dash-th--non dash-th--right" {...stSp}/>
+                          <SortTh k="totalDealers" label="Dealers for BTL"  align="right" className="dash-th dash-th--tot dash-th--right" {...stSp}/>
+                          <SortTh k="totalBudget"  label="Total Budget (₹)" align="right" className="dash-th dash-th--tot dash-th--right" {...stSp}/>
+                          <SortTh k="totalRetail"  label="Total Retail"     align="right" className="dash-th dash-th--tot dash-th--right" {...stSp}/>
+                          <SortTh k="totalLead"    label="Total Lead"       align="right" className="dash-th dash-th--tot dash-th--right" {...stSp}/>
+                          <SortTh k="overallCac"   label="Overall CAC"      align="right" className="dash-th dash-th--tot dash-th--right" {...stSp}/>
+                          <SortTh k="overallCpl"   label="Overall CPL"      align="right" className="dash-th dash-th--tot dash-th--right" {...stSp}/>
+                          <SortTh k="pending"  label="Pending"  align="right" className="dash-th dash-th--right" style={{background:"#f59e0b22",color:"#92400e"}} {...stSp}/>
+                          <SortTh k="approved" label="Approved" align="right" className="dash-th dash-th--right" style={{background:"#16a34a22",color:"#14532d"}} {...stSp}/>
+                          <SortTh k="rejected" label="Rejected" align="right" className="dash-th dash-th--right" style={{background:"#dc262622",color:"#7f1d1d"}} {...stSp}/>
+                          <SortTh k="revision" label="Revision" align="right" className="dash-th dash-th--right" style={{background:"#f59e0b33",color:"#78350f"}} {...stSp}/>
                         </tr>
                       </thead>
                       <tbody>
-                        {stateBreakdown.map((row, i) => (
+                        {stTbl.pageRows.map((row, i) => (
                           <tr key={row.state} className={i % 2 === 0 ? "dash-row-even" : "dash-row-odd"}>
                             <td className="dash-td">
                               <span className={`dash-state-tag${sharedSearch && row.state.toLowerCase().includes(sharedSearch.toLowerCase()) ? " dash-state-tag--match" : ""}`}>
@@ -1057,30 +1066,29 @@ export default function DashboardPage() {
                             </td>
                             <td className="dash-td dash-td--right">{row.oldRetail > 0 ? row.oldRetail : <Dash/>}</td>
                             <td className="dash-td dash-td--right">{row.oldCount  > 0 ? row.oldCount  : <Dash/>}</td>
-                            <td className="dash-td dash-td--right dash-td--mono">{row.oldBudget > 0 ? inr(row.oldBudget) : <Dash/>}</td>
-                            <td className="dash-td dash-td--right dash-td--mono">{row.oldCac > 0 ? `₹${Math.round(row.oldCac).toLocaleString("en-IN")}` : <Dash/>}</td>
+                            <td className="dash-td dash-td--right dash-td--mono tt-inr">{row.oldBudget > 0 ? inr(row.oldBudget) : <Dash/>}</td>
+                            <td className="dash-td dash-td--right dash-td--mono tt-inr">{row.oldCac > 0 ? inr(row.oldCac) : <Dash/>}</td>
                             <td className="dash-td dash-td--right">{row.newRetail > 0 ? row.newRetail : <Dash/>}</td>
                             <td className="dash-td dash-td--right">{row.newCount  > 0 ? row.newCount  : <Dash/>}</td>
-                            <td className="dash-td dash-td--right dash-td--mono">{row.newBudget > 0 ? inr(row.newBudget) : <Dash/>}</td>
-                            <td className="dash-td dash-td--right dash-td--mono">{row.newCac > 0 ? `₹${Math.round(row.newCac).toLocaleString("en-IN")}` : <Dash/>}</td>
+                            <td className="dash-td dash-td--right dash-td--mono tt-inr">{row.newBudget > 0 ? inr(row.newBudget) : <Dash/>}</td>
+                            <td className="dash-td dash-td--right dash-td--mono tt-inr">{row.newCac > 0 ? inr(row.newCac) : <Dash/>}</td>
                             <td className="dash-td dash-td--right">{row.nonRetail > 0 ? row.nonRetail : <Dash/>}</td>
                             <td className="dash-td dash-td--right"
                               title={row.baplNonEligible > 0 ? `${row.baplNonEligible} non-eligible from BaplFinal DB` : ""}>
                               {row.nonCount > 0 ? <span className="dash-non-count">{row.nonCount}</span> : <Dash/>}
                             </td>
-                            <td className="dash-td dash-td--right dash-td--mono">{row.nonBudget > 0 ? inr(row.nonBudget) : <Dash/>}</td>
-                            <td className="dash-td dash-td--right dash-td--mono">{row.nonCac > 0 ? `₹${Math.round(row.nonCac).toLocaleString("en-IN")}` : <Dash/>}</td>
+                            <td className="dash-td dash-td--right dash-td--mono tt-inr">{row.nonBudget > 0 ? inr(row.nonBudget) : <Dash/>}</td>
+                            <td className="dash-td dash-td--right dash-td--mono tt-inr">{row.nonCac > 0 ? inr(row.nonCac) : <Dash/>}</td>
                             <td className="dash-td dash-td--right dash-td--bold">{row.totalDealers}</td>
-                            <td className="dash-td dash-td--right dash-td--mono dash-td--bold">{inr(row.totalBudget)}</td>
+                            <td className="dash-td dash-td--right dash-td--mono dash-td--bold tt-inr">{inr(row.totalBudget)}</td>
                             <td className="dash-td dash-td--right dash-td--bold">{Math.round(row.totalRetail).toLocaleString("en-IN")}</td>
                             <td className="dash-td dash-td--right dash-td--bold">{Math.round(row.totalLead).toLocaleString("en-IN")}</td>
-                            <td className="dash-td dash-td--right dash-td--mono dash-td--bold">
-                              {row.overallCac > 0 ? `₹${Math.round(row.overallCac).toLocaleString("en-IN")}` : <Dash/>}
+                            <td className="dash-td dash-td--right dash-td--mono dash-td--bold tt-inr">
+                              {row.overallCac > 0 ? inr(row.overallCac) : <Dash/>}
                             </td>
-                            <td className="dash-td dash-td--right dash-td--mono dash-td--bold">
-                              {row.overallCpl > 0 ? `₹${Math.round(row.overallCpl).toLocaleString("en-IN")}` : <Dash/>}
+                            <td className="dash-td dash-td--right dash-td--mono dash-td--bold tt-inr">
+                              {row.overallCpl > 0 ? inr(row.overallCpl) : <Dash/>}
                             </td>
-                            {/* POINT 7: status cells */}
                             <td className="dash-td dash-td--right">
                               {row.pending  > 0
                                 ? <span className="dash-badge dash-badge--pending">{row.pending}</span>
@@ -1096,7 +1104,6 @@ export default function DashboardPage() {
                                 ? <span className="dash-badge dash-badge--rejected">{row.rejected}</span>
                                 : <span className="dash-muted">—</span>}
                             </td>
-                            {/* POINT 7: NEW revision column */}
                             <td className="dash-td dash-td--right">
                               {row.revision > 0
                                 ? <span className="dash-badge dash-badge--revision">{row.revision}</span>
@@ -1112,31 +1119,31 @@ export default function DashboardPage() {
                             <td className="dash-td dash-td--grand-label">Grand Totals</td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.oldRetail.toLocaleString("en-IN")}</td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.oldCount}</td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono">{inr(stateGrandTotal.oldBudget)}</td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono">
-                              {stateGrandTotal.oldRetail > 0 ? `₹${Math.round(stateGrandTotal.oldBudget / stateGrandTotal.oldRetail).toLocaleString("en-IN")}` : "—"}
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr">{inr(stateGrandTotal.oldBudget)}</td>
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr">
+                              {stateGrandTotal.oldRetail > 0 ? inr(stateGrandTotal.oldBudget / stateGrandTotal.oldRetail) : "—"}
                             </td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.newRetail.toLocaleString("en-IN")}</td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.newCount}</td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono">{inr(stateGrandTotal.newBudget)}</td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono">
-                              {stateGrandTotal.newRetail > 0 ? `₹${Math.round(stateGrandTotal.newBudget / stateGrandTotal.newRetail).toLocaleString("en-IN")}` : "—"}
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr">{inr(stateGrandTotal.newBudget)}</td>
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr">
+                              {stateGrandTotal.newRetail > 0 ? inr(stateGrandTotal.newBudget / stateGrandTotal.newRetail) : "—"}
                             </td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.nonRetail.toLocaleString("en-IN")}</td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.nonCount}</td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono">{inr(stateGrandTotal.nonBudget)}</td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono">
-                              {stateGrandTotal.nonRetail > 0 ? `₹${Math.round(stateGrandTotal.nonBudget / stateGrandTotal.nonRetail).toLocaleString("en-IN")}` : "—"}
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr">{inr(stateGrandTotal.nonBudget)}</td>
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr">
+                              {stateGrandTotal.nonRetail > 0 ? inr(stateGrandTotal.nonBudget / stateGrandTotal.nonRetail) : "—"}
                             </td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.totalDealers}</td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono">{inr(stateGrandTotal.totalBudget)}</td>
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr">{inr(stateGrandTotal.totalBudget)}</td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.totalRetail.toLocaleString("en-IN")}</td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.totalLead.toLocaleString("en-IN")}</td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono">
-                              {stateGrandTotal.totalRetail > 0 ? `₹${Math.round(stateGrandTotal.totalBudget / stateGrandTotal.totalRetail).toLocaleString("en-IN")}` : "—"}
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr">
+                              {stateGrandTotal.totalRetail > 0 ? inr(stateGrandTotal.totalBudget / stateGrandTotal.totalRetail) : "—"}
                             </td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono">
-                              {stateGrandTotal.totalLead > 0 ? `₹${Math.round(stateGrandTotal.totalBudget / stateGrandTotal.totalLead).toLocaleString("en-IN")}` : "—"}
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr">
+                              {stateGrandTotal.totalLead > 0 ? inr(stateGrandTotal.totalBudget / stateGrandTotal.totalLead) : "—"}
                             </td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.pending  > 0 ? stateGrandTotal.pending  : "—"}</td>
                             <td className="dash-td dash-td--right dash-td--grand">{stateGrandTotal.approved > 0 ? stateGrandTotal.approved : "—"}</td>
@@ -1148,10 +1155,13 @@ export default function DashboardPage() {
                       )}
                     </table>
                   </div>
+                  {stTbl.total > stTbl.pageSize && (
+                    <Pager page={stTbl.page} pageSize={stTbl.pageSize} total={stTbl.total} onPage={stTbl.setPage} onPageSize={stTbl.setPageSize} scrollTo="#dash-state-wrap"/>
+                  )}
                 </section>
               )}
 
-              {/* ── Dealer-wise table ── */}
+              {/* ── Dealer-wise table — sortable headers + pagination ── */}
               <section className="dash-section">
                 <div className="dash-section-head">
                   <h2 className="dash-section-title">
@@ -1175,30 +1185,31 @@ export default function DashboardPage() {
                     <button className="dash-filter-clear-all" onClick={clearAllFilters}>Clear all filters</button>
                   </div>
                 ) : (
-                  <div className="dash-table-wrap">
+                  <>
+                  <Pager page={dlTbl.page} pageSize={dlTbl.pageSize} total={dlTbl.total} onPage={dlTbl.setPage} onPageSize={dlTbl.setPageSize}/>
+                  <div className="dash-table-wrap" id="dash-dealer-wrap">
                     <table id="dash-dealer-table" className="dash-table dash-table--dealer">
                       <thead>
                         <tr>
-                          <th className="dash-th" style={{textAlign:"left"}}>State</th>
-                          <th className="dash-th" style={{textAlign:"left"}}>Dealer Name</th>
-                          <th className="dash-th" style={{textAlign:"left"}}>Vendor</th>
-                          <th className="dash-th" style={{textAlign:"center"}}>Month Target</th>
-                          <th className="dash-th" style={{textAlign:"left"}}>Category</th>
-                          <th className="dash-th" style={{textAlign:"left"}}>BTL Category</th>
-                          <th className="dash-th" style={{textAlign:"center"}}>Activities</th>
-                          <th className="dash-th" style={{textAlign:"center"}}>Retail Target</th>
-                          <th className="dash-th" style={{textAlign:"center"}}>Lead Target</th>
-                          <th className="dash-th" style={{textAlign:"center"}}>Budget for BTL (₹)</th>
-                          <th className="dash-th" style={{textAlign:"center"}}>Pending</th>
-                          <th className="dash-th" style={{textAlign:"center"}}>Approved</th>
-                          <th className="dash-th" style={{textAlign:"center"}}>Rejected</th>
-                          <th className="dash-th" style={{textAlign:"center",background:"#f59e0b22",color:"#92400e"}}>Revision</th>
+                          <SortTh k="state"       label="State"         className="dash-th" {...dlSp}/>
+                          <SortTh k="dealer"      label="Dealer Name"   className="dash-th" {...dlSp}/>
+                          <SortTh k="vendor"      label="Vendor"        className="dash-th" {...dlSp}/>
+                          <SortTh k="monthTarget" label="Month Target"  align="center" className="dash-th" {...dlSp}/>
+                          <SortTh k="category"    label="Category"      className="dash-th" {...dlSp}/>
+                          <SortTh k="btlCategory" label="BTL Category"  className="dash-th" {...dlSp}/>
+                          <SortTh k="activities"  label="Activities"    align="center" className="dash-th" {...dlSp}/>
+                          <SortTh k="retail"      label="Retail Target" align="center" className="dash-th" {...dlSp}/>
+                          <SortTh k="lead"        label="Lead Target"   align="center" className="dash-th" {...dlSp}/>
+                          <SortTh k="budget"      label="Budget for BTL (₹)" align="center" className="dash-th" {...dlSp}/>
+                          <SortTh k="pending"     label="Pending"       align="center" className="dash-th" {...dlSp}/>
+                          <SortTh k="approved"    label="Approved"      align="center" className="dash-th" {...dlSp}/>
+                          <SortTh k="rejected"    label="Rejected"      align="center" className="dash-th" {...dlSp}/>
+                          <SortTh k="revision"    label="Revision"      align="center" className="dash-th" style={{background:"#f59e0b22",color:"#92400e"}} {...dlSp}/>
                         </tr>
                       </thead>
                       <tbody>
-                        {dealerRows.map((row, i) => {
-                          const el     = (row.eligibility ?? "").toLowerCase();
-                          const isNon  = el.includes("not") || el.includes("non");
+                        {dlTbl.pageRows.map((row, i) => {
+                          const isNon  = isNonDealer(row);
                           const isNew  = row.type?.toLowerCase() === "new";
                           const catBase = isNon ? "Non Eligible" : "BTL Budget Eligible";
                           const cat    = isNon
@@ -1233,7 +1244,7 @@ export default function DashboardPage() {
                               <td className="dash-td" style={{textAlign:"center"}}>{row.activities}</td>
                               <td className="dash-td" style={{textAlign:"center"}}>{Math.round(row.retailTarget).toLocaleString("en-IN")}</td>
                               <td className="dash-td" style={{textAlign:"center"}}>{Math.round(row.leadTarget).toLocaleString("en-IN")}</td>
-                              <td className="dash-td dash-td--mono" style={{textAlign:"center"}}>
+                              <td className="dash-td dash-td--mono tt-inr" style={{textAlign:"right"}}>
                                 {btlBudget > 0 ? inr(btlBudget) : <Dash/>}
                               </td>
                               <td className="dash-td" style={{textAlign:"center"}}>
@@ -1246,7 +1257,7 @@ export default function DashboardPage() {
                                 {row.rejected > 0 ? <span className="dash-badge dash-badge--rejected">{row.rejected}</span> : <span className="dash-muted">—</span>}
                               </td>
                               <td className="dash-td" style={{textAlign:"center"}}>
-                                {(row as any).revision > 0 ? <span className="dash-badge dash-badge--revision">{(row as any).revision}</span> : <span className="dash-muted">—</span>}
+                                {row.revision > 0 ? <span className="dash-badge dash-badge--revision">{row.revision}</span> : <span className="dash-muted">—</span>}
                               </td>
                             </tr>
                           );
@@ -1270,7 +1281,7 @@ export default function DashboardPage() {
                             <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>
                               {Math.round(dealerGrandTotal.leadTarget).toLocaleString("en-IN")}
                             </td>
-                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono" style={{textAlign:"center"}}>
+                            <td className="dash-td dash-td--right dash-td--grand dash-td--mono tt-inr" style={{textAlign:"right"}}>
                               {inr(dealerGrandTotal.btlBudget)}
                             </td>
                             <td className="dash-td dash-td--right dash-td--grand" style={{textAlign:"center"}}>{dealerGrandTotal.pending  > 0 ? dealerGrandTotal.pending  : "—"}</td>
@@ -1282,13 +1293,17 @@ export default function DashboardPage() {
                       )}
                     </table>
                   </div>
+                  {dlTbl.total > dlTbl.pageSize && (
+                    <Pager page={dlTbl.page} pageSize={dlTbl.pageSize} total={dlTbl.total} onPage={dlTbl.setPage} onPageSize={dlTbl.setPageSize} scrollTo="#dash-dealer-wrap"/>
+                  )}
+                  </>
                 )}
               </section>
             </>
           )}
 
           {/* ══════════════════════════════════════════════════════════════
-              TAB: DAILY ACTIVITY SUMMARY — banded, matches AnalyticsDashboard
+              TAB: DAILY ACTIVITY SUMMARY (tab hidden in menu — kept for later)
           ══════════════════════════════════════════════════════════════ */}
           {isAdmin && reportTab === "daily-summary" && (
             <>
@@ -1348,7 +1363,6 @@ export default function DashboardPage() {
                   </div>
                 ) : (
                   <>
-                    {/* Summary KPIs */}
                     <div style={{ display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:10,marginBottom:16 }}>
                       {[
                         {label:"Total Canopy",  value:String(dsTotals.canopy),      color:"#0a2540"},
@@ -1488,7 +1502,7 @@ export default function DashboardPage() {
           )}
 
           {/* ══════════════════════════════════════════════════════════════
-              TAB: LEAD REPORT — 10-point formula set, matches AnalyticsDashboard
+              TAB: LEAD REPORT (tab hidden in menu — kept for later)
           ══════════════════════════════════════════════════════════════ */}
           {isAdmin && reportTab === "lead-report" && (
             <section className="dash-section">
@@ -1559,8 +1573,6 @@ export default function DashboardPage() {
                       }
 
                       const leadRows: LeadReportRow[] = stateBreakdown.map(sr => {
-                        // NOTE: per-channel Walkin/Referral/ATL/Digital data will come from
-                        // the LMS API once integrated. Only BTL is populated from live data.
                         const walkinTarget=0, walkinMtdT=0, walkinMtdA=0;
                         const btlTarget = sr.totalLead;
                         const btlMtdT   = Math.round(sr.totalLead * monthFrac);
@@ -1715,9 +1727,7 @@ export default function DashboardPage() {
           )}
 
           {/* ══════════════════════════════════════════════════════════════
-              TAB: DEALER DAILY SHEET — drill-down, shared totals object
-              (Total row = pure sums, Avg row = pure averages), matches
-              AnalyticsDashboard's fixed dealer-daily drilldown exactly.
+              TAB: DEALER DAILY SHEET — drill-down
           ══════════════════════════════════════════════════════════════ */}
           {isAdmin && reportTab === "dealer-daily" && selectedDealerDaily && (() => {
             const entries = selectedDealerDaily.dailyEntries;
@@ -1808,7 +1818,6 @@ export default function DashboardPage() {
                   </button>
                 </div>
 
-                {/* Title banner */}
                 <div style={{ background:"#0a2540", borderRadius:8, padding:"14px 28px",
                   textAlign:"center", marginBottom:16, boxShadow:"0 4px 10px rgba(10,37,64,0.25)" }}>
                   <span style={{ color:"#fff", fontWeight:800, fontSize:20, letterSpacing:"0.02em" }}>
@@ -1816,7 +1825,6 @@ export default function DashboardPage() {
                   </span>
                 </div>
 
-                {/* KPI summary cards — sourced from the exact same `totals` used below */}
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))", gap:10, marginBottom:16 }}>
                   {[
                     { label:"Canopy", value: selectedDealerDaily.canopy },
@@ -1941,7 +1949,7 @@ export default function DashboardPage() {
                                       <div key={m.id} style={{ width:24,height:24,borderRadius:3,overflow:"hidden",cursor:"pointer",border:"1px solid #bbf7d0" }}
                                         onClick={() => setMediaViewer({ url, name: m.fileName, type: m.fileType })}>
                                         {isImageType(m.fileType)
-                                          ? <img src={url} alt={m.fileName} style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
+                                          ? <img src={url} alt="" style={{ width:"100%",height:"100%",objectFit:"cover" }}/>
                                           : <span style={{ fontSize:13,lineHeight:"24px",display:"block",textAlign:"center" }}>{mediaIconFor(m.fileType)}</span>}
                                       </div>
                                     );
@@ -1955,7 +1963,6 @@ export default function DashboardPage() {
                           );
                         })}
 
-                        {/* Total row — pure sum of every column */}
                         <tr style={{ background:"#93c5fd", fontWeight:800 }}>
                           {td("Total", { textAlign:"left", background:"#93c5fd" })}
                           {td(totals.canopy, { background:"#93c5fd" })}
@@ -1981,7 +1988,6 @@ export default function DashboardPage() {
                           {td("📸"+selectedDealerDaily.media.filter(m=>isImageType(m.fileType)||isVideoType(m.fileType)).length, { background:"#93c5fd", fontSize:10 })}
                         </tr>
 
-                        {/* Avg row — pure average (Total ÷ days) of every column */}
                         <tr style={{ fontWeight:700 }}>
                           {td("Average", { textAlign:"left" })}
                           {td(avgRow.canopy, { background:"#fef9c3" })}

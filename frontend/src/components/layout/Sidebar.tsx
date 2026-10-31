@@ -1,4 +1,6 @@
 // src/components/layout/Sidebar.tsx
+// 28.10.2026: Accounts section — "Credit Notes (Accounts)" link for the Accounts team (and Admin).
+//             Accounts-only users see just Accounts + Download Reports.
 import { NavLink, useLocation } from "react-router-dom";
 import { useEffect } from "react";
 import "./Sidebar.css";
@@ -6,6 +8,7 @@ import "./Sidebar.css";
 interface SidebarProps {
   isAdmin:       boolean;
   isReportsUser: boolean;
+  isAccounts?:   boolean;          // Accounts team (Role "Accounts" / Cn:AccountsTeamEmails) or Admin
   collapsed:     boolean;
   mobileOpen:    boolean;
   onToggle:      () => void;
@@ -26,7 +29,8 @@ const Icon = ({ name, size = 18 }: { name: string; size?: number }) => {
     case "reports":     return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><polyline points="10,9 9,9 8,9"/></svg>;
     case "users":       return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>;
     case "newproposal": return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>;
-    case "analytics":  return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>;
+    case "analytics":   return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>;
+    case "credit":      return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="10" y2="15"/><line x1="14" y1="15" x2="18" y2="15"/></svg>;
     case "logout":      return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>;
     case "logs":        return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3h18v4H3z"/><path d="M3 3v18h18V3"/><line x1="7" y1="11" x2="17" y2="11"/><line x1="7" y1="15" x2="17" y2="15"/><line x1="7" y1="19" x2="13" y2="19"/></svg>;
     case "chevron-r":   return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9,18 15,12 9,6"/></svg>;
@@ -48,16 +52,20 @@ const NAV_ITEMS = [
 // Types admin panel; "Activity Log" is the separate audit trail of logins,
 // password resets, and account changes (see AdminAuditLogPage.tsx).
 const ADMIN_ITEMS = [
-  { to: "/admin/users",     label: "Manage Users & Activity", icon: "users" },
-  { to: "/admin/audit-log", label: "Activity Log",            icon: "logs"  },
-  { to: "/admin/dealer-map", label: "Dealer Mapping",         icon: "users" },
+  { to: "/admin/users",      label: "Manage Users & Activity", icon: "users" },
+  { to: "/admin/audit-log",  label: "Activity Log",            icon: "logs"  },
+  { to: "/admin/dealer-map", label: "Dealer Mapping",          icon: "users" },
 ];
 
 export default function Sidebar({
-  isAdmin, isReportsUser, collapsed, mobileOpen, onToggle, onMobileClose, onLogout,
+  isAdmin, isReportsUser, isAccounts = false, collapsed, mobileOpen, onToggle, onMobileClose, onLogout,
   userName, userRole, pendingCount,
 }: SidebarProps) {
   const location = useLocation();
+  void onToggle;   // toggle is handled by AppLayout (click on collapsed sidebar)
+
+  // Accounts team member who is not Admin/Manager → only Accounts + Reports
+  const accountsOnly = isAccounts && !isAdmin;
 
   useEffect(() => { onMobileClose(); }, [location.pathname]);
 
@@ -116,7 +124,8 @@ export default function Sidebar({
         <nav className="sb-nav" role="navigation">
           {!collapsed && <span className="sb-section-lbl"></span>}
 
-          {NAV_ITEMS.map((item) => (
+          {/* Main menu — hidden for Accounts-only users */}
+          {!accountsOnly && NAV_ITEMS.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -134,6 +143,20 @@ export default function Sidebar({
               ) : null}
             </NavLink>
           ))}
+
+          {/* Accounts — Credit Notes (Accounts team + Admin) */}
+          {isAccounts && (
+            <>
+              {!accountsOnly && <div className="sb-divider" />}
+              {!collapsed && <span className="sb-section-lbl">Accounts</span>}
+              <NavLink to="/accounts" className={linkClass}
+                title="Credit Notes (Accounts)"
+                onClick={(e) => e.stopPropagation()}>
+                <Icon name="credit" />
+                {!collapsed && <span className="sb-link-label">Credit Notes (Accounts)</span>}
+              </NavLink>
+            </>
+          )}
 
           {/* Reports */}
           {isReportsUser && (

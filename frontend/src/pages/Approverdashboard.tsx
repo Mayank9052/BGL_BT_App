@@ -1,4 +1,6 @@
 // src/pages/ApproverDashboard.tsx
+// [BTL-2026-10-28] Proposal table: every header sortable (click ▲ → ▼ → off), pagination via TableTools,
+//                  ₹ amounts never wrap ("₹1,15,000"). Select-all / bulk actions still cover ALL filtered rows.
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
 import { useNavigate } from "react-router-dom";
@@ -22,9 +24,11 @@ import { forwardNow, type ForwardSummaryMailResult } from "../services/forwardSu
 import ForwardSummaryStatus from "../components/ForwardSummaryStatus";
 import MultiSelectDropdown from "../components/MultiSelectDropdown";   // [BTL-2026-10-26c]
 import { fetchDealerStatus, buildInactiveMatcher } from "../services/dealerStatusService";
+import { useSortPage, SortTh, Pager } from "../components/TableTools";   // [BTL-2026-10-28]
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
-const inr     = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
+// [BTL-2026-10-28] no space after ₹ so the amount never splits onto two lines
+const inr     = (v: number) => "₹" + Math.round(v).toLocaleString("en-IN");
 const num     = (v: string | number) => { const n = parseFloat(String(v)); return Number.isFinite(n) ? n : 0; };
 const fmtDate = (iso: string | null | undefined) => {
   if (!iso) return "—";
@@ -323,45 +327,6 @@ function getActualDateRange(month?: string | null, year?: string | number | null
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
-// ── [BTL-2026-10-27c] table pager ──────────────────────────────────────────────────
-function ApPager({ page, pageSize, total, onPage, onPageSize, scrollTop }: {
-  page: number; pageSize: number; total: number;
-  onPage: (p: number) => void; onPageSize: (n: number) => void; scrollTop?: boolean;
-}) {
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  const go = (p: number) => {
-    onPage(Math.min(Math.max(1, p), pages));
-    if (scrollTop) document.querySelector(".ap-table-wrap")?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const to = Math.min(page * pageSize, total);
-  const nums: (number | "…")[] = [];
-  for (let p = 1; p <= pages; p++) {
-    if (p === 1 || p === pages || Math.abs(p - page) <= 1) nums.push(p);
-    else if (nums[nums.length - 1] !== "…") nums.push("…");
-  }
-  return (
-    <div className="ap-pager">
-      <span className="ap-pager-info">Showing <b>{from}–{to}</b> of <b>{total}</b></span>
-      <label className="ap-pager-size">Rows
-        <select value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))}>
-          {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
-      </label>
-      <div className="ap-pager-btns">
-        <button type="button" disabled={page <= 1} onClick={() => go(1)} title="First page">«</button>
-        <button type="button" disabled={page <= 1} onClick={() => go(page - 1)} title="Previous page">‹</button>
-        {nums.map((n, i) => n === "…"
-          ? <span key={`e${i}`} className="ap-pager-gap">…</span>
-          : <button type="button" key={n} className={n === page ? "is-active" : ""} onClick={() => go(n)}
-              aria-current={n === page ? "page" : undefined}>{n}</button>)}
-        <button type="button" disabled={page >= pages} onClick={() => go(page + 1)} title="Next page">›</button>
-        <button type="button" disabled={page >= pages} onClick={() => go(pages)} title="Last page">»</button>
-      </div>
-    </div>
-  );
-}
-
 export default function ApproverDashboard() {
   const { instance, accounts } = useMsal();
   const navigate  = useNavigate();
@@ -1072,20 +1037,31 @@ export default function ApproverDashboard() {
     if (failed.length) console.warn("[BULK-DELETE] failures:\n" + failed.join("\n"));
   };
 
-  // ── [BTL-2026-10-27c] pagination ──
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<number>(() => {
-    try { return Number(localStorage.getItem("ap_page_size")) || 25; } catch { return 25; }
+  // ── [BTL-2026-10-28] sorting (every header) + pagination ──
+  // Click a header: ▲ ascending → ▼ descending → back to normal order.
+  // Page goes back to 1 whenever a filter or the search changes.
+  const apGetters = useMemo(() => ({
+    token:      (p: ProposalResponse) => p.tokenNumber ?? "",
+    submitted:  (p: ProposalResponse) => p.createdAt ?? "",
+    vendor:     (p: ProposalResponse) => p.vendorName ?? "",
+    rsm:        (p: ProposalResponse) => p.rsmName ?? "",
+    dealer:     (p: ProposalResponse) => p.dealerName ?? "",
+    month:      (p: ProposalResponse) => MONTHS.indexOf(p.month),
+    year:       (p: ProposalResponse) => Number((p as any).year) || 0,
+    activities: (p: ProposalResponse) => p.activities.length,
+    budget:     (p: ProposalResponse) => p.totalBudget,
+    lead:       (p: ProposalResponse) => p.totalLeadTarget,
+    retail:     (p: ProposalResponse) => p.totalRetailTarget,
+    cac:        (p: ProposalResponse) => p.cac,
+    cpl:        (p: ProposalResponse) => p.cpl,
+    dealerReq:  (p: ProposalResponse) => ((p as any).dealerSentBack ? 1 : 0),
+    status:     (p: ProposalResponse) => (p.status === "NeedsRevision" ? "Needs revision" : p.status),
+  }), []);
+  const tbl = useSortPage(filtered, apGetters, {
+    storageKey: "approver", pageSize: 25,
+    resetOn: [statusSel, monthSel, yearSel, stateSel, dealerStatusSel, search, submittedFrom, submittedTo, fwdDateFilter],
   });
-  const changePageSize = (n: number) => {
-    setPageSize(n); setPage(1);
-    try { localStorage.setItem("ap_page_size", String(n)); } catch { /* ignore */ }
-  };
-  useEffect(() => { setPage(1); },
-    [statusSel, monthSel, yearSel, stateSel, dealerStatusSel, search, submittedFrom, submittedTo, fwdDateFilter]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const curPage = Math.min(page, totalPages);
-  const paginate = <T,>(rows: T[]): T[] => rows.slice((curPage - 1) * pageSize, curPage * pageSize);
+  const sp = { sortKey: tbl.sortKey, sortDir: tbl.sortDir, onSort: tbl.onSort };
 
   const [lastForwardMail, setLastForwardMail] = useState<ForwardSummaryMailResult | null>(null);   // [BTL-2026-10-27e]
   const toggleActuals=(activityId:string)=>
@@ -1222,6 +1198,7 @@ export default function ApproverDashboard() {
   };
 
   const activityNameOptions=activityGroups.map((g)=>g.activityName);
+  const NOWRAP = { whiteSpace: "nowrap" as const };   // [BTL-2026-10-28] ₹ cells never wrap
 
   return (
     <div className="ap-page">
@@ -1412,8 +1389,8 @@ export default function ApproverDashboard() {
                   style={{ background:"rgba(255,255,255,0.12)",color:"#fee2e2",border:"1px solid rgba(255,255,255,0.25)",borderRadius:7,padding:"8px 14px",fontSize:13,cursor:"pointer" }}>✕ Clear</button>
               </div>
             )}
-            {/* [BTL-2026-10-27c] pager */}
-            {filtered.length > 0 && <ApPager page={curPage} pageSize={pageSize} total={filtered.length} onPage={setPage} onPageSize={changePageSize}/>}
+            {/* [BTL-2026-10-28] pager (top) */}
+            <Pager page={tbl.page} pageSize={tbl.pageSize} total={tbl.total} onPage={tbl.setPage} onPageSize={tbl.setPageSize}/>
             <div className="ap-table-wrap">
               <table className="ap-table">
                 <thead><tr>
@@ -1452,17 +1429,27 @@ export default function ApproverDashboard() {
                       <div style={{ fontSize:9,color:"#dc2626" }}>🗑 all</div>
                     </th>
                   )}
-                  <th>Action</th><th>Token</th><th>Submitted</th><th>Vendor</th>
-                    {isAdmin&&<th>RSM / TSM</th>}
-                  <th>Dealer &amp; location</th><th>Month</th><th>Year</th><th>Activities</th>
-                  <th className="ap-num">Budget</th><th className="ap-num">Lead</th><th className="ap-num">Retail</th>
-                  <th className="ap-num">CAC</th><th className="ap-num">CPL</th>
-                  {isAdmin&&<th>Dealer Req.</th>}
-                  <th>Status</th>
+                  {/* [BTL-2026-10-28] sortable headers */}
+                  <th>Action</th>
+                  <SortTh k="token"      label="Token"             {...sp}/>
+                  <SortTh k="submitted"  label="Submitted"         {...sp}/>
+                  <SortTh k="vendor"     label="Vendor"            {...sp}/>
+                  {isAdmin&&<SortTh k="rsm" label="RSM / TSM"      {...sp}/>}
+                  <SortTh k="dealer"     label="Dealer & location" {...sp}/>
+                  <SortTh k="month"      label="Month"             {...sp}/>
+                  <SortTh k="year"       label="Year"              {...sp}/>
+                  <SortTh k="activities" label="Activities"        {...sp}/>
+                  <SortTh k="budget"     label="Budget" align="right" className="ap-num" {...sp}/>
+                  <SortTh k="lead"       label="Lead"   align="right" className="ap-num" {...sp}/>
+                  <SortTh k="retail"     label="Retail" align="right" className="ap-num" {...sp}/>
+                  <SortTh k="cac"        label="CAC"    align="right" className="ap-num" {...sp}/>
+                  <SortTh k="cpl"        label="CPL"    align="right" className="ap-num" {...sp}/>
+                  {isAdmin&&<SortTh k="dealerReq" label="Dealer Req." {...sp}/>}
+                  <SortTh k="status"     label="Status"            {...sp}/>
                 </tr></thead>
                 <tbody>
                   {filtered.length===0&&(<tr><td colSpan={(isAdmin?(isChecker?17:16):12)+(isSuperAdmin?1:0)} className="ap-empty">{proposals.length===0?"No proposals yet.":"No results match."}</td></tr>)}
-                  {paginate(filtered).map((p)=>{
+                  {tbl.pageRows.map((p)=>{
                     const isPending=p.status==="Pending"; const isChecked=selectedIds.has(p.id);
                     return (
                       <tr key={p.id}
@@ -1544,12 +1531,12 @@ export default function ApproverDashboard() {
                         <td><span className="ap-cell-p">{p.dealerName}</span><span className="ap-cell-m">{p.location}, {p.state}</span></td>
                         <td>{p.month}</td><td>{p.year}</td>
                         <td>{p.activities.slice(0,2).map((a,i)=><span key={i} className="ap-act-chip">{a.activityType}</span>)}{p.activities.length>2&&<span className="ap-act-chip ap-act-chip--more">+{p.activities.length-2}</span>}</td>
-                        <td className="ap-num ap-bold">{inr(p.totalBudget)}</td>
+                        <td className="ap-num ap-bold" style={NOWRAP}>{inr(p.totalBudget)}</td>
                         <td className="ap-num">{p.totalLeadTarget}</td>
                         <td className="ap-num">{p.totalRetailTarget}</td>
-                        <td className="ap-num">{inr(p.cac)}</td>
-                        <td className="ap-num">{inr(p.cpl)}</td>
-                        {isAdmin&&<td>{dealerSentBack(p)?<span style={{ fontSize:11,color:"#92400e",background:"#fef9c3",padding:"2px 8px",borderRadius:10,fontWeight:600,cursor:"pointer" }} onClick={(e)=>{ e.stopPropagation(); openModal(p); }}>↩ View request</span>:<span style={{ color:"#cbd5e1",fontSize:11 }}>—</span>}</td>}
+                        <td className="ap-num" style={NOWRAP}>{inr(p.cac)}</td>
+                        <td className="ap-num" style={NOWRAP}>{inr(p.cpl)}</td>
+                        {isAdmin&&<td>{dealerSentBack(p)?<span style={{ fontSize:11,color:"#92400e",background:"#fef9c3",padding:"2px 8px",borderRadius:10,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap" }} onClick={(e)=>{ e.stopPropagation(); openModal(p); }}>↩ View request</span>:<span style={{ color:"#cbd5e1",fontSize:11 }}>—</span>}</td>}
                         <td><span className={statusClass(p.status)}>{p.status==="NeedsRevision"?"Needs revision":p.status}</span></td>
                       </tr>
                     );
@@ -1557,7 +1544,8 @@ export default function ApproverDashboard() {
                 </tbody>
               </table>
             </div>
-            {filtered.length > pageSize && <ApPager page={curPage} pageSize={pageSize} total={filtered.length} onPage={setPage} onPageSize={changePageSize} scrollTop/>}
+            {/* [BTL-2026-10-28] pager (bottom) */}
+            {tbl.total > tbl.pageSize && <Pager page={tbl.page} pageSize={tbl.pageSize} total={tbl.total} onPage={tbl.setPage} onPageSize={tbl.setPageSize} scrollTo=".ap-table-wrap"/>}
           </>
         )}
       </main>
@@ -1742,7 +1730,7 @@ export default function ApproverDashboard() {
                             <td style={{ padding:"8px",textAlign:"right" }}><input type="number" min={0} style={{ width:88,textAlign:"right",border:"1px solid #d1d5db",borderRadius:6,padding:"5px 6px",fontSize:12,outline:"none" }} value={(a as EditActivity).additionalBudget} onChange={(e)=>setAF(i,"additionalBudget",e.target.value)}/></td>
                             <td style={{ padding:"8px",textAlign:"center" }}><select style={{ border:"1px solid #d1d5db",borderRadius:6,padding:"5px 8px",fontSize:12,outline:"none",background:"#fff",width:80 }} value={(a as EditActivity).bgaussShare} onChange={(e)=>setAF(i,"bgaussShare",e.target.value)}>{BGAUSS_OPTS.map(o=><option key={o} value={o}>{o}%</option>)}</select></td>
                             <td style={{ padding:"8px",textAlign:"right" }}><div style={{ fontSize:12,fontWeight:600,color:"#1e40af",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:6,padding:"5px 8px",whiteSpace:"nowrap" }}>{inr(Math.round((num((a as EditActivity).budget)+num((a as EditActivity).additionalBudget))*(num((a as EditActivity).bgaussShare||"100")/100)))}</div></td>
-                            <td style={{ padding:"8px",textAlign:"right",fontWeight:700,color:"#0a2540",paddingTop:14 }}>{inr(num((a as EditActivity).budget)+num((a as EditActivity).additionalBudget))}</td>
+                            <td style={{ padding:"8px",textAlign:"right",fontWeight:700,color:"#0a2540",paddingTop:14,whiteSpace:"nowrap" }}>{inr(num((a as EditActivity).budget)+num((a as EditActivity).additionalBudget))}</td>
                             <td style={{ padding:"8px",textAlign:"center",paddingTop:14 }}><button onClick={()=>removeRow(i)} disabled={editData.activities.length===1} style={{ background:"#fee2e2",border:"none",color:"#991b1b",width:24,height:24,borderRadius:"50%",cursor:"pointer",fontWeight:700,fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto" }}>×</button></td>
                           </tr>,
                           <tr key={`media-${i}`} style={{ background:i%2===0?"#fff":"#f8fafc",borderBottom:"2px solid #f1f5f9" }}>
@@ -1775,8 +1763,8 @@ export default function ApproverDashboard() {
                             <td style={{ padding:"8px 10px",textAlign:"center",fontSize:12 }}>{(a as any).salesPercent?`${(a as any).salesPercent}%`:<span style={{ color:"#cbd5e1" }}>—</span>}</td>
                             <td style={{ padding:"8px 10px",textAlign:"right" }}>{(a as ActivityResponse).retailTarget}</td>
                             <td style={{ padding:"8px 10px",color:"#475569",fontSize:12 }}>{fmtDate((a as ActivityResponse).startDate)} → {fmtDate((a as ActivityResponse).endDate)}</td>
-                            <td style={{ padding:"8px 10px",textAlign:"right" }}>{inr((a as ActivityResponse).budget)}</td>
-                            <td style={{ padding:"8px 10px",textAlign:"right",color:showBudgetAddPanel?"#f59e0b":"#6b7280",fontWeight:showBudgetAddPanel?700:400 }}>
+                            <td style={{ padding:"8px 10px",textAlign:"right",whiteSpace:"nowrap" }}>{inr((a as ActivityResponse).budget)}</td>
+                            <td style={{ padding:"8px 10px",textAlign:"right",whiteSpace:"nowrap",color:showBudgetAddPanel?"#f59e0b":"#6b7280",fontWeight:showBudgetAddPanel?700:400 }}>
                               {(()=>{
                                 const lv=liveAdd((a as ActivityResponse).id,(a as ActivityResponse).additionalBudget);
                                 const saved=(a as ActivityResponse).additionalBudget;
@@ -1791,10 +1779,10 @@ export default function ApproverDashboard() {
                               })()}
                             </td>
                             <td style={{ padding:"8px 10px",textAlign:"center" }}><span style={{ fontSize:11,fontWeight:600,background:"#eff6ff",color:"#1e40af",padding:"2px 8px",borderRadius:4 }}>{(a as ActivityResponse).bgaussShare>0?`${(a as ActivityResponse).bgaussShare}%`:"100%"}</span></td>
-                            <td style={{ padding:"8px 10px",textAlign:"right",color:"#1e40af",fontWeight:600,fontSize:12 }}>
+                            <td style={{ padding:"8px 10px",textAlign:"right",color:"#1e40af",fontWeight:600,fontSize:12,whiteSpace:"nowrap" }}>
                               {inr(calcBgAmt((a as ActivityResponse).budget,liveAdd((a as ActivityResponse).id,(a as ActivityResponse).additionalBudget),(a as ActivityResponse).bgaussShare))}
                             </td>
-                            <td style={{ padding:"8px 10px",textAlign:"right",fontWeight:700,color:"#0a2540" }}>
+                            <td style={{ padding:"8px 10px",textAlign:"right",fontWeight:700,color:"#0a2540",whiteSpace:"nowrap" }}>
                               {inr((a as ActivityResponse).budget+liveAdd((a as ActivityResponse).id,(a as ActivityResponse).additionalBudget))}
                             </td>
                             {selected.status==="Approved"?<td style={{ padding:"8px 10px",textAlign:"center" }}><button onClick={()=>toggleActuals((a as ActivityResponse).id)} style={{ background:openActualsId===(a as ActivityResponse).id?"#0a2540":"#16a34a",color:"#fff",border:"none",borderRadius:6,padding:"5px 12px",fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",display:"flex",alignItems:"center",gap:4,margin:"0 auto" }}>📋 {openActualsId===(a as ActivityResponse).id?"Close ▲":"Post-Activity ▼"}</button></td>
@@ -2321,7 +2309,7 @@ export default function ApproverDashboard() {
                     return rows.map(({label,value,hi,blue,warn})=>(
                       <div key={label}>
                         <div style={{ fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.05em" }}>{label}</div>
-                        <div style={{ fontSize:14,fontWeight:700,color:warn?"#fca5a5":hi?"#86efac":blue?"#93c5fd":"#e2e8f0" }}>{value}</div>
+                        <div style={{ fontSize:14,fontWeight:700,color:warn?"#fca5a5":hi?"#86efac":blue?"#93c5fd":"#e2e8f0",whiteSpace:"nowrap" }}>{value}</div>
                         {warn&&<div style={{ fontSize:8,color:"#fca5a5" }}>⚠ over limit</div>}
                       </div>
                     ));
@@ -2438,7 +2426,7 @@ export default function ApproverDashboard() {
                               </div>
                               <div style={{ display:"flex",flexDirection:"column",gap:3,alignItems:"flex-end",minWidth:120 }}>
                                 <span style={{ fontSize:10,color:"#6b7280",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.04em" }}>New Total</span>
-                                <span style={{ fontSize:14,fontWeight:700,color:"#0a2540" }}>{inr(a.budget+newAdd)}</span>
+                                <span style={{ fontSize:14,fontWeight:700,color:"#0a2540",whiteSpace:"nowrap" }}>{inr(a.budget+newAdd)}</span>
                                 {diff>0&&<span style={{ fontSize:11,color:"#16a34a",fontWeight:600 }}>+{inr(diff)} added</span>}
                                 {diff<0&&<span style={{ fontSize:11,color:"#dc2626",fontWeight:600 }}>{inr(diff)} reduced</span>}
                               </div>
@@ -2454,7 +2442,7 @@ export default function ApproverDashboard() {
                         return (
                           <div style={{ background:"#0a2540",borderRadius:8,padding:"12px 16px",display:"flex",gap:24,flexWrap:"wrap",marginBottom:16 }}>
                             {[{label:"Old Budget",val:inr(selected.totalBudget),c:"#e2e8f0"},{label:"Additional",val:`+${inr(totalNewAdd)}`,c:totalNewAdd>0?"#fbbf24":"#e2e8f0"},{label:"New Total Budget",val:inr(totalNewBudget),c:"#86efac"},...(netNew!==0?[{label:"Net Change",val:`${netNew>0?"+":""}${inr(netNew)}`,c:netNew>0?"#fbbf24":"#fca5a5"}]:[])].map(({label,val,c})=>(
-                              <div key={label}><div style={{ fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.05em" }}>{label}</div><div style={{ fontSize:14,fontWeight:700,color:c }}>{val}</div></div>
+                              <div key={label}><div style={{ fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:"0.05em" }}>{label}</div><div style={{ fontSize:14,fontWeight:700,color:c,whiteSpace:"nowrap" }}>{val}</div></div>
                             ))}
                           </div>
                         );

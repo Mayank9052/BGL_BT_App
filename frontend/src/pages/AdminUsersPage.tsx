@@ -21,7 +21,7 @@ import { fetchDealers, type DealerOption } from "../services/dealerService";
 import type { UserProfile } from "../types/user";
 import "./AdminUsersPage.css";
 
-const ROLES = ["Admin", "Manager", "User"];
+const ROLES = ["Admin", "Manager", "User", "Accounts"];
 
 function SkeletonRow({ cols }: { cols: number }) {
   return (

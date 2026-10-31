@@ -6,15 +6,19 @@
 //   SentForRsmApproval ──RSM: rsm-decision──► RsmApproved | RsmRejected
 //   RsmApproved ──Dealer/Team/Checker: final-invoice (file + amount)──► RsmApproved (+ invoice)
 //   RsmApproved (+ invoice) ──Checker: send-to-accounts──► SentToAccounts
-//   SentToAccounts ──Checker: mark-processed (CN number)──► CnProcessed
+//   SentToAccounts ──Accounts team / Checker: mark-processed (CN number)──► CnProcessed
+//
+// Accounts team = Users.Role "Accounts" OR email listed in Cn:AccountsTeamEmails.
+// Accounts can VIEW every CN (Accounts page /accounts) and MARK PROCESSED.
 //
 // Endpoints
+//   GET  /api/cn/me                                   caller's CN rights (isChecker / isAccounts / isViewer)
 //   GET  /api/cn/proposals/{proposalId}               CN state of every activity (+ allowed actions for caller)
 //   POST /api/cn/activities/{id}/send-to-rsm          Checker
 //   POST /api/cn/activities/{id}/rsm-decision         RSM (Checker may record on RSM's behalf, note mandatory)
 //   POST /api/cn/activities/{id}/final-invoice        Dealer / RSM / TSM / Commando / Checker
 //   POST /api/cn/activities/{id}/send-to-accounts     Checker (attachments: BGauss invoice, vendor invoices, photos)
-//   POST /api/cn/activities/{id}/mark-processed       Checker
+//   POST /api/cn/activities/{id}/mark-processed       Accounts team / Checker
 //   GET  /api/cn/report?month=&year=&status=&dealer=  Approved vs Actual, activity-wise (scoped to caller)
 
 using System.Security.Claims;
@@ -50,7 +54,7 @@ public class CnController : ControllerBase
     // ═══════════════════════════════════════════════════════════════════════════
     // CALLER + RELATIONSHIPS
     // ═══════════════════════════════════════════════════════════════════════════
-    private sealed record Caller(string Email, string Name, string Role, User? User, bool IsChecker, bool IsViewer);
+    private sealed record Caller(string Email, string Name, string Role, User? User, bool IsChecker, bool IsViewer, bool IsAccounts);
 
     private async Task<Caller?> GetCallerAsync()
     {
@@ -73,11 +77,14 @@ public class CnController : ControllerBase
 
         var isChecker = _mail.CheckerEmails.Contains(email, StringComparer.OrdinalIgnoreCase)
                         || role.Equals("Admin", StringComparison.OrdinalIgnoreCase);
-        var isViewer  = isChecker
+        // Accounts team: Role "Accounts" or listed in Cn:AccountsTeamEmails
+        var isAccounts = _mail.AccountsEmails.Contains(email, StringComparer.OrdinalIgnoreCase)
+                         || role.Equals("Accounts", StringComparison.OrdinalIgnoreCase);
+        var isViewer  = isChecker || isAccounts
                         || _mail.ViewerEmails.Contains(email, StringComparer.OrdinalIgnoreCase)
                         || role.Equals("Manager", StringComparison.OrdinalIgnoreCase);
 
-        return new Caller(email, name, role, u, isChecker, isViewer);
+        return new Caller(email, name, role, u, isChecker, isViewer, isAccounts);
     }
 
     private static bool EmailIn(string email, params string?[] lists) =>
@@ -144,7 +151,7 @@ public class CnController : ControllerBase
             cnStatus   = s.ToString(),
             approvedBgaussAmount = CnReportBuilder.ApprovedBgaussAmount(a),
             rsmEmails      = CnEmailService.Split(m?.RsmEmail),
-            accountsEmails = c.IsChecker ? _mail.AccountsEmails : new List<string>(),
+            accountsEmails = (c.IsChecker || c.IsAccounts) ? _mail.AccountsEmails : new List<string>(),
 
             cnRequestedAt          = a.CnRequestedAt,
             cnRequestedByEmail     = a.CnRequestedByEmail,
@@ -158,9 +165,11 @@ public class CnController : ControllerBase
             cnSentToAccountsAt     = a.CnSentToAccountsAt,
             cnSentToAccountsByEmail= a.CnSentToAccountsByEmail,
             cnProcessedAt          = a.CnProcessedAt,
+            cnProcessedByEmail     = a.CnProcessedByEmail,
             cnNumber               = a.CnNumber,
 
-            isChecker = c.IsChecker,
+            isChecker  = c.IsChecker,
+            isAccounts = c.IsAccounts,
             canSendToRsm = c.IsChecker && (s == CnStatus.NotStarted || s == CnStatus.RsmRejected) && blockers.Count == 0,
             sendToRsmBlockers = (s == CnStatus.NotStarted || s == CnStatus.RsmRejected) ? blockers : new List<string>(),
             canRsmDecide       = approved && s == CnStatus.SentForRsmApproval && (isRsm || c.IsChecker),
@@ -168,7 +177,7 @@ public class CnController : ControllerBase
             canUploadFinalInvoice = approved && s == CnStatus.RsmApproved && canUpload,
             canSendToAccounts  = c.IsChecker && approved && s == CnStatus.RsmApproved
                                  && !string.IsNullOrWhiteSpace(a.CnFinalInvoiceUrl) && (a.CnInvoiceAmount ?? 0) > 0,
-            canMarkProcessed   = c.IsChecker && s == CnStatus.SentToAccounts,
+            canMarkProcessed   = (c.IsChecker || c.IsAccounts) && s == CnStatus.SentToAccounts,
         };
     }
 
@@ -183,6 +192,17 @@ public class CnController : ControllerBase
             mailSent    = mail?.Sent ?? false,
             mailMessage = notes.Count > 0 ? string.Join(" · ", notes) : null,
         });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GET — caller's CN rights (used by the frontend to show the Accounts menu)
+    // ═══════════════════════════════════════════════════════════════════════════
+    [HttpGet("me")]
+    public async Task<IActionResult> Me()
+    {
+        var c = await GetCallerAsync();
+        if (c is null) return Unauthorized();
+        return Ok(new { email = c.Email, name = c.Name, role = c.Role, isChecker = c.IsChecker, isAccounts = c.IsAccounts, isViewer = c.IsViewer });
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -380,14 +400,15 @@ public class CnController : ControllerBase
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 5 — CN processed (Checker records CN number from Accounts)
+    // STEP 5 — CN processed (Accounts team, or Checker on their behalf, records the CN number)
     // ═══════════════════════════════════════════════════════════════════════════
     [HttpPost("activities/{id:guid}/mark-processed")]
     public async Task<IActionResult> MarkProcessed(Guid id, [FromBody] CnMarkProcessedDto dto)
     {
         var c = await GetCallerAsync();
         if (c is null) return Unauthorized();
-        if (!c.IsChecker) return StatusCode(403, new { message = "Only the Checker can mark a CN as processed." });
+        if (!c.IsChecker && !c.IsAccounts)
+            return StatusCode(403, new { message = "Only the Accounts team or the Checker can mark a CN as processed." });
 
         var cnNo = (dto.CnNumber ?? "").Trim();
         if (cnNo.Length == 0 || cnNo.Length > 50)
@@ -412,7 +433,7 @@ public class CnController : ControllerBase
             ? new CnMailResult(false, "No dealer email — CN recorded, dealer not informed by mail.", new())
             : await _mail.SendCnProcessedAsync(p, a, r, to, cc);
 
-        _log.LogInformation("CN {Act}: processed, CN No {No}, by {By}", a.Id, cnNo, c.Email);
+        _log.LogInformation("CN {Act}: processed, CN No {No}, by {By} ({Who})", a.Id, cnNo, c.Email, c.IsAccounts ? "Accounts" : "Checker");
         return Result(c, p, a, m, mail);
     }
 

@@ -25,6 +25,7 @@ import AdminAuditLogPage from "./pages/AdminAuditLogPage";
 import AdminDealerMapPage from "./pages/AdminDealerMapPage";
 import AutoUpdateChecker from "./components/AutoUpdateChecker";
 import CnTrackerPage from "./pages/CnTrackerPage";
+import AccountsDashboard from "./pages/AccountsDashboard";
 
 const STAFF_ROLES = new Set(["RSM", "TSM", "ZSM", "Commando"]);
 
@@ -112,6 +113,7 @@ export default function App() {
             <Route path="/reports"     element={<ReportsPage />} />
             {/* CN Tracker — Checker / Final Approver see all; others scoped by backend */}
             <Route path="/cn-tracker"  element={<CnTrackerPage />} />
+            <Route path="/accounts" element={<AccountsDashboard />} />
             <Route path="/chat"        element={<ChatTestPage />} />
             {/* Admin — user management */}
             <Route element={<AdminRoute />}>
