@@ -8,7 +8,7 @@ import {
   fetchProposals, fetchMyProposals, decideProposal, updateProposal,
   sendBackProposal, updateProposalActuals, uploadActivityMedia,
   getGraphTokenForBulk,
-  forwardProposalToApprover, forwardProposalsBulk, notifyDealer, addActivityMedia, deleteProposal, sendForwardSummary, // [BTL-2026-10-26]
+  forwardProposalToApprover, notifyDealer, addActivityMedia, deleteProposal, sendForwardSummary, // [BTL-2026-10-26]
   type ActivityResponse, type ActivityMediaResponse, type ProposalResponse,
 } from "../services/proposalService";
 import {
@@ -18,6 +18,8 @@ import {
 import "./ApproverDashboard.css";
 import { fetchDealerUsers } from "../services/dealerAuthService";
 import CnPanel from "../components/CnPanel";
+import { forwardNow, type ForwardSummaryMailResult } from "../services/forwardSummaryService";   // [BTL-2026-10-27e]
+import ForwardSummaryStatus from "../components/ForwardSummaryStatus";
 import MultiSelectDropdown from "../components/MultiSelectDropdown";   // [BTL-2026-10-26c]
 import { fetchDealerStatus, buildInactiveMatcher } from "../services/dealerStatusService";
 
@@ -1085,6 +1087,7 @@ export default function ApproverDashboard() {
   const curPage = Math.min(page, totalPages);
   const paginate = <T,>(rows: T[]): T[] => rows.slice((curPage - 1) * pageSize, curPage * pageSize);
 
+  const [lastForwardMail, setLastForwardMail] = useState<ForwardSummaryMailResult | null>(null);   // [BTL-2026-10-27e]
   const toggleActuals=(activityId:string)=>
     setOpenActualsId((prev)=>prev===activityId?null:activityId);
   const forwardablePending  = pendingFiltered.filter(p=>!p.checkedByEmail);
@@ -1303,21 +1306,27 @@ export default function ApproverDashboard() {
                   style={{ background:"none",border:"none",color:"#64748b",cursor:"pointer",fontSize:12 }}>✕</button>}
               </div>
             </div>
+            {/* [BTL-2026-10-27e] was the summary mailed? + send anything still waiting */}
+            {isAdmin&&!isFinalApprover&&<ForwardSummaryStatus instance={instance} refreshKey={proposals} lastMail={lastForwardMail}/>}
             {isAdmin&&!isFinalApprover&&selectedIds.size>0&&(
               <div style={{ background:"#1e3a5f",borderRadius:10,padding:"12px 18px",marginBottom:12,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap" }}>
                 <span style={{ color:"#e2e8f0",fontSize:13,fontWeight:600 }}>{selectedIds.size} proposal{selectedIds.size>1?"s":""} selected</span>
-                <span style={{ color:"#93c5fd",fontSize:11 }}>📧 Final Approver receives 1 digest email at midnight</span>
+                <span style={{ color:"#93c5fd",fontSize:11 }}>📧 ONE state-wise summary mail goes to the Final Approver immediately (copy to you)</span>
                 <button disabled={bulkForwarding} onClick={async()=>{
                   setBulkForwarding(true);
                   try {
-                    const result = await forwardProposalsBulk(Array.from(selectedIds), instance);
+                    // [BTL-2026-10-27e] forward + state-wise summary mail NOW (no midnight digest)
+                    const result = await forwardNow(Array.from(selectedIds), instance);
                     setSelectedIds(new Set());
+                    setLastForwardMail(result.mail);
+                    const m = result.mail;
                     showToast(
-                      `✓ ${result.forwarded} proposal${result.forwarded>1?"s":""} queued for daily digest.` +
-                      (result.failed>0 ? ` ${result.failed} failed.` : "") +
-                      ` Final Approver will receive ONE summary email at midnight.`,
-                      result.failed === 0
-                    );
+                      `✓ ${result.forwarded} proposal${result.forwarded===1?"":"s"} forwarded` +
+                      (result.failed>0 ? ` · ${result.failed} failed` : "") +
+                      (result.skipped>0 ? ` · ${result.skipped} already forwarded` : "") +
+                      (m ? (m.sent ? ` · summary mailed to ${m.to.join(", ")}` : " · ⚠ summary mail NOT sent — see banner") : ""),
+                      result.failed===0 && (!m || m.sent));
+                    if (result.failedDetails?.length) console.warn("[FORWARD-NOW] failures", result.failedDetails);
                     loadProposals();
                   } catch(err) {
                     showToast(err instanceof Error ? err.message : "Bulk forward failed.", false);

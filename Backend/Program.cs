@@ -190,7 +190,10 @@ builder.Services.AddSingleton<GraphAppTokenService>();
 // (the nightly safety-net loop). Both share the same stateless logic.
 builder.Services.AddSingleton<DailyDigestService>();
 builder.Services.AddHostedService<ErpAutoSyncService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<DailyDigestService>());
+// 27.10.2026 — midnight digest switched OFF: the state-wise summary mail now goes out
+// immediately on "Forward Selected to Final Approver" (POST /api/proposals/forward-now).
+// DailyDigestService stays registered (above) because it is still the app-only fallback sender.
+// builder.Services.AddHostedService(sp => sp.GetRequiredService<DailyDigestService>());
 
 // ── Email ─────────────────────────────────────────────────────────────────────
 builder.Services.AddHttpClient<GraphEmailService>();

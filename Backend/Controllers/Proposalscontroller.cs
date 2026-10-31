@@ -5,6 +5,7 @@ using BGL_BT_App.Backend.Models;
 using BGL_BT_App.Backend.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 
 namespace BGL_BT_App.Backend.Controllers;
@@ -967,6 +968,153 @@ public class ProposalsController : ControllerBase
 
         _logger.LogInformation("Forward summary sent by {Checker}: {Count} proposals.", CurrentUserEmail(), ids.Count);
         return Ok(new { sent = true, proposals = ids.Count });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 27.10.2026 — Forward + state-wise summary mail IMMEDIATELY (no midnight wait)
+    // ═══════════════════════════════════════════════════════════════════════
+    public record ForwardNowRequest(List<Guid> ProposalIds);
+    public record ForwardSummaryResult(bool Sent, string Via, string[] To, string[] Cc,
+        string SentAtIst, int Proposals, int States, string Subject, string? Error);
+    public sealed class ForwardSummaryStatusRow
+    {
+        public int? PendingMail { get; set; }      // forwarded, still Pending, summary mail NOT sent yet
+        public int? WithApprover { get; set; }     // forwarded, still Pending with Final Approver
+        public DateTimeOffset? LastSentAt { get; set; }
+        public int? LastBatch { get; set; }
+    }
+
+    private string ProposalsTable()
+    {
+        var et = _db.Model.FindEntityType(typeof(Proposal));
+        return $"[{et?.GetSchema() ?? "dbo"}].[{et?.GetTableName() ?? "Proposals"}]";
+    }
+
+    // ── POST /api/proposals/forward-now ──────────────────────────────────────
+    // "Forward Selected to Final Approver": forwards every selected proposal and sends
+    // ONE state-wise summary mail right away (as the Checker, copy in her Sent Items).
+    [HttpPost("forward-now")]
+    public async Task<IActionResult> ForwardNow([FromBody] ForwardNowRequest req)
+    {
+        if (req?.ProposalIds is null || req.ProposalIds.Count == 0)
+            return BadRequest(new { message = "Select at least one proposal." });
+
+        var forwarded = new List<Guid>();
+        var failed    = new List<object>();
+        var skipped   = 0;
+        foreach (var id in req.ProposalIds.Distinct())
+        {
+            var cur = await _db.Proposals.AsNoTracking().Where(p => p.Id == id)
+                .Select(p => new { p.Status, p.CheckedByEmail, p.TokenNumber }).FirstOrDefaultAsync();
+            if (cur is null)                { failed.Add(new { id, error = "not found" }); continue; }
+            if (cur.Status != "Pending")    { failed.Add(new { id, token = cur.TokenNumber, error = $"status is {cur.Status}" }); continue; }
+            if (cur.CheckedByEmail != null) { skipped++; continue; }   // already forwarded earlier
+
+            var r = await ForwardToApprover(id);    // same rules as the single Forward button (no individual mail)
+            if (r.Result is IStatusCodeActionResult sc && (sc.StatusCode ?? 200) >= 400)
+                failed.Add(new { id, token = cur.TokenNumber, error = $"HTTP {sc.StatusCode}" });
+            else forwarded.Add(id);
+        }
+        _db.ChangeTracker.Clear();
+
+        ForwardSummaryResult? mail = forwarded.Count > 0 ? await SendSummaryMailAsync(forwarded) : null;
+        _logger.LogInformation("Forward-now by {User}: {F} forwarded, {X} failed, {S} skipped, mail {M}",
+            CurrentUserEmail(), forwarded.Count, failed.Count, skipped, mail?.Sent);
+        return Ok(new { forwarded = forwarded.Count, failed = failed.Count, skipped, failedDetails = failed, mail });
+    }
+
+    // ── GET /api/proposals/forward-summary/status ────────────────────────────
+    // For the Checker's banner: last summary mail time + forwarded proposals not yet mailed.
+    [HttpGet("forward-summary/status")]
+    public async Task<IActionResult> ForwardSummaryStatus()
+    {
+        var t = ProposalsTable();
+        try
+        {
+            var row = (await _db.Database.SqlQueryRaw<ForwardSummaryStatusRow>($@"
+                SELECT
+                  SUM(CASE WHEN Status = 'Pending' AND CheckedByEmail IS NOT NULL AND ISNULL(DigestSent, 0) = 0 THEN 1 ELSE 0 END) AS PendingMail,
+                  SUM(CASE WHEN Status = 'Pending' AND CheckedByEmail IS NOT NULL THEN 1 ELSE 0 END) AS WithApprover,
+                  CAST(MAX(DigestSentAt) AS datetimeoffset) AS LastSentAt,
+                  (SELECT COUNT(*) FROM {t} x WHERE x.DigestSentAt = (SELECT MAX(DigestSentAt) FROM {t})) AS LastBatch
+                FROM {t}").ToListAsync()).FirstOrDefault();
+            return Ok(new
+            {
+                pendingMail  = row?.PendingMail ?? 0,
+                withApprover = row?.WithApprover ?? 0,
+                lastSentAt   = row?.LastSentAt,
+                lastBatch    = row?.LastBatch ?? 0,
+                to           = ForwardSummaryMail.SplitEmails(_config["Email:ForwardSummaryTo"] ?? "durgesh.guptaa@bgauss.com"),
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Forward summary status query failed");
+            return Ok(new { pendingMail = 0, withApprover = 0, lastSentAt = (DateTimeOffset?)null, lastBatch = 0, error = ex.Message });
+        }
+    }
+
+    // ── POST /api/proposals/forward-summary/send-pending ─────────────────────
+    // Sends NOW every forwarded proposal whose summary mail has not gone yet
+    // (e.g. today's batch that was waiting for the old midnight digest).
+    [HttpPost("forward-summary/send-pending")]
+    public async Task<IActionResult> SendPendingSummary()
+    {
+        var t = ProposalsTable();
+        var ids = await _db.Database.SqlQueryRaw<Guid>($@"
+            SELECT Id AS [Value] FROM {t}
+            WHERE Status = 'Pending' AND CheckedByEmail IS NOT NULL AND ISNULL(DigestSent, 0) = 0").ToListAsync();
+        if (ids.Count == 0)
+            return Ok(new { message = "Nothing waiting — every forwarded proposal has already been mailed.", mail = (ForwardSummaryResult?)null });
+
+        var mail = await SendSummaryMailAsync(ids);
+        return mail.Sent ? Ok(new { mail })
+                         : BadRequest(new { message = $"Summary mail NOT sent — {mail.Error}", mail });
+    }
+
+    private async Task<ForwardSummaryResult> SendSummaryMailAsync(List<Guid> ids)
+    {
+        var caller = CurrentUserEmail();
+        var list = await _db.Proposals.AsNoTracking().Include(p => p.Activities)
+            .Where(p => ids.Contains(p.Id)).ToListAsync();
+        var built = ForwardSummaryMail.Build(list, caller, _config["Email:ApproverPortalUrl"] ?? "https://btl.bgauss.com/approver");
+
+        var to = ForwardSummaryMail.SplitEmails(_config["Email:ForwardSummaryTo"] ?? "durgesh.guptaa@bgauss.com");
+        var cc = ForwardSummaryMail.SplitEmails(_config["Email:ForwardSummaryCc"]);
+        if (caller.Contains('@') && !cc.Contains(caller, StringComparer.OrdinalIgnoreCase)
+            && !to.Contains(caller, StringComparer.OrdinalIgnoreCase)) cc.Add(caller);   // Checker gets a copy in her inbox
+
+        // 1) as the Checker (delegated) — the mail is in her Sent Items
+        var graphToken = Request.Headers["X-Graph-Token"].FirstOrDefault() ?? "";
+        var (sent, error) = await ForwardSummaryMail.SendAsUserAsync(graphToken, built, to, cc);
+        var via = "Checker mailbox (state-wise summary)";
+
+        // 2) fallback: existing app-only digest sender (standard digest format)
+        if (!sent)
+        {
+            _logger.LogWarning("Delegated summary mail failed: {Error} — falling back to app-only digest.", error);
+            var (s2, e2) = await _digestService.SendForwardDigestNowAsync(ids, caller);
+            if (s2) { sent = true; via = "BTL system mailbox (standard digest)"; error = null; }
+            else error = $"{error}; app-only: {e2}";
+        }
+
+        if (sent)
+        {
+            try
+            {
+                var p = string.Join(",", ids.Select((_, i) => $"{{{i}}}"));
+                await _db.Database.ExecuteSqlRawAsync(
+                    $"UPDATE {ProposalsTable()} SET DigestSent = 1, DigestSentAt = SYSUTCDATETIME(), DigestSendError = NULL WHERE Id IN ({p})",
+                    ids.Cast<object>().ToArray());
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not mark proposals as mailed (DigestSent)."); }
+        }
+
+        var now = ForwardSummaryMail.NowIst();
+        _logger.LogInformation("Forward summary mail by {User}: sent={Sent} via={Via} proposals={N} to={To}",
+            caller, sent, via, built.Proposals, string.Join(",", to));
+        return new ForwardSummaryResult(sent, sent ? via : "—", to.ToArray(), cc.ToArray(),
+            now.ToString("yyyy-MM-dd HH:mm"), built.Proposals, built.States, built.Subject, error);
     }
 
         // ── GET /api/proposals/my-team-proposals ──────────────────────────────────
