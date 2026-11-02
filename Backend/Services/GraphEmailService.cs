@@ -125,8 +125,8 @@ public class GraphEmailService : IEmailService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        return SendAsync(graphToken, to, cc.Length > 0 ? string.Join(",", cc) : null,
-            BuildSubject("Activity Proposal Approved — Your Action Required", p),
+          return SendAsync(graphToken, to, cc.Length > 0 ? string.Join(",", cc) : null,
+            BuildDealerSubject(p),
             BuildDealerNotificationBody(p, rsmEmail, tsmEmail, commandoEmail));
     }
 
@@ -445,6 +445,28 @@ public class GraphEmailService : IEmailService
 
     private static string BuildSubject(string tag, Proposal p) =>
         $"{p.TokenNumber} — {tag} — {p.DealerName.ToUpper()} — {p.Month} — {p.State}";
+
+    // [BTL-2026-11-02] Dealer mail subject: approved activity name(s) — Dealer — State — Month
+    // e.g. "1C Hoarding — Seth Brothers-Ashoknagar — Madhya Pradesh — October"
+    private static string BuildDealerSubject(Proposal p)
+    {
+        var acts = p.Activities
+            .Select(a => (a.ActivityType ?? "").Trim())
+            .Where(n => n.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var activityPart = acts.Count switch
+        {
+            0 => "BTL Activity",
+            <= 3 => string.Join(" + ", acts),
+            _ => $"{string.Join(" + ", acts.Take(3))} +{acts.Count - 3} more",
+        };
+
+        var parts = new[] { activityPart, p.DealerName?.Trim(), p.State?.Trim(), p.Month?.Trim() }
+            .Where(s => !string.IsNullOrWhiteSpace(s));
+        return string.Join(" — ", parts);
+    }
 
     private static string Shell(string headerBg, string tagLine, string token, string bodyHtml) =>
         $"""

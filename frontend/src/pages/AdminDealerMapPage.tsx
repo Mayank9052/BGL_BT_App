@@ -1,5 +1,6 @@
 // src/pages/AdminDealerMapPage.tsx
 // Dealer Mapping admin — CRUD + Excel Template / Export / Import.
+// [BTL-2026-11-02] Table: every header sortable (click ▲ → ▼ → off) + pagination (10/25/50/100).
 //
 // Add/Edit form:
 //   • Dealer Name / Code / City / State → searchable ERP dealer dropdown
@@ -36,6 +37,7 @@ import { fetchStaffUsers, type StaffAccount } from "../services/employeeAuthServ
 import SearchableSelect from "../components/SearchableSelect";
 import { fetchDealerEligibility } from "../services/dealerService";                              // [BTL-2026-10-26c]
 import { setDealerMappingStatus, refreshDealerTypes } from "../services/dealerStatusService";
+import { useSortPage, SortTh, Pager } from "../components/TableTools";                           // [BTL-2026-11-02]
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXCEL FORMAT — single source of truth for Template, Export and Import
@@ -370,6 +372,10 @@ const emptyForm: UpsertDealerTeamMapping = {
   isEligible: true, dealerType: "Old",
 };
 
+const TH_STYLE: React.CSSProperties = {
+  color: "#94a3b8", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
+};
+
 export default function AdminDealerMapPage() {
   const { instance } = useMsal();
 
@@ -406,16 +412,38 @@ export default function AdminDealerMapPage() {
   const isRowActive = (r: DealerTeamMappingRow) => (r as unknown as { isActive?: boolean }).isActive !== false;
   const visibleRows = useMemo(() => rows.filter((r) =>
     statusView === "all" || (statusView === "active") === isRowActive(r)), [rows, statusView]);
+
+  // ── [BTL-2026-11-02] sorting + pagination ──
+  const mapGetters = useMemo(() => ({
+    dealer:   (r: DealerTeamMappingRow) => r.dealerName ?? "",
+    code:     (r: DealerTeamMappingRow) => r.dealerCode ?? "",
+    place:    (r: DealerTeamMappingRow) => [r.city, r.state].filter(Boolean).join(", "),
+    rsm:      (r: DealerTeamMappingRow) => r.rsm ?? "",
+    tsm:      (r: DealerTeamMappingRow) => r.tsm ?? "",
+    commando: (r: DealerTeamMappingRow) => r.commando ?? "",
+    elig:     (r: DealerTeamMappingRow) => (r.isEligible ? "Eligible" : "Non-Eligible"),
+    type:     (r: DealerTeamMappingRow) => r.dealerType ?? "",
+    status:   (r: DealerTeamMappingRow) => ((r as unknown as { isActive?: boolean }).isActive !== false ? "Active" : "Inactive"),
+  }), []);
+  const tbl = useSortPage(visibleRows, mapGetters, { storageKey: "dealer_map", pageSize: 25, resetOn: [search, statusView] });
+  const sp  = { sortKey: tbl.sortKey, sortDir: tbl.sortDir, onSort: tbl.onSort };
+
   // Staff marked Inactive (Users → Staff). A name that an ACTIVE person also uses is not flagged.
   const inactiveStaff = useMemo(() => {
-    const active = new Set<string>(), names = new Set<string>(), emails = new Set<string>();
-    for (const s of staffUsers) { const n = titleCase((s.displayName ?? "").trim()).toLowerCase(); if (s.isActive && n) active.add(n); }
+    // [BTL-2026-11-02] a name / email that an ACTIVE account also uses is never flagged
+    //                  (deactivated duplicate logins share the real person's email)
+    const active = new Set<string>(), activeEmails = new Set<string>(), names = new Set<string>(), emails = new Set<string>();
+    for (const s of staffUsers) {
+      if (!s.isActive) continue;
+      const n = titleCase((s.displayName ?? "").trim()).toLowerCase(); if (n) active.add(n);
+      const e = (s.email ?? "").trim().toLowerCase(); if (e) activeEmails.add(e);
+    }
     for (const s of staffUsers) {
       if (s.isActive) continue;
       const n = titleCase((s.displayName ?? "").trim()).toLowerCase();
       if (n && !active.has(n)) names.add(n);
       const e = (s.email ?? "").trim().toLowerCase();
-      if (e) emails.add(e);
+      if (e && !activeEmails.has(e)) emails.add(e);
     }
     return { names, emails };
   }, [staffUsers]);
@@ -773,14 +801,21 @@ export default function AdminDealerMapPage() {
         </div>
       </div>
 
-      <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "auto" }}>
+      <Pager page={tbl.page} pageSize={tbl.pageSize} total={tbl.total} onPage={tbl.setPage} onPageSize={tbl.setPageSize}/>
+      <div id="dealer-map-wrap" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: "#0a2540" }}>
-              {["Dealer", "Code", "City / State", "RSM", "TSM", "Commando", "Eligibility", "Type", "Status", ""].map((h) => (
-                <th key={h} style={{ padding: "10px 12px", textAlign: "left", color: "#94a3b8",
-                  fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
-              ))}
+              <SortTh k="dealer"   label="Dealer"       style={TH_STYLE} {...sp}/>
+              <SortTh k="code"     label="Code"         style={TH_STYLE} {...sp}/>
+              <SortTh k="place"    label="City / State" style={TH_STYLE} {...sp}/>
+              <SortTh k="rsm"      label="RSM"          style={TH_STYLE} {...sp}/>
+              <SortTh k="tsm"      label="TSM"          style={TH_STYLE} {...sp}/>
+              <SortTh k="commando" label="Commando"     style={TH_STYLE} {...sp}/>
+              <SortTh k="elig"     label="Eligibility"  style={TH_STYLE} {...sp}/>
+              <SortTh k="type"     label="Type"         style={TH_STYLE} {...sp}/>
+              <SortTh k="status"   label="Status"       style={TH_STYLE} {...sp}/>
+              <th style={{ padding: "10px 12px", ...TH_STYLE }}></th>
             </tr>
           </thead>
           <tbody>
@@ -790,7 +825,7 @@ export default function AdminDealerMapPage() {
               <tr><td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>
                 {search ? "No dealers match your search." : "No dealer mappings yet — Add Dealer Mapping or Import Excel."}
               </td></tr>
-            ) : visibleRows.map((r, i) => (
+            ) : tbl.pageRows.map((r, i) => (
               <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc", borderBottom: "1px solid #f1f5f9", opacity: isRowActive(r) ? 1 : 0.6 }}>
                 <td style={{ padding: "9px 12px", fontWeight: 600, color: "#0a2540" }}>
                   {r.dealerName}
@@ -856,6 +891,7 @@ export default function AdminDealerMapPage() {
           </tbody>
         </table>
       </div>
+      {tbl.total > tbl.pageSize && <Pager page={tbl.page} pageSize={tbl.pageSize} total={tbl.total} onPage={tbl.setPage} onPageSize={tbl.setPageSize} scrollTo="#dealer-map-wrap"/>}
 
       {!loading && rows.length > 0 && (
         <div style={{ marginTop: 12, fontSize: 12, color: "#6b7280" }}>

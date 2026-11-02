@@ -1,13 +1,17 @@
 // src/pages/ReportsPage.tsx
-import { useState } from "react";
+// [BTL-2026-11-02] State-wise / Dealer-wise / Activity Detail / Leads (LMS): every header sortable
+//                  (click ▲ → ▼ → off) + pagination (10/25/50/100). Grand Totals always cover ALL rows.
+//                  Excel + PDF download all rows of all three sheets in the on-screen sort order.
+//                  ₹ amounts never wrap.
+import { useState, useMemo } from "react";
 import { useMsal } from "@azure/msal-react";
 import * as XLSX from "xlsx";
 import {
   downloadExcelReport, downloadPdfReport, fetchReportData,
   type ReportFilters,
 } from "../services/reportService";
-import { useAuthStore } from "../store/authStore";
 import { fetchLeadFunnelSummary, type LeadFunnelSummaryResponse } from "../services/leadReportService";
+import { useSortPage, SortTh, Pager } from "../components/TableTools";
 import "./ReportsPage.css";
 
 const MONTHS = [
@@ -15,67 +19,59 @@ const MONTHS = [
   "July","August","September","October","November","December",
 ];
 
-const inr  = (v: number) => "₹ " + Math.round(v).toLocaleString("en-IN");
+const inr  = (v: number) => "₹" + Math.round(v || 0).toLocaleString("en-IN");
 const inrC = (v: number) => {
   if (v >= 1_00_000) return `₹${(v / 1_00_000).toFixed(1)}L`;
   if (v >= 1_000)    return `₹${(v / 1_000).toFixed(0)}K`;
   return `₹${v}`;
 };
+const NOWRAP: React.CSSProperties = { whiteSpace: "nowrap" };
+const revisionOf = (r: any): number => r?.needsRevision ?? r?.NeedsRevision ?? 0;
+const EMPTY: never[] = [];
 
-// ── Print/PDF helper — prints the target table(s) in a clean PDF-ready view ──
-function printSections(sectionIds: string[], title: string) {
-  const els = sectionIds.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
-  if (els.length === 0) return;
+type LeadRow = LeadFunnelSummaryResponse["rows"][number];
 
-  const printWindow = window.open("", "_blank", "width=1200,height=900");
-  if (!printWindow) { alert("Allow pop-ups to download PDF."); return; }
+// ── PDF: prints the given sheets (header row + data rows, from the same arrays as Excel) ──
+function printSheets(sections: { title: string; aoa: (string | number)[][] }[], title: string) {
+  const esc = (v: unknown) => String(v ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const fmt = (v: unknown) => (typeof v === "number" ? v.toLocaleString("en-IN") : esc(v));
+  const tables = sections.filter((s) => s.aoa.length > 1).map((s) => {
+    const [head, ...body] = s.aoa;
+    const rows = body.map((r) => {
+      const total = String(r[0] ?? "").toUpperCase().startsWith("GRAND TOTAL");
+      return `<tr${total ? ' class="gt"' : ""}>${r.map((c) => `<td${typeof c === "number" ? ' class="n"' : ""}>${fmt(c)}</td>`).join("")}</tr>`;
+    }).join("");
+    return `<h2>${esc(s.title)}</h2><table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+  }).join('<div style="height:18px"></div>');
+  if (!tables) { alert("No rows to print."); return; }
 
-  const styles = Array.from(document.styleSheets)
-    .flatMap((ss) => {
-      try { return Array.from(ss.cssRules).map((r) => r.cssText); }
-      catch { return []; }
-    })
-    .join("\n");
-
-  const sectionsHtml = els.map((el) => el.outerHTML).join('<div style="height:24px"></div>');
-
-  printWindow.document.write(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>${title}</title>
-      <meta charset="UTF-8"/>
-      <style>
-        ${styles}
-        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; margin: 0; background: #fff; }
-        .print-header { background: #0a2540; color: #fff; padding: 14px 20px; margin-bottom: 16px; border-radius: 6px; }
-        .print-header h1 { margin: 0; font-size: 16px; font-weight: 700; }
-        .print-header p  { margin: 4px 0 0; font-size: 11px; opacity: 0.75; }
-        table { border-collapse: collapse; width: 100%; font-size: 10px; }
-        th, td { border: 1px solid #e2e8f0; padding: 4px 6px; }
-        th { background: #0a2540 !important; color: #fff !important; font-size: 9px; }
-        tr:nth-child(even) { background: #f8fafc; }
-        @page { size: A3 landscape; margin: 1cm; }
-        @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-      </style>
-    </head>
-    <body>
-      <div class="print-header">
-        <h1>BGauss BTL — ${title}</h1>
-        <p>Generated: ${new Date().toLocaleString("en-IN")}</p>
-      </div>
-      ${sectionsHtml}
-    </body>
-    </html>
-  `);
-  printWindow.document.close();
-  printWindow.focus();
-  setTimeout(() => { printWindow.print(); printWindow.close(); }, 500);
+  const w = window.open("", "_blank", "width=1200,height=900");
+  if (!w) { alert("Allow pop-ups to download PDF."); return; }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${esc(title)}</title>
+    <style>
+      body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10px; margin: 0; background: #fff; color: #1a2233; }
+      .ph { background: #0a2540; color: #fff; padding: 12px 18px; margin-bottom: 14px; border-radius: 6px; }
+      .ph h1 { margin: 0; font-size: 15px; } .ph p { margin: 3px 0 0; font-size: 10px; opacity: .75; }
+      h2 { font-size: 12px; color: #0a2540; margin: 10px 0 6px; }
+      table { border-collapse: collapse; width: 100%; font-size: 9px; }
+      th, td { border: 1px solid #e2e8f0; padding: 3px 5px; white-space: nowrap; }
+      th { background: #0a2540; color: #fff; text-align: left; }
+      td.n { text-align: right; }
+      tr:nth-child(even) td { background: #f8fafc; }
+      tr.gt td { background: #fef3c7 !important; font-weight: 700; }
+      @page { size: A3 landscape; margin: 1cm; }
+      @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    </style></head><body>
+    <div class="ph"><h1>BGauss BTL — ${esc(title)}</h1><p>Generated: ${new Date().toLocaleString("en-IN")}</p></div>
+    ${tables}</body></html>`);
+  w.document.close();
+  w.focus();
+  setTimeout(() => { w.print(); w.close(); }, 500);
 }
 
 export default function ReportsPage() {
   const { instance } = useMsal();
-  const { user }     = useAuthStore();
 
   // ── Filters ───────────────────────────────────────────────────────────────
   const [period,       setPeriod]       = useState<"daily"|"weekly"|"monthly"|"custom">("monthly");
@@ -100,11 +96,7 @@ export default function ReportsPage() {
   // Build API filters — used ONLY for the top-of-page "quick download" buttons,
   // which have no preview loaded yet and therefore no Status/Month to apply.
   const apiFilters: ReportFilters = {
-    // FIX: send period="custom" explicitly instead of undefined — omitting it
-    // entirely meant the backend had no way to know a custom range was
-    // requested and fell back to its default period (ignoring from/to
-    // completely), which is why proposals from a custom date range (e.g.
-    // "yesterday") never showed up.
+    // Send period="custom" explicitly — omitting it made the backend ignore from/to.
     period:  period === "custom" ? "custom" : period,
     from:    period === "custom" ? from   : undefined,
     to:      period === "custom" ? to     : undefined,
@@ -141,8 +133,7 @@ export default function ReportsPage() {
     }
   };
 
-  // ── Quick download (top of page, no preview needed) — Period/State/Dealer
-  // only, since Status/Month have no data source to filter against yet. ─────
+  // ── Quick download (top of page, no preview needed) — Period/State/Dealer only ──
   const handleDownload = async (type: "excel"|"pdf") => {
     setDownloading(type); setError(null);
     try {
@@ -156,18 +147,53 @@ export default function ReportsPage() {
   };
 
   // ── Client-side filtering of preview rows ─────────────────────────────────
-  const filteredRows = preview?.rows?.filter((r: any) => {
+  const filteredRows: any[] = useMemo(() => preview?.rows?.filter((r: any) => {
     if (monthFilter  && r.month  !== monthFilter)  return false;
     if (statusFilter && r.status !== statusFilter) return false;
     return true;
-  }) ?? [];
+  }) ?? EMPTY, [preview, monthFilter, statusFilter]);
 
-  const filteredState = preview?.stateSummary ?? [];
+  const filteredState: any[] = useMemo(() => preview?.stateSummary ?? EMPTY, [preview]);
 
-  const filteredDealer = preview?.dealerSummary?.filter((d: any) =>
-    (!stateFilter  || d.state.toLowerCase().includes(stateFilter.toLowerCase())) &&
-    (!dealerFilter || d.dealer.toLowerCase().includes(dealerFilter.toLowerCase()))
-  ) ?? [];
+  const filteredDealer: any[] = useMemo(() => preview?.dealerSummary?.filter((d: any) =>
+    (!stateFilter  || (d.state ?? "").toLowerCase().includes(stateFilter.toLowerCase())) &&
+    (!dealerFilter || (d.dealer ?? "").toLowerCase().includes(dealerFilter.toLowerCase()))
+  ) ?? EMPTY, [preview, stateFilter, dealerFilter]);
+
+  // ── [BTL-2026-11-02] sorting + pagination ──
+  const resetKey = [preview, stateFilter, dealerFilter, statusFilter, monthFilter];
+  const stTbl = useSortPage(filteredState, useMemo(() => ({
+    state: (s: any) => s.state, dealers: (s: any) => s.dealers, budget: (s: any) => s.totalBudget,
+    retail: (s: any) => s.totalRetailTarget, lead: (s: any) => s.totalLeadTarget,
+    cac: (s: any) => s.cac, cpl: (s: any) => s.cpl,
+    pending: (s: any) => s.pending, approved: (s: any) => s.approved, rejected: (s: any) => s.rejected,
+    revision: (s: any) => revisionOf(s),
+  }), []), { storageKey: "rp_state", pageSize: 50, resetOn: resetKey });
+  const dlTbl = useSortPage(filteredDealer, useMemo(() => ({
+    state: (d: any) => d.state, dealer: (d: any) => d.dealer, activities: (d: any) => d.activities,
+    budget: (d: any) => d.totalBudget, retail: (d: any) => d.totalRetailTarget, lead: (d: any) => d.totalLeadTarget,
+    cac: (d: any) => d.cac, cpl: (d: any) => d.cpl,
+    pending: (d: any) => d.pending, approved: (d: any) => d.approved, rejected: (d: any) => d.rejected,
+    revision: (d: any) => revisionOf(d),
+  }), []), { storageKey: "rp_dealer", pageSize: 25, resetOn: resetKey });
+  const acTbl = useSortPage(filteredRows, useMemo(() => ({
+    token: (r: any) => r.tokenNumber, dealer: (r: any) => r.dealerName, state: (r: any) => r.state,
+    rsm: (r: any) => r.rsmName, month: (r: any) => MONTHS.indexOf(r.month), status: (r: any) => r.status,
+    activity: (r: any) => r.activityType, type: (r: any) => r.category, sub: (r: any) => r.subcategory,
+    qty: (r: any) => r.qty ?? 1, sales: (r: any) => r.salesPercent, lead: (r: any) => r.leadTarget,
+    retail: (r: any) => r.retailTarget, budget: (r: any) => r.budget, bgPct: (r: any) => r.bgaussShare ?? 100,
+    bgAmt: (r: any) => r.bgaussAmount ?? 0, total: (r: any) => r.total,
+    start: (r: any) => r.startDate, end: (r: any) => r.endDate,
+  }), []), { storageKey: "rp_activity", pageSize: 25, resetOn: resetKey });
+  const ldTbl = useSortPage<LeadRow>(leadSummary?.rows ?? EMPTY, useMemo(() => ({
+    name: (r: LeadRow) => r.dealerName ?? r.name, city: (r: LeadRow) => r.city ?? "", state: (r: LeadRow) => r.state ?? "",
+    total: (r: LeadRow) => r.totalLeads, notCalled: (r: LeadRow) => r.notCalled, followUp: (r: LeadRow) => r.followUp,
+    closed: (r: LeadRow) => r.closed, qualified: (r: LeadRow) => r.qualified.total, hot: (r: LeadRow) => r.qualified.hot,
+    warm: (r: LeadRow) => r.qualified.warm, normal: (r: LeadRow) => r.qualified.normal,
+    booked: (r: LeadRow) => r.booked, lost: (r: LeadRow) => r.lost,
+  }), []), { storageKey: "rp_leads", pageSize: 50, resetOn: [leadSummary, leadGroupBy] });
+  const spOf = (t: { sortKey: string | null; sortDir: "asc" | "desc"; onSort: (k: string) => void }) =>
+    ({ sortKey: t.sortKey, sortDir: t.sortDir, onSort: t.onSort });
 
   const hasFilters = stateFilter || dealerFilter || statusFilter || monthFilter;
 
@@ -176,119 +202,94 @@ export default function ReportsPage() {
     [stateFilter, dealerFilter, monthFilter, statusFilter]
       .filter(Boolean).join("_").replace(/\s+/g, "");
 
-  // ── Filtered Excel download — built directly from filteredState /
-  // filteredDealer / filteredRows, the EXACT arrays driving the on-screen
-  // tables, so State + Dealer + Status + Month all apply correctly. Includes
-  // a Grand Totals row on each sheet, computed as pure column sums (CAC/CPL
-  // recomputed as totalBudget ÷ totalRetail|totalLead — weighted, not an
-  // average-of-averages). ────────────────────────────────────────────────────
+  // ── The three sheets (all filtered rows, in the on-screen sort order, with Grand Totals) ──
+  const buildSheets = () => {
+    const stateRows: (string | number)[][] = [[
+      "State", "Dealers", "Total Budget (₹)", "Retail Target", "Lead Target", "CAC (₹)", "CPL (₹)",
+      "Pending", "Approved", "Rejected", "Needs Revision",
+    ]];
+    for (const s of stTbl.sorted) {
+      stateRows.push([
+        s.state, s.dealers, Math.round(s.totalBudget), s.totalRetailTarget, s.totalLeadTarget,
+        Math.round(s.cac), Math.round(s.cpl), s.pending, s.approved, s.rejected, revisionOf(s),
+      ]);
+    }
+    if (filteredState.length > 0) {
+      const sum = (f: (r: any) => number) => filteredState.reduce((a: number, r: any) => a + (f(r) || 0), 0);
+      const gBudget = sum((r) => r.totalBudget), gRetail = sum((r) => r.totalRetailTarget), gLead = sum((r) => r.totalLeadTarget);
+      stateRows.push([
+        "GRAND TOTAL", sum((r) => r.dealers), Math.round(gBudget), gRetail, gLead,
+        Math.round(gRetail > 0 ? gBudget / gRetail : 0), Math.round(gLead > 0 ? gBudget / gLead : 0),
+        sum((r) => r.pending), sum((r) => r.approved), sum((r) => r.rejected), sum(revisionOf),
+      ]);
+    }
+
+    const dealerRowsOut: (string | number)[][] = [[
+      "State", "Dealer", "Activities", "Total Budget (₹)", "Retail Target", "Lead Target", "CAC (₹)", "CPL (₹)",
+      "Pending", "Approved", "Rejected", "Needs Revision",
+    ]];
+    for (const d of dlTbl.sorted) {
+      dealerRowsOut.push([
+        d.state, d.dealer, d.activities, Math.round(d.totalBudget), d.totalRetailTarget, d.totalLeadTarget,
+        Math.round(d.cac), Math.round(d.cpl), d.pending, d.approved, d.rejected, revisionOf(d),
+      ]);
+    }
+    if (filteredDealer.length > 0) {
+      const sum = (f: (r: any) => number) => filteredDealer.reduce((a: number, r: any) => a + (f(r) || 0), 0);
+      const gBudget = sum((r) => r.totalBudget), gRetail = sum((r) => r.totalRetailTarget), gLead = sum((r) => r.totalLeadTarget);
+      dealerRowsOut.push([
+        "GRAND TOTAL", `${filteredDealer.length} dealers`, sum((r) => r.activities), Math.round(gBudget), gRetail, gLead,
+        Math.round(gRetail > 0 ? gBudget / gRetail : 0), Math.round(gLead > 0 ? gBudget / gLead : 0),
+        sum((r) => r.pending), sum((r) => r.approved), sum((r) => r.rejected), sum(revisionOf),
+      ]);
+    }
+
+    const activityRows: (string | number)[][] = [[
+      "Token", "Dealer", "State", "RSM", "Month", "Status", "Activity", "Type", "Subcategory",
+      "QTY", "Sales%", "Lead", "Retail", "Budget (₹)", "BGauss%", "BGauss Amt (₹)", "Total (₹)", "Start", "End",
+    ]];
+    for (const r of acTbl.sorted) {
+      activityRows.push([
+        r.tokenNumber ?? "—", r.dealerName, r.state, r.rsmName, r.month, r.status,
+        r.activityType, r.category ?? "—", r.subcategory ?? "—", r.qty ?? 1,
+        r.salesPercent != null ? r.salesPercent : "—", r.leadTarget, r.retailTarget,
+        Math.round(r.budget), r.bgaussShare ?? 100, Math.round(r.bgaussAmount ?? 0), Math.round(r.total),
+        r.startDate ?? "—", r.endDate ?? "—",
+      ]);
+    }
+    if (filteredRows.length > 0) {
+      const sum = (f: (r: any) => number) => filteredRows.reduce((a: number, r: any) => a + (f(r) || 0), 0);
+      activityRows.push([
+        "GRAND TOTAL", `${filteredRows.length} activities`, "", "", "", "", "", "", "",
+        "", "", sum((r) => r.leadTarget), sum((r) => r.retailTarget), Math.round(sum((r) => r.budget)), "",
+        Math.round(sum((r) => r.bgaussAmount)), Math.round(sum((r) => r.total)), "", "",
+      ]);
+    }
+    return { stateRows, dealerRowsOut, activityRows };
+  };
+
   const handleDownloadFiltered = (type: "excel" | "pdf") => {
     if (!preview) return;
+    const { stateRows, dealerRowsOut, activityRows } = buildSheets();
 
     if (type === "excel") {
       const wb = XLSX.utils.book_new();
-
-      // ── Sheet 1: State-wise ──────────────────────────────────────────────
-      const stateRows: (string | number)[][] = [[
-        "State", "Dealers", "Total Budget (₹)", "Retail Target", "Lead Target", "CAC (₹)", "CPL (₹)",
-        "Pending", "Approved", "Rejected", "Needs Revision",
-      ]];
-      for (const s of filteredState) {
-        stateRows.push([
-          s.state, s.dealers, Math.round(s.totalBudget), s.totalRetailTarget, s.totalLeadTarget,
-          Math.round(s.cac), Math.round(s.cpl), s.pending, s.approved, s.rejected,
-          (s as any).needsRevision ?? (s as any).NeedsRevision ?? 0,
-        ]);
-      }
-      if (filteredState.length > 0) {
-        const gDealers  = filteredState.reduce((s: number, r: any) => s + r.dealers, 0);
-        const gBudget   = filteredState.reduce((s: number, r: any) => s + r.totalBudget, 0);
-        const gRetail   = filteredState.reduce((s: number, r: any) => s + r.totalRetailTarget, 0);
-        const gLead     = filteredState.reduce((s: number, r: any) => s + r.totalLeadTarget, 0);
-        const gPending  = filteredState.reduce((s: number, r: any) => s + r.pending, 0);
-        const gApproved = filteredState.reduce((s: number, r: any) => s + r.approved, 0);
-        const gRejected = filteredState.reduce((s: number, r: any) => s + r.rejected, 0);
-        const gRevision = filteredState.reduce((s: number, r: any) => s + ((r as any).needsRevision ?? (r as any).NeedsRevision ?? 0), 0);
-        const gCac = gRetail > 0 ? gBudget / gRetail : 0;
-        const gCpl = gLead   > 0 ? gBudget / gLead   : 0;
-        stateRows.push([
-          "GRAND TOTAL", gDealers, Math.round(gBudget), gRetail, gLead,
-          Math.round(gCac), Math.round(gCpl), gPending, gApproved, gRejected, gRevision,
-        ]);
-      }
-      const wsState = XLSX.utils.aoa_to_sheet(stateRows);
-      wsState["!cols"] = stateRows[0].map(() => ({ wch: 16 }));
-      XLSX.utils.book_append_sheet(wb, wsState, "State-wise");
-
-      // ── Sheet 2: Dealer-wise ─────────────────────────────────────────────
-      const dealerRowsOut: (string | number)[][] = [[
-        "State", "Dealer", "Activities", "Total Budget (₹)", "Retail Target", "Lead Target", "CAC (₹)", "CPL (₹)",
-        "Pending", "Approved", "Rejected", "Needs Revision",
-      ]];
-      for (const d of filteredDealer) {
-        dealerRowsOut.push([
-          d.state, d.dealer, d.activities, Math.round(d.totalBudget), d.totalRetailTarget, d.totalLeadTarget,
-          Math.round(d.cac), Math.round(d.cpl), d.pending, d.approved, d.rejected,
-          (d as any).needsRevision ?? (d as any).NeedsRevision ?? 0,
-        ]);
-      }
-      if (filteredDealer.length > 0) {
-        const gActivities = filteredDealer.reduce((s: number, r: any) => s + r.activities, 0);
-        const gBudget      = filteredDealer.reduce((s: number, r: any) => s + r.totalBudget, 0);
-        const gRetail      = filteredDealer.reduce((s: number, r: any) => s + r.totalRetailTarget, 0);
-        const gLead        = filteredDealer.reduce((s: number, r: any) => s + r.totalLeadTarget, 0);
-        const gPending     = filteredDealer.reduce((s: number, r: any) => s + r.pending, 0);
-        const gApproved    = filteredDealer.reduce((s: number, r: any) => s + r.approved, 0);
-        const gRejected    = filteredDealer.reduce((s: number, r: any) => s + r.rejected, 0);
-        const gRevision    = filteredDealer.reduce((s: number, r: any) => s + ((r as any).needsRevision ?? (r as any).NeedsRevision ?? 0), 0);
-        const gCac = gRetail > 0 ? gBudget / gRetail : 0;
-        const gCpl = gLead   > 0 ? gBudget / gLead   : 0;
-        dealerRowsOut.push([
-          "GRAND TOTAL", `${filteredDealer.length} dealers`, gActivities, Math.round(gBudget), gRetail, gLead,
-          Math.round(gCac), Math.round(gCpl), gPending, gApproved, gRejected, gRevision,
-        ]);
-      }
-      const wsDealer = XLSX.utils.aoa_to_sheet(dealerRowsOut);
-      wsDealer["!cols"] = dealerRowsOut[0].map(() => ({ wch: 18 }));
-      XLSX.utils.book_append_sheet(wb, wsDealer, "Dealer-wise");
-
-      // ── Sheet 3: Activity Detail ─────────────────────────────────────────
-      const activityRows: (string | number)[][] = [[
-        "Token", "Dealer", "State", "RSM", "Month", "Status", "Activity", "Type", "Subcategory",
-        "QTY", "Sales%", "Lead", "Retail", "Budget (₹)", "BGauss%", "BGauss Amt (₹)", "Total (₹)", "Start", "End",
-      ]];
-      for (const r of filteredRows) {
-        activityRows.push([
-          r.tokenNumber ?? "—", r.dealerName, r.state, r.rsmName, r.month, r.status,
-          r.activityType, r.category ?? "—", r.subcategory ?? "—", r.qty ?? 1,
-          r.salesPercent != null ? r.salesPercent : "—", r.leadTarget, r.retailTarget,
-          Math.round(r.budget), r.bgaussShare ?? 100, Math.round(r.bgaussAmount ?? 0), Math.round(r.total),
-          r.startDate ?? "—", r.endDate ?? "—",
-        ]);
-      }
-      if (filteredRows.length > 0) {
-        const gLead    = filteredRows.reduce((s: number, r: any) => s + (r.leadTarget || 0), 0);
-        const gRetail  = filteredRows.reduce((s: number, r: any) => s + (r.retailTarget || 0), 0);
-        const gBudget  = filteredRows.reduce((s: number, r: any) => s + (r.budget || 0), 0);
-        const gBgAmt   = filteredRows.reduce((s: number, r: any) => s + (r.bgaussAmount || 0), 0);
-        const gTotal   = filteredRows.reduce((s: number, r: any) => s + (r.total || 0), 0);
-        activityRows.push([
-          "GRAND TOTAL", `${filteredRows.length} activities`, "", "", "", "", "", "", "",
-          "", "", gLead, gRetail, Math.round(gBudget), "", Math.round(gBgAmt), Math.round(gTotal), "", "",
-        ]);
-      }
-      const wsActivity = XLSX.utils.aoa_to_sheet(activityRows);
-      wsActivity["!cols"] = activityRows[0].map(() => ({ wch: 14 }));
-      XLSX.utils.book_append_sheet(wb, wsActivity, "Activity Detail");
-
+      const add = (aoa: (string | number)[][], name: string, wch: number) => {
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws["!cols"] = aoa[0].map(() => ({ wch }));
+        XLSX.utils.book_append_sheet(wb, ws, name);
+      };
+      add(stateRows, "State-wise", 16);
+      add(dealerRowsOut, "Dealer-wise", 18);
+      add(activityRows, "Activity Detail", 14);
       const suffix = filterSuffix();
       XLSX.writeFile(wb, `BTL_Report${suffix ? `_${suffix}` : ""}.xlsx`);
     } else {
-      // PDF — print all three currently-filtered tables together
-      printSections(
-        ["rp-summary-table", "rp-dealer-table", "rp-activity-table"],
-        "Filtered Report — State-wise, Dealer-wise & Activity Detail",
-      );
+      printSheets([
+        { title: "State-wise Summary", aoa: stateRows },
+        { title: "Dealer-wise Summary", aoa: dealerRowsOut },
+        { title: "Activity Detail", aoa: activityRows },
+      ], "Filtered Report — State-wise, Dealer-wise & Activity Detail");
     }
   };
 
@@ -442,15 +443,15 @@ export default function ReportsPage() {
               <span className="rp-kpi-lbl">Activities</span>
             </div>
             <div className="rp-kpi rp-kpi--green">
-              <span className="rp-kpi-val">{inrC(preview.totalBudget)}</span>
+              <span className="rp-kpi-val" style={NOWRAP}>{inrC(preview.totalBudget)}</span>
               <span className="rp-kpi-lbl">Total Budget</span>
             </div>
             <div className="rp-kpi rp-kpi--amber">
-              <span className="rp-kpi-val">{inr(preview.overallCac)}</span>
+              <span className="rp-kpi-val" style={NOWRAP}>{inr(preview.overallCac)}</span>
               <span className="rp-kpi-lbl">Overall CAC</span>
             </div>
             <div className="rp-kpi rp-kpi--purple">
-              <span className="rp-kpi-val">{inr(preview.overallCpl)}</span>
+              <span className="rp-kpi-val" style={NOWRAP}>{inr(preview.overallCpl)}</span>
               <span className="rp-kpi-lbl">Overall CPL</span>
             </div>
             <div className="rp-kpi rp-kpi--muted">
@@ -480,174 +481,172 @@ export default function ReportsPage() {
 
           {/* ── State Summary tab ── */}
           {activeTab === "summary" && (
-            <div className="rp-table-scroll">
+            <>
+            <Pager page={stTbl.page} pageSize={stTbl.pageSize} total={stTbl.total} onPage={stTbl.setPage} onPageSize={stTbl.setPageSize}/>
+            <div className="rp-table-scroll" id="rp-summary-wrap">
               <table id="rp-summary-table" className="rp-table" style={{ minWidth: "700px" }}>
                 <thead>
                   <tr>
-                    <th>State</th>
-                    <th className="rp-num">Dealers</th>
-                    <th className="rp-num">Total Budget</th>
-                    <th className="rp-num">Retail Target</th>
-                    <th className="rp-num">Lead Target</th>
-                    <th className="rp-num">CAC</th>
-                    <th className="rp-num">CPL</th>
-                    <th className="rp-num">Pending</th>
-                    <th className="rp-num">Approved</th>
-                    <th className="rp-num">Rejected</th>
-                    <th className="rp-num" style={{background:"#f59e0b22",color:"#92400e"}}>Revision</th>
+                    <SortTh k="state"    label="State" {...spOf(stTbl)}/>
+                    <SortTh k="dealers"  label="Dealers"       align="right" className="rp-num" {...spOf(stTbl)}/>
+                    <SortTh k="budget"   label="Total Budget"  align="right" className="rp-num" {...spOf(stTbl)}/>
+                    <SortTh k="retail"   label="Retail Target" align="right" className="rp-num" {...spOf(stTbl)}/>
+                    <SortTh k="lead"     label="Lead Target"   align="right" className="rp-num" {...spOf(stTbl)}/>
+                    <SortTh k="cac"      label="CAC"           align="right" className="rp-num" {...spOf(stTbl)}/>
+                    <SortTh k="cpl"      label="CPL"           align="right" className="rp-num" {...spOf(stTbl)}/>
+                    <SortTh k="pending"  label="Pending"       align="right" className="rp-num" {...spOf(stTbl)}/>
+                    <SortTh k="approved" label="Approved"      align="right" className="rp-num" {...spOf(stTbl)}/>
+                    <SortTh k="rejected" label="Rejected"      align="right" className="rp-num" {...spOf(stTbl)}/>
+                    <SortTh k="revision" label="Revision"      align="right" className="rp-num" style={{background:"#f59e0b22",color:"#92400e"}} {...spOf(stTbl)}/>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredState.map((s: any, i: number) => (
+                  {stTbl.pageRows.map((s: any, i: number) => (
                     <tr key={s.state} className={i%2===0?"rp-row-even":"rp-row-odd"}>
                       <td><span className="rp-state-tag">{s.state}</span></td>
                       <td className="rp-num">{s.dealers}</td>
-                      <td className="rp-num rp-mono">{inr(s.totalBudget)}</td>
+                      <td className="rp-num rp-mono" style={NOWRAP}>{inr(s.totalBudget)}</td>
                       <td className="rp-num">{s.totalRetailTarget?.toLocaleString("en-IN")}</td>
                       <td className="rp-num">{s.totalLeadTarget?.toLocaleString("en-IN")}</td>
-                      <td className="rp-num rp-mono">{inr(s.cac)}</td>
-                      <td className="rp-num rp-mono">{inr(s.cpl)}</td>
+                      <td className="rp-num rp-mono" style={NOWRAP}>{inr(s.cac)}</td>
+                      <td className="rp-num rp-mono" style={NOWRAP}>{inr(s.cpl)}</td>
                       <td className="rp-num"><StatusBadge v={s.pending}  t="pending"/></td>
                       <td className="rp-num"><StatusBadge v={s.approved} t="approved"/></td>
                       <td className="rp-num"><StatusBadge v={s.rejected} t="rejected"/></td>
-                      <td className="rp-num"><StatusBadge v={(s as any).needsRevision ?? (s as any).NeedsRevision ?? 0} t="revision"/></td>
+                      <td className="rp-num"><StatusBadge v={revisionOf(s)} t="revision"/></td>
                     </tr>
                   ))}
                 </tbody>
                 {filteredState.length > 0 && (() => {
-                  const gDealers  = filteredState.reduce((s: number, r: any) => s + r.dealers, 0);
-                  const gBudget   = filteredState.reduce((s: number, r: any) => s + r.totalBudget, 0);
-                  const gRetail   = filteredState.reduce((s: number, r: any) => s + r.totalRetailTarget, 0);
-                  const gLead     = filteredState.reduce((s: number, r: any) => s + r.totalLeadTarget, 0);
-                  const gPending  = filteredState.reduce((s: number, r: any) => s + r.pending, 0);
-                  const gApproved = filteredState.reduce((s: number, r: any) => s + r.approved, 0);
-                  const gRejected = filteredState.reduce((s: number, r: any) => s + r.rejected, 0);
-                  const gRevision = filteredState.reduce((s: number, r: any) => s + ((r as any).needsRevision ?? (r as any).NeedsRevision ?? 0), 0);
+                  const sum = (f: (r: any) => number) => filteredState.reduce((a: number, r: any) => a + (f(r) || 0), 0);
+                  const gBudget = sum((r) => r.totalBudget), gRetail = sum((r) => r.totalRetailTarget), gLead = sum((r) => r.totalLeadTarget);
                   const gCac = gRetail > 0 ? gBudget / gRetail : 0;
                   const gCpl = gLead   > 0 ? gBudget / gLead   : 0;
                   return (
                     <tfoot>
                       <tr style={{ background:"#0a2540", fontWeight:800 }}>
                         <td style={{ color:"#fbbf24" }}>Grand Total</td>
-                        <td className="rp-num" style={{ color:"#e2e8f0" }}>{gDealers}</td>
-                        <td className="rp-num rp-mono" style={{ color:"#e2e8f0" }}>{inr(gBudget)}</td>
+                        <td className="rp-num" style={{ color:"#e2e8f0" }}>{sum((r) => r.dealers)}</td>
+                        <td className="rp-num rp-mono" style={{ color:"#e2e8f0", ...NOWRAP }}>{inr(gBudget)}</td>
                         <td className="rp-num" style={{ color:"#e2e8f0" }}>{gRetail.toLocaleString("en-IN")}</td>
                         <td className="rp-num" style={{ color:"#e2e8f0" }}>{gLead.toLocaleString("en-IN")}</td>
-                        <td className="rp-num rp-mono" style={{ color:"#86efac" }}>{inr(gCac)}</td>
-                        <td className="rp-num rp-mono" style={{ color:"#86efac" }}>{inr(gCpl)}</td>
-                        <td className="rp-num" style={{ color:"#fde68a" }}>{gPending || "—"}</td>
-                        <td className="rp-num" style={{ color:"#86efac" }}>{gApproved || "—"}</td>
-                        <td className="rp-num" style={{ color:"#fca5a5" }}>{gRejected || "—"}</td>
-                        <td className="rp-num" style={{ color:"#fde68a" }}>{gRevision || "—"}</td>
+                        <td className="rp-num rp-mono" style={{ color:"#86efac", ...NOWRAP }}>{inr(gCac)}</td>
+                        <td className="rp-num rp-mono" style={{ color:"#86efac", ...NOWRAP }}>{inr(gCpl)}</td>
+                        <td className="rp-num" style={{ color:"#fde68a" }}>{sum((r) => r.pending) || "—"}</td>
+                        <td className="rp-num" style={{ color:"#86efac" }}>{sum((r) => r.approved) || "—"}</td>
+                        <td className="rp-num" style={{ color:"#fca5a5" }}>{sum((r) => r.rejected) || "—"}</td>
+                        <td className="rp-num" style={{ color:"#fde68a" }}>{sum(revisionOf) || "—"}</td>
                       </tr>
                     </tfoot>
                   );
                 })()}
               </table>
             </div>
+            {stTbl.total > stTbl.pageSize && <Pager page={stTbl.page} pageSize={stTbl.pageSize} total={stTbl.total} onPage={stTbl.setPage} onPageSize={stTbl.setPageSize} scrollTo="#rp-summary-wrap"/>}
+            </>
           )}
 
           {/* ── Dealer Summary tab ── */}
           {activeTab === "dealer" && (
-            <div className="rp-table-scroll">
+            <>
+            <Pager page={dlTbl.page} pageSize={dlTbl.pageSize} total={dlTbl.total} onPage={dlTbl.setPage} onPageSize={dlTbl.setPageSize}/>
+            <div className="rp-table-scroll" id="rp-dealer-wrap">
               <table id="rp-dealer-table" className="rp-table" style={{ minWidth: "900px" }}>
                 <thead>
                   <tr>
-                    <th>State</th>
-                    <th>Dealer</th>
-                    <th className="rp-num">Activities</th>
-                    <th className="rp-num">Total Budget</th>
-                    <th className="rp-num">Retail</th>
-                    <th className="rp-num">Lead</th>
-                    <th className="rp-num">CAC</th>
-                    <th className="rp-num">CPL</th>
-                    <th className="rp-num">Pending</th>
-                    <th className="rp-num">Approved</th>
-                    <th className="rp-num">Rejected</th>
-                    <th className="rp-num" style={{background:"#f59e0b22",color:"#92400e"}}>Revision</th>
+                    <SortTh k="state"      label="State"        {...spOf(dlTbl)}/>
+                    <SortTh k="dealer"     label="Dealer"       {...spOf(dlTbl)}/>
+                    <SortTh k="activities" label="Activities"   align="right" className="rp-num" {...spOf(dlTbl)}/>
+                    <SortTh k="budget"     label="Total Budget" align="right" className="rp-num" {...spOf(dlTbl)}/>
+                    <SortTh k="retail"     label="Retail"       align="right" className="rp-num" {...spOf(dlTbl)}/>
+                    <SortTh k="lead"       label="Lead"         align="right" className="rp-num" {...spOf(dlTbl)}/>
+                    <SortTh k="cac"        label="CAC"          align="right" className="rp-num" {...spOf(dlTbl)}/>
+                    <SortTh k="cpl"        label="CPL"          align="right" className="rp-num" {...spOf(dlTbl)}/>
+                    <SortTh k="pending"    label="Pending"      align="right" className="rp-num" {...spOf(dlTbl)}/>
+                    <SortTh k="approved"   label="Approved"     align="right" className="rp-num" {...spOf(dlTbl)}/>
+                    <SortTh k="rejected"   label="Rejected"     align="right" className="rp-num" {...spOf(dlTbl)}/>
+                    <SortTh k="revision"   label="Revision"     align="right" className="rp-num" style={{background:"#f59e0b22",color:"#92400e"}} {...spOf(dlTbl)}/>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredDealer.map((d: any, i: number) => (
+                  {dlTbl.pageRows.map((d: any, i: number) => (
                     <tr key={`${d.state}__${d.dealer}`} className={i%2===0?"rp-row-even":"rp-row-odd"}>
                       <td><span className="rp-state-tag">{d.state}</span></td>
                       <td className="rp-dealer">{d.dealer}</td>
                       <td className="rp-num">{d.activities}</td>
-                      <td className="rp-num rp-mono">{inr(d.totalBudget)}</td>
+                      <td className="rp-num rp-mono" style={NOWRAP}>{inr(d.totalBudget)}</td>
                       <td className="rp-num">{d.totalRetailTarget?.toLocaleString("en-IN")}</td>
                       <td className="rp-num">{d.totalLeadTarget?.toLocaleString("en-IN")}</td>
-                      <td className="rp-num rp-mono">{inr(d.cac)}</td>
-                      <td className="rp-num rp-mono">{inr(d.cpl)}</td>
+                      <td className="rp-num rp-mono" style={NOWRAP}>{inr(d.cac)}</td>
+                      <td className="rp-num rp-mono" style={NOWRAP}>{inr(d.cpl)}</td>
                       <td className="rp-num"><StatusBadge v={d.pending}  t="pending"/></td>
                       <td className="rp-num"><StatusBadge v={d.approved} t="approved"/></td>
                       <td className="rp-num"><StatusBadge v={d.rejected} t="rejected"/></td>
-                      <td className="rp-num"><StatusBadge v={(d as any).needsRevision ?? (d as any).NeedsRevision ?? 0} t="revision"/></td>
+                      <td className="rp-num"><StatusBadge v={revisionOf(d)} t="revision"/></td>
                     </tr>
                   ))}
                 </tbody>
                 {filteredDealer.length > 0 && (() => {
-                  const gActivities = filteredDealer.reduce((s: number, r: any) => s + r.activities, 0);
-                  const gBudget      = filteredDealer.reduce((s: number, r: any) => s + r.totalBudget, 0);
-                  const gRetail      = filteredDealer.reduce((s: number, r: any) => s + r.totalRetailTarget, 0);
-                  const gLead        = filteredDealer.reduce((s: number, r: any) => s + r.totalLeadTarget, 0);
-                  const gPending     = filteredDealer.reduce((s: number, r: any) => s + r.pending, 0);
-                  const gApproved    = filteredDealer.reduce((s: number, r: any) => s + r.approved, 0);
-                  const gRejected    = filteredDealer.reduce((s: number, r: any) => s + r.rejected, 0);
-                  const gRevision    = filteredDealer.reduce((s: number, r: any) => s + ((r as any).needsRevision ?? (r as any).NeedsRevision ?? 0), 0);
+                  const sum = (f: (r: any) => number) => filteredDealer.reduce((a: number, r: any) => a + (f(r) || 0), 0);
+                  const gBudget = sum((r) => r.totalBudget), gRetail = sum((r) => r.totalRetailTarget), gLead = sum((r) => r.totalLeadTarget);
                   const gCac = gRetail > 0 ? gBudget / gRetail : 0;
                   const gCpl = gLead   > 0 ? gBudget / gLead   : 0;
                   return (
                     <tfoot>
                       <tr style={{ background:"#0a2540", fontWeight:800 }}>
                         <td colSpan={2} style={{ color:"#fbbf24" }}>Grand Total ({filteredDealer.length} dealers)</td>
-                        <td className="rp-num" style={{ color:"#e2e8f0" }}>{gActivities}</td>
-                        <td className="rp-num rp-mono" style={{ color:"#e2e8f0" }}>{inr(gBudget)}</td>
+                        <td className="rp-num" style={{ color:"#e2e8f0" }}>{sum((r) => r.activities)}</td>
+                        <td className="rp-num rp-mono" style={{ color:"#e2e8f0", ...NOWRAP }}>{inr(gBudget)}</td>
                         <td className="rp-num" style={{ color:"#e2e8f0" }}>{gRetail.toLocaleString("en-IN")}</td>
                         <td className="rp-num" style={{ color:"#e2e8f0" }}>{gLead.toLocaleString("en-IN")}</td>
-                        <td className="rp-num rp-mono" style={{ color:"#86efac" }}>{inr(gCac)}</td>
-                        <td className="rp-num rp-mono" style={{ color:"#86efac" }}>{inr(gCpl)}</td>
-                        <td className="rp-num" style={{ color:"#fde68a" }}>{gPending || "—"}</td>
-                        <td className="rp-num" style={{ color:"#86efac" }}>{gApproved || "—"}</td>
-                        <td className="rp-num" style={{ color:"#fca5a5" }}>{gRejected || "—"}</td>
-                        <td className="rp-num" style={{ color:"#fde68a" }}>{gRevision || "—"}</td>
+                        <td className="rp-num rp-mono" style={{ color:"#86efac", ...NOWRAP }}>{inr(gCac)}</td>
+                        <td className="rp-num rp-mono" style={{ color:"#86efac", ...NOWRAP }}>{inr(gCpl)}</td>
+                        <td className="rp-num" style={{ color:"#fde68a" }}>{sum((r) => r.pending) || "—"}</td>
+                        <td className="rp-num" style={{ color:"#86efac" }}>{sum((r) => r.approved) || "—"}</td>
+                        <td className="rp-num" style={{ color:"#fca5a5" }}>{sum((r) => r.rejected) || "—"}</td>
+                        <td className="rp-num" style={{ color:"#fde68a" }}>{sum(revisionOf) || "—"}</td>
                       </tr>
                     </tfoot>
                   );
                 })()}
               </table>
             </div>
+            {dlTbl.total > dlTbl.pageSize && <Pager page={dlTbl.page} pageSize={dlTbl.pageSize} total={dlTbl.total} onPage={dlTbl.setPage} onPageSize={dlTbl.setPageSize} scrollTo="#rp-dealer-wrap"/>}
+            </>
           )}
 
           {/* ── Activity Detail tab ── */}
           {activeTab === "activity" && (
-            <div className="rp-table-scroll">
+            <>
+            <Pager page={acTbl.page} pageSize={acTbl.pageSize} total={acTbl.total} onPage={acTbl.setPage} onPageSize={acTbl.setPageSize}/>
+            <div className="rp-table-scroll" id="rp-activity-wrap">
               <table id="rp-activity-table" className="rp-table rp-table--wide" style={{ minWidth: "1400px" }}>
                 <thead>
                   <tr>
-                    <th>Token</th>
-                    <th>Dealer</th>
-                    <th>State</th>
-                    <th>RSM</th>
-                    <th>Month</th>
-                    <th>Status</th>
-                    <th>Activity</th>
-                    <th>Type</th>
-                    <th>Subcategory</th>
-                    <th className="rp-num">QTY</th>
-                    <th className="rp-num">Sales%</th>
-                    <th className="rp-num">Lead</th>
-                    <th className="rp-num">Retail</th>
-                    <th className="rp-num">Budget</th>
-                    <th className="rp-num">BGauss%</th>
-                    <th className="rp-num">BGauss Amt</th>
-                    <th className="rp-num">Total</th>
-                    <th>Start</th>
-                    <th>End</th>
+                    <SortTh k="token"    label="Token"       {...spOf(acTbl)}/>
+                    <SortTh k="dealer"   label="Dealer"      {...spOf(acTbl)}/>
+                    <SortTh k="state"    label="State"       {...spOf(acTbl)}/>
+                    <SortTh k="rsm"      label="RSM"         {...spOf(acTbl)}/>
+                    <SortTh k="month"    label="Month"       {...spOf(acTbl)}/>
+                    <SortTh k="status"   label="Status"      {...spOf(acTbl)}/>
+                    <SortTh k="activity" label="Activity"    {...spOf(acTbl)}/>
+                    <SortTh k="type"     label="Type"        {...spOf(acTbl)}/>
+                    <SortTh k="sub"      label="Subcategory" {...spOf(acTbl)}/>
+                    <SortTh k="qty"      label="QTY"        align="right" className="rp-num" {...spOf(acTbl)}/>
+                    <SortTh k="sales"    label="Sales%"     align="right" className="rp-num" {...spOf(acTbl)}/>
+                    <SortTh k="lead"     label="Lead"       align="right" className="rp-num" {...spOf(acTbl)}/>
+                    <SortTh k="retail"   label="Retail"     align="right" className="rp-num" {...spOf(acTbl)}/>
+                    <SortTh k="budget"   label="Budget"     align="right" className="rp-num" {...spOf(acTbl)}/>
+                    <SortTh k="bgPct"    label="BGauss%"    align="right" className="rp-num" {...spOf(acTbl)}/>
+                    <SortTh k="bgAmt"    label="BGauss Amt" align="right" className="rp-num" {...spOf(acTbl)}/>
+                    <SortTh k="total"    label="Total"      align="right" className="rp-num" {...spOf(acTbl)}/>
+                    <SortTh k="start"    label="Start"      {...spOf(acTbl)}/>
+                    <SortTh k="end"      label="End"        {...spOf(acTbl)}/>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.map((r: any, i: number) => (
-                    <tr key={i} className={i%2===0?"rp-row-even":"rp-row-odd"}>
+                  {acTbl.pageRows.map((r: any, i: number) => (
+                    <tr key={`${r.tokenNumber ?? ""}_${r.activityType ?? ""}_${(acTbl.page - 1) * acTbl.pageSize + i}`} className={i%2===0?"rp-row-even":"rp-row-odd"}>
                       <td className="rp-token">{r.tokenNumber ?? "—"}</td>
                       <td className="rp-dealer">{r.dealerName}</td>
                       <td><span className="rp-state-tag">{r.state}</span></td>
@@ -671,14 +670,14 @@ export default function ReportsPage() {
                       </td>
                       <td className="rp-num">{r.leadTarget}</td>
                       <td className="rp-num">{r.retailTarget}</td>
-                      <td className="rp-num rp-mono">{inr(r.budget)}</td>
+                      <td className="rp-num rp-mono" style={NOWRAP}>{inr(r.budget)}</td>
                       <td className="rp-num rp-sm">
                         {r.bgaussShare ? `${r.bgaussShare}%` : "100%"}
                       </td>
-                      <td className="rp-num rp-mono rp-blue">{inr(r.bgaussAmount ?? 0)}</td>
-                      <td className="rp-num rp-mono rp-bold">{inr(r.total)}</td>
-                      <td className="rp-sm">{r.startDate ?? "—"}</td>
-                      <td className="rp-sm">{r.endDate   ?? "—"}</td>
+                      <td className="rp-num rp-mono rp-blue" style={NOWRAP}>{inr(r.bgaussAmount ?? 0)}</td>
+                      <td className="rp-num rp-mono rp-bold" style={NOWRAP}>{inr(r.total)}</td>
+                      <td className="rp-sm" style={NOWRAP}>{r.startDate ?? "—"}</td>
+                      <td className="rp-sm" style={NOWRAP}>{r.endDate   ?? "—"}</td>
                     </tr>
                   ))}
                   {filteredRows.length === 0 && (
@@ -690,23 +689,19 @@ export default function ReportsPage() {
                   )}
                 </tbody>
                 {filteredRows.length > 0 && (() => {
-                  const gLead    = filteredRows.reduce((s: number, r: any) => s + (r.leadTarget || 0), 0);
-                  const gRetail  = filteredRows.reduce((s: number, r: any) => s + (r.retailTarget || 0), 0);
-                  const gBudget  = filteredRows.reduce((s: number, r: any) => s + (r.budget || 0), 0);
-                  const gBgAmt   = filteredRows.reduce((s: number, r: any) => s + (r.bgaussAmount || 0), 0);
-                  const gTotal   = filteredRows.reduce((s: number, r: any) => s + (r.total || 0), 0);
+                  const sum = (f: (r: any) => number) => filteredRows.reduce((a: number, r: any) => a + (f(r) || 0), 0);
                   return (
                     <tfoot>
                       <tr style={{ background:"#0a2540", fontWeight:800 }}>
                         <td colSpan={9} style={{ color:"#fbbf24" }}>Grand Total ({filteredRows.length} activities)</td>
                         <td className="rp-num" style={{ color:"#e2e8f0" }}></td>
                         <td className="rp-num" style={{ color:"#e2e8f0" }}></td>
-                        <td className="rp-num" style={{ color:"#e2e8f0" }}>{gLead.toLocaleString("en-IN")}</td>
-                        <td className="rp-num" style={{ color:"#e2e8f0" }}>{gRetail.toLocaleString("en-IN")}</td>
-                        <td className="rp-num rp-mono" style={{ color:"#86efac" }}>{inr(gBudget)}</td>
+                        <td className="rp-num" style={{ color:"#e2e8f0" }}>{sum((r) => r.leadTarget).toLocaleString("en-IN")}</td>
+                        <td className="rp-num" style={{ color:"#e2e8f0" }}>{sum((r) => r.retailTarget).toLocaleString("en-IN")}</td>
+                        <td className="rp-num rp-mono" style={{ color:"#86efac", ...NOWRAP }}>{inr(sum((r) => r.budget))}</td>
                         <td className="rp-num" style={{ color:"#e2e8f0" }}></td>
-                        <td className="rp-num rp-mono" style={{ color:"#93c5fd" }}>{inr(gBgAmt)}</td>
-                        <td className="rp-num rp-mono" style={{ color:"#86efac" }}>{inr(gTotal)}</td>
+                        <td className="rp-num rp-mono" style={{ color:"#93c5fd", ...NOWRAP }}>{inr(sum((r) => r.bgaussAmount))}</td>
+                        <td className="rp-num rp-mono" style={{ color:"#86efac", ...NOWRAP }}>{inr(sum((r) => r.total))}</td>
                         <td></td><td></td>
                       </tr>
                     </tfoot>
@@ -714,6 +709,8 @@ export default function ReportsPage() {
                 })()}
               </table>
             </div>
+            {acTbl.total > acTbl.pageSize && <Pager page={acTbl.page} pageSize={acTbl.pageSize} total={acTbl.total} onPage={acTbl.setPage} onPageSize={acTbl.setPageSize} scrollTo="#rp-activity-wrap"/>}
+            </>
           )}
 
           {/* Download strip */}
@@ -781,26 +778,31 @@ export default function ReportsPage() {
           )}
 
           {leadSummary && (
-            <div className="rp-table-scroll">
+            <>
+            <Pager page={ldTbl.page} pageSize={ldTbl.pageSize} total={ldTbl.total} onPage={ldTbl.setPage} onPageSize={ldTbl.setPageSize}/>
+            <div className="rp-table-scroll" id="rp-leads-wrap">
               <table className="rp-table" style={{ minWidth: leadGroupBy==="dealer" ? "1100px" : "900px" }}>
                 <thead>
                   <tr>
-                    <th>{leadGroupBy === "rsm" ? "RSM" : "Dealer"}</th>
-                    {leadGroupBy === "dealer" && (<><th>City</th><th>State</th></>)}
-                    <th className="rp-num">Total Leads</th>
-                    <th className="rp-num">Not Called</th>
-                    <th className="rp-num">Follow-Up</th>
-                    <th className="rp-num">Closed</th>
-                    <th className="rp-num" style={{background:"#eef2ff",color:"#3730a3"}}>Qualified</th>
-                    <th className="rp-num" style={{background:"#fef2f2",color:"#b91c1c"}}>Hot</th>
-                    <th className="rp-num" style={{background:"#fffbeb",color:"#92400e"}}>Warm</th>
-                    <th className="rp-num">Normal</th>
-                    <th className="rp-num" style={{background:"#f0fdf4",color:"#166534"}}>Booked</th>
-                    <th className="rp-num" style={{background:"#fef2f2",color:"#991b1b"}}>Lost</th>
+                    <SortTh k="name" label={leadGroupBy === "rsm" ? "RSM" : "Dealer"} {...spOf(ldTbl)}/>
+                    {leadGroupBy === "dealer" && (<>
+                      <SortTh k="city"  label="City"  {...spOf(ldTbl)}/>
+                      <SortTh k="state" label="State" {...spOf(ldTbl)}/>
+                    </>)}
+                    <SortTh k="total"     label="Total Leads" align="right" className="rp-num" {...spOf(ldTbl)}/>
+                    <SortTh k="notCalled" label="Not Called"  align="right" className="rp-num" {...spOf(ldTbl)}/>
+                    <SortTh k="followUp"  label="Follow-Up"   align="right" className="rp-num" {...spOf(ldTbl)}/>
+                    <SortTh k="closed"    label="Closed"      align="right" className="rp-num" {...spOf(ldTbl)}/>
+                    <SortTh k="qualified" label="Qualified"   align="right" className="rp-num" style={{background:"#eef2ff",color:"#3730a3"}} {...spOf(ldTbl)}/>
+                    <SortTh k="hot"       label="Hot"         align="right" className="rp-num" style={{background:"#fef2f2",color:"#b91c1c"}} {...spOf(ldTbl)}/>
+                    <SortTh k="warm"      label="Warm"        align="right" className="rp-num" style={{background:"#fffbeb",color:"#92400e"}} {...spOf(ldTbl)}/>
+                    <SortTh k="normal"    label="Normal"      align="right" className="rp-num" {...spOf(ldTbl)}/>
+                    <SortTh k="booked"    label="Booked"      align="right" className="rp-num" style={{background:"#f0fdf4",color:"#166534"}} {...spOf(ldTbl)}/>
+                    <SortTh k="lost"      label="Lost"        align="right" className="rp-num" style={{background:"#fef2f2",color:"#991b1b"}} {...spOf(ldTbl)}/>
                   </tr>
                 </thead>
                 <tbody>
-                  {leadSummary.rows.map((r, i) => (
+                  {ldTbl.pageRows.map((r, i) => (
                     <tr key={r.dealerCode ?? r.name} className={i%2===0?"rp-row-even":"rp-row-odd"}>
                       <td className="rp-bold">{r.dealerName ?? r.name}</td>
                       {leadGroupBy === "dealer" && (<><td className="rp-sm">{r.city ?? "—"}</td><td><span className="rp-state-tag">{r.state ?? "—"}</span></td></>)}
@@ -834,6 +836,8 @@ export default function ReportsPage() {
                 </tfoot>
               </table>
             </div>
+            {ldTbl.total > ldTbl.pageSize && <Pager page={ldTbl.page} pageSize={ldTbl.pageSize} total={ldTbl.total} onPage={ldTbl.setPage} onPageSize={ldTbl.setPageSize} scrollTo="#rp-leads-wrap"/>}
+            </>
           )}
         </div>
       )}

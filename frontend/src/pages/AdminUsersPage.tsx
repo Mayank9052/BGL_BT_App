@@ -1,4 +1,6 @@
 // src/pages/AdminUsersPage.tsx
+// [BTL-2026-11-02] Users / Dealer Accounts / Staff / Activity Types — every header sortable
+//                  (click ▲ → ▼ → off) + pagination (10/25/50/100). Search still filters first.
 import { useEffect, useState, useRef, useMemo } from "react";
 import { useMsal } from "@azure/msal-react";
 import { fetchAllUsers, updateUser } from "../services/userService";
@@ -19,6 +21,7 @@ import {
 } from "../services/employeeAuthService";
 import { fetchDealers, type DealerOption } from "../services/dealerService";
 import type { UserProfile } from "../types/user";
+import { useSortPage, SortTh, Pager } from "../components/TableTools";   // [BTL-2026-11-02]
 import "./AdminUsersPage.css";
 
 const ROLES = ["Admin", "Manager", "User", "Accounts"];
@@ -212,8 +215,7 @@ export default function AdminUsersPage() {
     );
   }, [activityTypes, activitySearch]);
 
-  // Group by activityName — uses the SEARCH-FILTERED list so the table only
-  // shows matching rows, while keeping the name-grouping/indent behaviour.
+  // Group by activityName — used for the counts under the table and the group number (#).
   const groupedActivities = filteredActivityTypes.reduce((acc, a) => {
     if (!acc[a.activityName]) acc[a.activityName] = [];
     acc[a.activityName].push(a);
@@ -282,6 +284,55 @@ export default function AdminUsersPage() {
         .some((v) => String(v).toLowerCase().includes(q))
     );
   }, [staff, staffSearch]);
+
+  // ── [BTL-2026-11-02] sorting + pagination for all four tables ────────────────
+  const userTbl = useSortPage(filteredUsers, useMemo(() => ({
+    name:   (u: UserProfile) => u.displayName ?? "",
+    email:  (u: UserProfile) => u.email ?? "",
+    dept:   (u: UserProfile) => u.department ?? "",
+    title:  (u: UserProfile) => u.jobTitle ?? "",
+    phone:  (u: UserProfile) => u.phoneNumber ?? "",
+    role:   (u: UserProfile) => u.role ?? "",
+    active: (u: UserProfile) => (u.isActive ? "Active" : "Inactive"),
+  }), []), { storageKey: "adm_users", pageSize: 25, resetOn: [userSearch] });
+
+  const dealerTbl = useSortPage(filteredDealerAccounts, useMemo(() => ({
+    name:      (d: DealerAccount) => d.displayName ?? "",
+    email:     (d: DealerAccount) => d.email ?? "",
+    code:      (d: DealerAccount) => d.dealerCode ?? "",
+    dealer:    (d: DealerAccount) => d.dealerName ?? "",
+    phone:     (d: DealerAccount) => d.phoneNumber ?? "",
+    lastLogin: (d: DealerAccount) => d.lastLoginAt ?? "",
+    active:    (d: DealerAccount) => (d.isActive ? "Active" : "Inactive"),
+  }), []), { storageKey: "adm_dealers", pageSize: 25, resetOn: [dealerSearch] });
+
+  const staffTbl = useSortPage(filteredStaff, useMemo(() => ({
+    name:      (s: StaffAccount) => s.displayName ?? "",
+    email:     (s: StaffAccount) => s.email ?? "",
+    code:      (s: StaffAccount) => s.employeeCode ?? "",
+    role:      (s: StaffAccount) => s.role ?? "",
+    phone:     (s: StaffAccount) => s.phoneNumber ?? "",
+    lastLogin: (s: StaffAccount) => s.lastLoginAt ?? "",
+    active:    (s: StaffAccount) => (s.isActive ? "Active" : "Inactive"),
+  }), []), { storageKey: "adm_staff", pageSize: 25, resetOn: [staffSearch] });
+
+  // Activity types: default order = grouped by Activity Name (same as before)
+  const activitiesByName = useMemo(
+    () => [...filteredActivityTypes].sort((a, b) => a.activityName.localeCompare(b.activityName)),
+    [filteredActivityTypes]);
+  const actTbl = useSortPage(activitiesByName, useMemo(() => ({
+    name:   (a: ActivityType) => a.activityName ?? "",
+    type:   (a: ActivityType) => a.activityType ?? "",
+    sub:    (a: ActivityType) => a.subcategory ?? "",
+    maxQty: (a: ActivityType) => a.maxQty ?? 5,
+    status: (a: ActivityType) => (a.isActive ? "Active" : "Inactive"),
+  }), []), { storageKey: "adm_activities", pageSize: 50, resetOn: [activitySearch] });
+  const groupNo = useMemo(() => {
+    const names = Object.keys(groupedActivities).sort((a, b) => a.localeCompare(b));
+    return new Map(names.map((n, i) => [n, i + 1]));
+  }, [groupedActivities]);
+  const spOf = (t: { sortKey: string | null; sortDir: "asc" | "desc"; onSort: (k: string) => void }) =>
+    ({ sortKey: t.sortKey, sortDir: t.sortDir, onSort: t.onSort });
 
   const [tab, setTab] = useState<"users"|"activities"|"dealers"|"staff">("users");
 
@@ -585,13 +636,19 @@ export default function AdminUsersPage() {
             totalCount={users.length}
           />
 
-          <div className="admin-users-table-wrap">
+          <Pager page={userTbl.page} pageSize={userTbl.pageSize} total={userTbl.total} onPage={userTbl.setPage} onPageSize={userTbl.setPageSize}/>
+          <div className="admin-users-table-wrap" id="adm-users-wrap">
             <table className="admin-users-table">
               <thead>
                 <tr>
-                  <th>Name</th><th>Email</th><th>Department</th>
-                  <th>Job Title</th><th>Phone</th><th>Role</th>
-                  <th>Active</th><th></th>
+                  <SortTh k="name"   label="Name"       {...spOf(userTbl)}/>
+                  <SortTh k="email"  label="Email"      {...spOf(userTbl)}/>
+                  <SortTh k="dept"   label="Department" {...spOf(userTbl)}/>
+                  <SortTh k="title"  label="Job Title"  {...spOf(userTbl)}/>
+                  <SortTh k="phone"  label="Phone"      {...spOf(userTbl)}/>
+                  <SortTh k="role"   label="Role"       {...spOf(userTbl)}/>
+                  <SortTh k="active" label="Active"     {...spOf(userTbl)}/>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -600,7 +657,7 @@ export default function AdminUsersPage() {
                   <tr><td colSpan={8} className="admin-empty-cell">
                     {users.length === 0 ? "No users found." : "No users match your search."}
                   </td></tr>
-                ) : filteredUsers.map((u) => {
+                ) : userTbl.pageRows.map((u) => {
                   const isEditing = editingId === u.id;
                   return (
                     <tr key={u.id} className={isEditing ? "admin-row--editing" : ""}>
@@ -652,6 +709,7 @@ export default function AdminUsersPage() {
               </tbody>
             </table>
           </div>
+          {userTbl.total > userTbl.pageSize && <Pager page={userTbl.page} pageSize={userTbl.pageSize} total={userTbl.total} onPage={userTbl.setPage} onPageSize={userTbl.setPageSize} scrollTo="#adm-users-wrap"/>}
         </>
       )}
 
@@ -938,13 +996,19 @@ export default function AdminUsersPage() {
             totalCount={dealers.length}
           />
 
-          <div className="admin-users-table-wrap">
+          <Pager page={dealerTbl.page} pageSize={dealerTbl.pageSize} total={dealerTbl.total} onPage={dealerTbl.setPage} onPageSize={dealerTbl.setPageSize}/>
+          <div className="admin-users-table-wrap" id="adm-dealers-wrap">
             <table className="admin-users-table">
               <thead>
                 <tr>
-                  <th>Name</th><th>Email</th><th>Dealer Code</th>
-                  <th>Dealer Name</th><th>Phone</th><th>Last Login</th>
-                  <th>Active</th><th style={{ width:190 }}></th>
+                  <SortTh k="name"      label="Name"        {...spOf(dealerTbl)}/>
+                  <SortTh k="email"     label="Email"       {...spOf(dealerTbl)}/>
+                  <SortTh k="code"      label="Dealer Code" {...spOf(dealerTbl)}/>
+                  <SortTh k="dealer"    label="Dealer Name" {...spOf(dealerTbl)}/>
+                  <SortTh k="phone"     label="Phone"       {...spOf(dealerTbl)}/>
+                  <SortTh k="lastLogin" label="Last Login"  {...spOf(dealerTbl)}/>
+                  <SortTh k="active"    label="Active"      {...spOf(dealerTbl)}/>
+                  <th style={{ width:190 }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -953,7 +1017,7 @@ export default function AdminUsersPage() {
                   <tr><td colSpan={8} className="admin-empty-cell">
                     {dealers.length === 0 ? "No dealer accounts yet." : "No dealer accounts match your search."}
                   </td></tr>
-                ) : filteredDealerAccounts.map((d) => (
+                ) : dealerTbl.pageRows.map((d) => (
                   <tr key={d.id}>
                     <td><span className="admin-user-name">{d.displayName}</span></td>
                     <td className="admin-readonly">{d.email}</td>
@@ -977,6 +1041,7 @@ export default function AdminUsersPage() {
               </tbody>
             </table>
           </div>
+          {dealerTbl.total > dealerTbl.pageSize && <Pager page={dealerTbl.page} pageSize={dealerTbl.pageSize} total={dealerTbl.total} onPage={dealerTbl.setPage} onPageSize={dealerTbl.setPageSize} scrollTo="#adm-dealers-wrap"/>}
         </div>
       )}
 
@@ -1132,13 +1197,19 @@ export default function AdminUsersPage() {
             totalCount={staff.length}
           />
 
-          <div className="admin-users-table-wrap">
+          <Pager page={staffTbl.page} pageSize={staffTbl.pageSize} total={staffTbl.total} onPage={staffTbl.setPage} onPageSize={staffTbl.setPageSize}/>
+          <div className="admin-users-table-wrap" id="adm-staff-wrap">
             <table className="admin-users-table">
               <thead>
                 <tr>
-                  <th>Name</th><th>Email</th><th>Employee Code</th>
-                  <th>Role</th><th>Phone</th><th>Last Login</th>
-                  <th>Active</th><th style={{ width:190 }}></th>
+                  <SortTh k="name"      label="Name"          {...spOf(staffTbl)}/>
+                  <SortTh k="email"     label="Email"         {...spOf(staffTbl)}/>
+                  <SortTh k="code"      label="Employee Code" {...spOf(staffTbl)}/>
+                  <SortTh k="role"      label="Role"          {...spOf(staffTbl)}/>
+                  <SortTh k="phone"     label="Phone"         {...spOf(staffTbl)}/>
+                  <SortTh k="lastLogin" label="Last Login"    {...spOf(staffTbl)}/>
+                  <SortTh k="active"    label="Active"        {...spOf(staffTbl)}/>
+                  <th style={{ width:190 }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -1147,7 +1218,7 @@ export default function AdminUsersPage() {
                   <tr><td colSpan={8} className="admin-empty-cell">
                     {staff.length === 0 ? "No staff accounts yet." : "No staff accounts match your search."}
                   </td></tr>
-                ) : filteredStaff.map((s) => (
+                ) : staffTbl.pageRows.map((s) => (
                   <tr key={s.id}>
                     <td><span className="admin-user-name">{s.displayName}</span></td>
                     <td className="admin-readonly">{s.email}</td>
@@ -1171,6 +1242,7 @@ export default function AdminUsersPage() {
               </tbody>
             </table>
           </div>
+          {staffTbl.total > staffTbl.pageSize && <Pager page={staffTbl.page} pageSize={staffTbl.pageSize} total={staffTbl.total} onPage={staffTbl.setPage} onPageSize={staffTbl.setPageSize} scrollTo="#adm-staff-wrap"/>}
 
           {!staffLoading && staff.length > 0 && (
             <div style={{ display:"flex",gap:16,marginTop:12,fontSize:12,color:"#6b7280",flexWrap:"wrap" }}>
@@ -1266,17 +1338,18 @@ export default function AdminUsersPage() {
             totalCount={activityTypes.length}
           />
 
-          {/* ── Activity types table ── */}
-          <div className="admin-users-table-wrap">
+          {/* ── Activity types table (default: grouped by Activity Name; click a header to sort) ── */}
+          <Pager page={actTbl.page} pageSize={actTbl.pageSize} total={actTbl.total} onPage={actTbl.setPage} onPageSize={actTbl.setPageSize}/>
+          <div className="admin-users-table-wrap" id="adm-activities-wrap">
             <table className="admin-users-table">
               <thead>
                 <tr>
                   <th style={{ width:44 }}>#</th>
-                  <th>Activity Name</th>
-                  <th style={{ width:80 }}>Type</th>
-                  <th>Subcategory</th>
-                  <th style={{ width:80,textAlign:"center" }}>Max QTY</th>
-                  <th style={{ width:110 }}>Status</th>
+                  <SortTh k="name"   label="Activity Name" {...spOf(actTbl)}/>
+                  <SortTh k="type"   label="Type"          style={{ width:80 }} {...spOf(actTbl)}/>
+                  <SortTh k="sub"    label="Subcategory"   {...spOf(actTbl)}/>
+                  <SortTh k="maxQty" label="Max QTY"       align="center" style={{ width:90 }} {...spOf(actTbl)}/>
+                  <SortTh k="status" label="Status"        style={{ width:110 }} {...spOf(actTbl)}/>
                   <th style={{ width:160 }}></th>
                 </tr>
               </thead>
@@ -1290,80 +1363,79 @@ export default function AdminUsersPage() {
                         : "No activity types match your search."}
                     </td>
                   </tr>
-                ) : (
-                  Object.entries(groupedActivities)
-                    .sort(([a],[b]) => a.localeCompare(b))
-                    .flatMap(([actName, rows]) =>
-                      rows.map((a, subIdx) => (
-                        <tr key={a.id} style={{
-                          background: subIdx % 2 === 0 ? "#fff" : "#f8fafc",
-                          borderTop: subIdx === 0 ? "2px solid #e2e8f0" : "1px solid #f1f5f9",
-                        }}>
-                          <td className="admin-readonly" style={{ verticalAlign:"middle" }}>
-                            {subIdx === 0
-                              ? <span>{Object.keys(groupedActivities).sort().indexOf(actName)+1}</span>
-                              : <span style={{ color:"#cbd5e1" }}>↳</span>}
-                          </td>
+                ) : actTbl.pageRows.map((a, i, arr) => {
+                  // Same-name rows that follow each other show as a group (↳), like before
+                  const isFirst = i === 0 || arr[i - 1].activityName !== a.activityName || (actTbl.sortKey !== null && actTbl.sortKey !== "name");
+                  return (
+                    <tr key={a.id} style={{
+                      background: i % 2 === 0 ? "#fff" : "#f8fafc",
+                      borderTop: isFirst ? "2px solid #e2e8f0" : "1px solid #f1f5f9",
+                    }}>
+                      <td className="admin-readonly" style={{ verticalAlign:"middle" }}>
+                        {isFirst
+                          ? <span>{groupNo.get(a.activityName) ?? ""}</span>
+                          : <span style={{ color:"#cbd5e1" }}>↳</span>}
+                      </td>
 
-                          <td style={{ verticalAlign:"middle" }}>
-                            {subIdx === 0
-                              ? <span className="admin-user-name">{a.activityName}</span>
-                              : <span style={{ color:"#9ca3af",fontSize:12 }}>{a.activityName}</span>}
-                          </td>
+                      <td style={{ verticalAlign:"middle" }}>
+                        {isFirst
+                          ? <span className="admin-user-name">{a.activityName}</span>
+                          : <span style={{ color:"#9ca3af",fontSize:12 }}>{a.activityName}</span>}
+                      </td>
 
-                          <td style={{ verticalAlign:"middle" }}>
-                            <span style={{
-                              fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:4,display:"inline-block",
-                              background: a.activityType==="ATL"?"#eff6ff":"#f0fdf4",
-                              color: a.activityType==="ATL"?"#1e40af":"#166534",
-                              border:`1px solid ${a.activityType==="ATL"?"#bfdbfe":"#bbf7d0"}`,
-                              opacity: subIdx === 0 ? 1 : 0.5,
-                            }}>{a.activityType||"—"}</span>
-                          </td>
+                      <td style={{ verticalAlign:"middle" }}>
+                        <span style={{
+                          fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:4,display:"inline-block",
+                          background: a.activityType==="ATL"?"#eff6ff":"#f0fdf4",
+                          color: a.activityType==="ATL"?"#1e40af":"#166534",
+                          border:`1px solid ${a.activityType==="ATL"?"#bfdbfe":"#bbf7d0"}`,
+                          opacity: isFirst ? 1 : 0.5,
+                        }}>{a.activityType||"—"}</span>
+                      </td>
 
-                          <td>
-                            {a.subcategory
-                              ? <span style={{ fontSize:12,fontWeight:500,color:"#1e3a5f",
-                                  background:"#f1f5f9",border:"1px solid #e2e8f0",
-                                  borderRadius:5,padding:"2px 9px",display:"inline-block" }}>
-                                  {a.subcategory}
-                                </span>
-                              : <span style={{ color:"#cbd5e1",fontSize:12 }}>—</span>}
-                          </td>
-
-                          <td style={{ textAlign:"center" }}>
-                            <span style={{ fontSize:12,fontWeight:700,color:"#374151",
-                              background:"#fafafa",border:"1px solid #e2e8f0",
-                              borderRadius:5,padding:"2px 10px",display:"inline-block" }}>
-                              {a.maxQty ?? 5}
+                      <td>
+                        {a.subcategory
+                          ? <span style={{ fontSize:12,fontWeight:500,color:"#1e3a5f",
+                              background:"#f1f5f9",border:"1px solid #e2e8f0",
+                              borderRadius:5,padding:"2px 9px",display:"inline-block" }}>
+                              {a.subcategory}
                             </span>
-                          </td>
+                          : <span style={{ color:"#cbd5e1",fontSize:12 }}>—</span>}
+                      </td>
 
-                          <td>
-                            <span className={`admin-status-pill ${a.isActive?"admin-status-pill--active":"admin-status-pill--inactive"}`}>
-                              <span className="admin-status-dot"/>{a.isActive?"Active":"Inactive"}
-                            </span>
-                          </td>
+                      <td style={{ textAlign:"center" }}>
+                        <span style={{ fontSize:12,fontWeight:700,color:"#374151",
+                          background:"#fafafa",border:"1px solid #e2e8f0",
+                          borderRadius:5,padding:"2px 10px",display:"inline-block" }}>
+                          {a.maxQty ?? 5}
+                        </span>
+                      </td>
 
-                          <td>
-                            <div className="admin-row-actions">
-                              <button className="admin-edit-btn"
-                                onClick={() => openEditActivity(a)}>
-                                ✏ Edit
-                              </button>
-                              <button className={a.isActive?"admin-cancel-btn":"admin-save-btn"}
-                                onClick={() => handleToggleActivity(a.id, a.isActive)}>
-                                {a.isActive?"Deactivate":"Activate"}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    )
-                )}
+                      <td>
+                        <span className={`admin-status-pill ${a.isActive?"admin-status-pill--active":"admin-status-pill--inactive"}`}>
+                          <span className="admin-status-dot"/>{a.isActive?"Active":"Inactive"}
+                        </span>
+                      </td>
+
+                      <td>
+                        <div className="admin-row-actions">
+                          <button className="admin-edit-btn"
+                            onClick={() => openEditActivity(a)}>
+                            ✏ Edit
+                          </button>
+                          <button className={a.isActive?"admin-cancel-btn":"admin-save-btn"}
+                            onClick={() => handleToggleActivity(a.id, a.isActive)}>
+                            {a.isActive?"Deactivate":"Activate"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          {actTbl.total > actTbl.pageSize && <Pager page={actTbl.page} pageSize={actTbl.pageSize} total={actTbl.total} onPage={actTbl.setPage} onPageSize={actTbl.setPageSize} scrollTo="#adm-activities-wrap"/>}
 
           {!actLoading && activityTypes.length > 0 && (
             <div style={{ display:"flex",gap:16,marginTop:12,fontSize:12,color:"#6b7280",flexWrap:"wrap" }}>

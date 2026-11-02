@@ -21,6 +21,7 @@ import { fetchCnReport, type CnReportRow } from "../services/cnService";
 import DailyHistoryPanel, {
   LmsSummaryChips, parseDailyData, applyDailyChange, rebuildDaily, type DailyEntry,
 } from "../components/DailyHistoryPanel";
+import { useSortPage, SortTh, Pager } from "../components/TableTools";   // [BTL-2026-11-02]
 import "./DealerDashboard.css";
 
 // ─── Formatters ───────────────────────────────────────────────────────────
@@ -214,6 +215,22 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
 
   const hasFilter = activeFilter !== "All" || monthFilter !== "All" || yearFilter !== "All";
   const clearAll = () => { setActiveFilter("All"); setMonthFilter("All"); setYearFilter("All"); setSearch(""); };
+
+  // ── [BTL-2026-11-02] sorting + pagination — default order: newest first; click a header ▲ → ▼ → off ──
+  const sortedByDate = useMemo(() => [...filtered].sort((a, b) =>
+    new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()), [filtered]);
+  const pTbl = useSortPage(sortedByDate, useMemo(() => ({
+    token:      (p: ProposalResponse) => p.tokenNumber ?? "",
+    dealer:     (p: ProposalResponse) => p.dealerName ?? "",
+    month:      (p: ProposalResponse) => (Number((p as any).year) || 0) * 100 + MONTHS.indexOf(p.month),
+    year:       (p: ProposalResponse) => Number((p as any).year) || null,
+    activities: (p: ProposalResponse) => p.activities.map((a) => a.activityType).join(", "),
+    budget:     (p: ProposalResponse) => p.totalBudget,
+    retail:     (p: ProposalResponse) => p.totalRetailTarget,
+    status:     (p: ProposalResponse) => p.status,
+    submitted:  (p: ProposalResponse) => p.createdAt ?? "",
+  }), []), { storageKey: "staff_proposals", pageSize: 25, resetOn: [activeFilter, monthFilter, yearFilter, search] });
+  const pSp = { sortKey: pTbl.sortKey, sortDir: pTbl.sortDir, onSort: pTbl.onSort };
 
   const src = hasFilter ? baseFiltered : proposals;
   const stats = useMemo(() => ({
@@ -538,14 +555,19 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
             <div className="dd-empty-sub">{proposals.length === 0 ? "No proposals found for your dealers yet." : "Try clearing your filters."}</div>
           </div>
         ) : (
-          <div className="dash-table-wrap">
+          <>
+          <Pager page={pTbl.page} pageSize={pTbl.pageSize} total={pTbl.total} onPage={pTbl.setPage} onPageSize={pTbl.setPageSize}/>
+          <div className="dash-table-wrap" id="staff-proposals-wrap">
             <table className="dash-table">
               <thead><tr>
-                <th>Token</th><th>Dealer</th><th>Month</th><th>Year</th>
-                <th>Activities</th><th>Budget</th><th>Retail</th><th>Status</th><th>Submitted</th><th>Action</th>
+                <SortTh k="token" label="Token" {...pSp}/><SortTh k="dealer" label="Dealer" {...pSp}/>
+                <SortTh k="month" label="Month" {...pSp}/><SortTh k="year" label="Year" {...pSp}/>
+                <SortTh k="activities" label="Activities" {...pSp}/><SortTh k="budget" label="Budget" {...pSp}/>
+                <SortTh k="retail" label="Retail" {...pSp}/><SortTh k="status" label="Status" {...pSp}/>
+                <SortTh k="submitted" label="Submitted" {...pSp}/><th>Action</th>
               </tr></thead>
               <tbody>
-                {[...filtered].sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()).map((p) => (
+                {pTbl.pageRows.map((p) => (
                   <tr key={p.id} style={{ cursor: "pointer", background: p.status === "NeedsRevision" ? "#fffbeb" : undefined }} onClick={() => openModal(p)}>
                     <td style={{ fontFamily: "monospace", fontSize: 11, color: "#1e3a5f", fontWeight: 600 }}>{p.tokenNumber ?? "—"}</td>
                     <td style={{ fontWeight: 600 }}>{p.dealerName}<div style={{ fontSize: 11, color: "#6b7280", fontWeight: 400 }}>{p.location}, {p.state}</div></td>
@@ -567,6 +589,8 @@ export default function StaffDashboard({ staff }: { staff: DealerLoginResponse }
               </tbody>
             </table>
           </div>
+          {pTbl.total > pTbl.pageSize && <Pager page={pTbl.page} pageSize={pTbl.pageSize} total={pTbl.total} onPage={pTbl.setPage} onPageSize={pTbl.setPageSize} scrollTo="#staff-proposals-wrap"/>}
+          </>
         )}
       </div>
 

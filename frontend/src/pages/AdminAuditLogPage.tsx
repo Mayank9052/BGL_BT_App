@@ -1,12 +1,15 @@
 // src/pages/AdminAuditLogPage.tsx
-import { useEffect, useState, useCallback } from "react";
+// [BTL-2026-11-02] Sortable headers (click ▲ → ▼ → off) + pager with 10/25/50/100 rows.
+//                  The log is paged on the server: sorting applies to the rows of the current page.
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useMsal } from "@azure/msal-react";
 import {
   fetchAuditLogs, fetchAuditLogActions,
   type AuditLogEntry, type AuditLogFilters,
 } from "../services/auditLogService";
+import { useSortPage, SortTh, Pager } from "../components/TableTools";
 
-const ROLES = ["Admin", "Manager", "User", "Dealer", "RSM", "TSM", "ZSM", "Commando"];
+const ROLES = ["Admin", "Manager", "User", "Accounts", "Dealer", "RSM", "TSM", "ZSM", "Commando"];
 
 const ACTION_LABELS: Record<string, string> = {
   Login:                     "🔓 Login",
@@ -48,13 +51,19 @@ function roleChipStyle(role: string): React.CSSProperties {
   return { background: bg, color: c, fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 12 };
 }
 
+const TH_STYLE: React.CSSProperties = {
+  color: "#94a3b8", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
+};
+
 export default function AdminAuditLogPage() {
   const { instance } = useMsal();
 
   const [logs,       setLogs]       = useState<AuditLogEntry[]>([]);
   const [total,      setTotal]      = useState(0);
   const [page,       setPage]       = useState(1);
-  const [pageSize]                  = useState(50);
+  const [pageSize,   setPageSizeState] = useState<number>(() => {
+    try { return Number(localStorage.getItem("ps_audit_log")) || 50; } catch { return 50; }
+  });
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState<string | null>(null);
 
@@ -64,6 +73,11 @@ export default function AdminAuditLogPage() {
   const [filterActor,   setFilterActor]   = useState("");
   const [filterFrom,    setFilterFrom]    = useState("");
   const [filterTo,      setFilterTo]      = useState("");
+
+  const setPageSize = (n: number) => {
+    setPageSizeState(n); setPage(1);
+    try { localStorage.setItem("ps_audit_log", String(n)); } catch { /* ignore */ }
+  };
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -93,11 +107,22 @@ export default function AdminAuditLogPage() {
 
   useEffect(() => { setPage(1); }, [filterAction, filterRole, filterActor, filterFrom, filterTo]);
 
+  // ── [BTL-2026-11-02] sorting (rows of the current page) ──
+  const getters = useMemo(() => ({
+    when:   (l: AuditLogEntry) => l.createdAt,
+    actor:  (l: AuditLogEntry) => (l.actorName || l.actorEmail || ""),
+    role:   (l: AuditLogEntry) => l.actorRole || "",
+    action: (l: AuditLogEntry) => actionLabel(l.action),
+    target: (l: AuditLogEntry) => `${l.targetEmail ?? ""} ${l.details ?? ""}`.trim(),
+    result: (l: AuditLogEntry) => (l.success ? 1 : 0),
+  }), []);
+  const tbl = useSortPage(logs, getters, { storageKey: "audit_log_sort", pageSize: 100000 });
+  const sp = { sortKey: tbl.sortKey, sortDir: tbl.sortDir, onSort: tbl.onSort };
+
   const clearFilters = () => {
     setFilterAction(""); setFilterRole(""); setFilterActor(""); setFilterFrom(""); setFilterTo("");
   };
   const hasFilters = !!(filterAction || filterRole || filterActor || filterFrom || filterTo);
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
     <div style={{ padding: "2px 10px 40px", width: "100%", boxSizing: "border-box" }}>
@@ -161,14 +186,17 @@ export default function AdminAuditLogPage() {
         </button>
       </div>
 
-      <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden" }}>
+      <Pager page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={setPageSize}/>
+      <div id="audit-log-wrap" style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: "#0a2540" }}>
-              {["When", "Actor", "Role", "Action", "Target / Details", "Result"].map((h) => (
-                <th key={h} style={{ padding: "10px 14px", textAlign: "left", color: "#94a3b8",
-                  fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
-              ))}
+              <SortTh k="when"   label="When"             style={TH_STYLE} {...sp}/>
+              <SortTh k="actor"  label="Actor"            style={TH_STYLE} {...sp}/>
+              <SortTh k="role"   label="Role"             style={TH_STYLE} {...sp}/>
+              <SortTh k="action" label="Action"           style={TH_STYLE} {...sp}/>
+              <SortTh k="target" label="Target / Details" style={TH_STYLE} {...sp}/>
+              <SortTh k="result" label="Result"           style={TH_STYLE} {...sp}/>
             </tr>
           </thead>
           <tbody>
@@ -178,7 +206,7 @@ export default function AdminAuditLogPage() {
               <tr><td colSpan={6} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontStyle: "italic" }}>
                 No activity matches these filters.
               </td></tr>
-            ) : logs.map((l, i) => (
+            ) : tbl.sorted.map((l, i) => (
               <tr key={l.id} style={{ background: i % 2 === 0 ? "#fff" : "#f8fafc", borderBottom: "1px solid #f1f5f9" }}>
                 <td style={{ padding: "9px 14px", whiteSpace: "nowrap", color: "#6b7280", fontSize: 12 }}>
                   {fmtDate(l.createdAt)}
@@ -208,22 +236,10 @@ export default function AdminAuditLogPage() {
           </tbody>
         </table>
       </div>
-
+      {total > pageSize && <Pager page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={setPageSize} scrollTo="#audit-log-wrap"/>}
       {total > 0 && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14, fontSize: 12, color: "#6b7280" }}>
-          <span>{total} total event{total !== 1 ? "s" : ""} · page {page} of {totalPages}</span>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}
-              style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #e2e8f0",
-                background: page <= 1 ? "#f8fafc" : "#fff", cursor: page <= 1 ? "not-allowed" : "pointer", fontSize: 12 }}>
-              ← Prev
-            </button>
-            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
-              style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #e2e8f0",
-                background: page >= totalPages ? "#f8fafc" : "#fff", cursor: page >= totalPages ? "not-allowed" : "pointer", fontSize: 12 }}>
-              Next →
-            </button>
-          </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: "#9ca3af" }}>
+          Sorting applies to the rows shown on this page. Use the filters above to narrow the full log.
         </div>
       )}
     </div>

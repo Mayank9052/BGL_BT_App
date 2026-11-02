@@ -2,10 +2,13 @@
 // Activity-wise Approved vs Actual (Leads / Retail / Budget / CPL / CAC) + CN status.
 // Only APPROVED proposals. Rows are scoped by the backend:
 //   Checker / Admin / Final Approver → all · RSM/TSM/Commando → mapped dealers · Dealer → own.
+// [BTL-2026-11-02] Every header sortable (click ▲ → ▼ → off) + pagination (10/25/50/100).
+//                  KPIs and Excel cover ALL filtered rows; Excel follows the on-screen sort order.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMsal } from "@azure/msal-react";
 import * as XLSX from "xlsx";
 import { fetchCnReport, CN_STATUS_META, type CnReportRow, type CnStatus } from "../services/cnService";
+import { useSortPage, SortTh, Pager } from "../components/TableTools";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const CY = new Date().getFullYear();
@@ -15,6 +18,8 @@ const STATUSES: ("All" | CnStatus)[] = ["All","NotStarted","SentForRsmApproval",
 const inr = (v: number | null | undefined) => (v == null ? "—" : "₹" + Math.round(v).toLocaleString("en-IN"));
 const lakh = (v: number) => v >= 1_00_000 ? `₹${(v / 1_00_000).toFixed(2)} L` : inr(v);
 const achColor = (p: number) => (p >= 90 ? "#166534" : p >= 60 ? "#92400e" : "#991b1b");
+
+const TH_STYLE = { color: "#e2e8f0", fontSize: 10 } as const;
 
 export default function CnTrackerPage() {
   const { instance, accounts } = useMsal();
@@ -44,6 +49,24 @@ export default function CnTrackerPage() {
       [r.dealerName, r.activityName, r.tokenNumber, r.rsmName, r.state, r.cnNumber ?? ""].join(" ").toLowerCase().includes(q));
   }, [rows, search]);
 
+  // ── [BTL-2026-11-02] sorting + pagination ──
+  const getters = useMemo(() => ({
+    token:    (r: CnReportRow) => r.tokenNumber,
+    dealer:   (r: CnReportRow) => r.dealerName,
+    period:   (r: CnReportRow) => (Number(r.year) || 0) * 100 + MONTHS.indexOf(r.month),
+    activity: (r: CnReportRow) => r.activityName,
+    rsm:      (r: CnReportRow) => r.rsmName,
+    leads:    (r: CnReportRow) => r.leadsAchievementPct,
+    retail:   (r: CnReportRow) => r.retailAchievementPct,
+    budget:   (r: CnReportRow) => r.actualBudget ?? null,
+    cpl:      (r: CnReportRow) => r.actualCpl ?? null,
+    cac:      (r: CnReportRow) => r.actualCac ?? null,
+    docs:     (r: CnReportRow) => r.photoCount + r.vendorInvoiceCount + (r.hasFinalInvoice ? 1 : 0),
+    status:   (r: CnReportRow) => CN_STATUS_META[r.cnStatus]?.label ?? r.cnStatus,
+  }), []);
+  const t  = useSortPage(filtered, getters, { storageKey: "cn_tracker", pageSize: 25, resetOn: [month, year, status, search] });
+  const sp = { sortKey: t.sortKey, sortDir: t.sortDir, onSort: t.onSort };
+
   const totals = useMemo(() => {
     const t = filtered.reduce((s, r) => ({
       apLeads: s.apLeads + r.approvedLeads, acLeads: s.acLeads + r.actualLeads,
@@ -57,14 +80,15 @@ export default function CnTrackerPage() {
   }, [filtered]);
 
   const exportExcel = () => {
+    const src = t.sorted;   // all filtered rows, in the on-screen sort order
     // Sheet 1 — the 7-field Post-Activity Format (Actual)
-    const fmt = filtered.map((r) => ({
+    const fmt = src.map((r) => ({
       "Dealer Name": r.dealerName, "Activity Name": r.activityName,
       "Total Leads": r.actualLeads, "Total Retail": r.actualRetail,
       "Total Budget": r.actualBudget ?? "", "CPL": r.actualCpl ?? "", "CAC": r.actualCac ?? "",
     }));
     // Sheet 2 — Approved vs Actual with CN status
-    const detail = filtered.map((r) => ({
+    const detail = src.map((r) => ({
       Token: r.tokenNumber, Dealer: r.dealerName, State: r.state, Month: r.month, Year: r.year, RSM: r.rsmName,
       Activity: r.activityName, Category: r.category ?? "",
       "Approved Leads": r.approvedLeads, "Actual Leads": r.actualLeads, "Leads Ach %": r.leadsAchievementPct,
@@ -129,20 +153,31 @@ export default function CnTrackerPage() {
       {error && <div style={{ padding: 14, background: "#fef2f2", color: "#991b1b", borderRadius: 8 }}>⚠ {error}</div>}
 
       {!loading && !error && (
-        <div style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 10, background: "#fff" }}>
+        <>
+        <Pager page={t.page} pageSize={t.pageSize} total={t.total} onPage={t.setPage} onPageSize={t.setPageSize}/>
+        <div id="cn-tracker-wrap" style={{ overflowX: "auto", border: "1px solid #e2e8f0", borderRadius: 10, background: "#fff" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 1350 }}>
             <thead>
               <tr style={{ background: "#0a2540" }}>
-                {["Token","Dealer","Month","Activity","RSM","Leads A / P","Retail A / P","Budget Inv / Appr","CPL A / P","CAC A / P","Docs","CN Status"].map((h) => (
-                  <th key={h} style={{ padding: "8px 10px", color: "#e2e8f0", fontSize: 10, textAlign: "left", whiteSpace: "nowrap" }}>{h}</th>
-                ))}
+                <SortTh k="token"    label="Token"             style={TH_STYLE} {...sp}/>
+                <SortTh k="dealer"   label="Dealer"            style={TH_STYLE} {...sp}/>
+                <SortTh k="period"   label="Month"             style={TH_STYLE} {...sp}/>
+                <SortTh k="activity" label="Activity"          style={TH_STYLE} {...sp}/>
+                <SortTh k="rsm"      label="RSM"               style={TH_STYLE} {...sp}/>
+                <SortTh k="leads"    label="Leads A / P"       style={TH_STYLE} {...sp}/>
+                <SortTh k="retail"   label="Retail A / P"      style={TH_STYLE} {...sp}/>
+                <SortTh k="budget"   label="Budget Inv / Appr" style={TH_STYLE} {...sp}/>
+                <SortTh k="cpl"      label="CPL A / P"         style={TH_STYLE} {...sp}/>
+                <SortTh k="cac"      label="CAC A / P"         style={TH_STYLE} {...sp}/>
+                <SortTh k="docs"     label="Docs"              style={TH_STYLE} {...sp}/>
+                <SortTh k="status"   label="CN Status"         style={TH_STYLE} {...sp}/>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 && (
                 <tr><td colSpan={12} style={{ padding: 30, textAlign: "center", color: "#94a3b8" }}>No approved activities for these filters.</td></tr>
               )}
-              {filtered.map((r, i) => {
+              {t.pageRows.map((r, i) => {
                 const meta = CN_STATUS_META[r.cnStatus];
                 return (
                   <tr key={r.activityId} style={{ background: i % 2 ? "#f8fafc" : "#fff", borderBottom: "1px solid #f1f5f9" }}>
@@ -167,10 +202,12 @@ export default function CnTrackerPage() {
             </tbody>
           </table>
         </div>
+        {t.total > t.pageSize && <Pager page={t.page} pageSize={t.pageSize} total={t.total} onPage={t.setPage} onPageSize={t.setPageSize} scrollTo="#cn-tracker-wrap"/>}
+        </>
       )}
       <p style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>
         A = Actual, P = Approved (planned). Budget = BGauss share; Actual budget = amount on the dealer's invoice in BGauss's name.
-        Actual leads/retail come from the Post-Activity daily entries.
+        Actual leads/retail come from the Post-Activity daily entries. Leads / Retail columns sort by achievement %.
       </p>
     </div>
   );

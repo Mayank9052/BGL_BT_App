@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { fetchMyDealerProposals, type ProposalResponse } from "../services/proposalService";
 import { getDealerToken } from "../services/dealerAuthService";
 import * as XLSX from "xlsx";
+import { useSortPage, SortTh, Pager } from "../components/TableTools";   // [BTL-2026-11-02]
 import "./DealerDashboard.css";
 import CnPanel from "../components/CnPanel";
 import DailyHistoryPanel, {
@@ -311,6 +312,37 @@ export default function DealerDashboard() {
 
   const hasFilter = activeFilter !== "All" || monthFilter !== "All" || yearFilter !== "All" || dealerFilter !== "All";
   const clearAll = () => { setActiveFilter("All"); setMonthFilter("All"); setYearFilter("All"); setDealerFilter("All"); setSearch(""); };
+
+  // ── [BTL-2026-11-02] sorting + pagination — default order: newest first; click a header ▲ → ▼ → off ──
+  const propGetters = useMemo(() => ({
+    token:      (p: ProposalResponse) => p.tokenNumber ?? "",
+    dealer:     (p: ProposalResponse) => p.dealerName ?? "",
+    month:      (p: ProposalResponse) => (Number((p as any).year) || 0) * 100 + MONTHS.indexOf(p.month),
+    year:       (p: ProposalResponse) => Number((p as any).year) || null,
+    submitter:  (p: ProposalResponse) => p.submittedByDisplayName || p.submittedBy || "",
+    activities: (p: ProposalResponse) => p.activities.map((a) => a.activityType).join(", "),
+    budget:     (p: ProposalResponse) => p.totalBudget,
+    retail:     (p: ProposalResponse) => p.totalRetailTarget,
+    lead:       (p: ProposalResponse) => p.totalLeadTarget,
+    status:     (p: ProposalResponse) => p.status,
+    date:       (p: ProposalResponse) => p.createdAt ?? "",
+  }), []);
+  const byNewest = (list: ProposalResponse[]) => [...list].sort((a, b) =>
+    new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
+  const sortedByDate = useMemo(() => byNewest(filtered), [filtered]);
+  const pTbl = useSortPage(sortedByDate, propGetters,
+    { storageKey: "dealer_proposals", pageSize: 25, resetOn: [activeFilter, monthFilter, yearFilter, dealerFilter, search] });
+  const pSp = { sortKey: pTbl.sortKey, sortDir: pTbl.sortDir, onSort: pTbl.onSort };
+  // Team-member history (modal) — same sorting + pagination
+  const teamHistRows = useMemo(() => {
+    if (!teamHistoryOpen) return [] as ProposalResponse[];
+    const n = (s?: string | null) => (s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const field = (p: ProposalResponse) =>
+      teamHistoryOpen.role === "RSM" ? p.rsmName : teamHistoryOpen.role === "TSM" ? (p as any).tsmName : p.commandoName;
+    return byNewest(proposals.filter((p) => n(field(p)) === n(teamHistoryOpen.name)));
+  }, [proposals, teamHistoryOpen]);
+  const thTbl = useSortPage(teamHistRows, propGetters, { storageKey: "dealer_team_history", pageSize: 25, resetOn: [teamHistoryOpen] });
+  const thSp = { sortKey: thTbl.sortKey, sortDir: thTbl.sortDir, onSort: thTbl.onSort };
 
   // ── Stats ─────────────────────────────────────────────────────────────────
   const src = hasFilter ? baseFiltered : proposals;
@@ -889,19 +921,18 @@ export default function DealerDashboard() {
                     <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                       <thead>
                         <tr style={{ background:"#0a2540" }}>
-                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Token</th>
-                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Month</th>
-                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Year</th>
-                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Status</th>
-                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"right", fontSize:10 }}>Budget</th>
-                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"right", fontSize:10 }}>Retail</th>
-                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"right", fontSize:10 }}>Lead</th>
-                          <th style={{ padding:"8px 10px", color:"#e2e8f0", textAlign:"left", fontSize:10 }}>Date</th>
+                          <SortTh k="token"  label="Token"  style={{ color:"#e2e8f0", fontSize:10 }} {...thSp}/>
+                          <SortTh k="month"  label="Month"  style={{ color:"#e2e8f0", fontSize:10 }} {...thSp}/>
+                          <SortTh k="year"   label="Year"   style={{ color:"#e2e8f0", fontSize:10 }} {...thSp}/>
+                          <SortTh k="status" label="Status" style={{ color:"#e2e8f0", fontSize:10 }} {...thSp}/>
+                          <SortTh k="budget" label="Budget" align="right" style={{ color:"#e2e8f0", fontSize:10 }} {...thSp}/>
+                          <SortTh k="retail" label="Retail" align="right" style={{ color:"#e2e8f0", fontSize:10 }} {...thSp}/>
+                          <SortTh k="lead"   label="Lead"   align="right" style={{ color:"#e2e8f0", fontSize:10 }} {...thSp}/>
+                          <SortTh k="date"   label="Date"   style={{ color:"#e2e8f0", fontSize:10 }} {...thSp}/>
                         </tr>
                       </thead>
                       <tbody>
-                        {[...teamProposals].sort((a,b) => new Date(b.createdAt??0).getTime()-new Date(a.createdAt??0).getTime())
-                          .map((p, i) => (
+                        {thTbl.pageRows.map((p, i) => (
                           <tr key={p.id} style={{ background:i%2===0?"#fff":"#f8fafc", borderBottom:"1px solid #f1f5f9",
                               cursor:"pointer" }}
                             onClick={() => { setTeamHistoryOpen(null); openModal(p); }}>
@@ -921,6 +952,7 @@ export default function DealerDashboard() {
                     </table>
                   </div>
                 )}
+                {thTbl.total > 0 && <Pager page={thTbl.page} pageSize={thTbl.pageSize} total={thTbl.total} onPage={thTbl.setPage} onPageSize={thTbl.setPageSize}/>}
                 <p style={{ fontSize:11, color:"#9ca3af", marginTop:12 }}>
                   Click any row to open that proposal's full detail.
                 </p>
@@ -1005,23 +1037,25 @@ export default function DealerDashboard() {
             )}
           </div>
         ) : (
-          <div className="dash-table-wrap">
+          <>
+          <Pager page={pTbl.page} pageSize={pTbl.pageSize} total={pTbl.total} onPage={pTbl.setPage} onPageSize={pTbl.setPageSize}/>
+          <div className="dash-table-wrap" id="dealer-proposals-wrap">
             <table className="dash-table">
               <thead><tr>
-                <th>Token</th>
-                {showDealerCol && <th>Dealer</th>}
-                <th>Month</th>
-                <th>Year</th>
-                <th>Submitted By</th>
-                <th>Activities</th>
-                <th>Budget</th>
-                <th>Retail</th>
-                <th>Status</th>
-                <th>Date</th>
+                <SortTh k="token" label="Token" {...pSp}/>
+                {showDealerCol && <SortTh k="dealer" label="Dealer" {...pSp}/>}
+                <SortTh k="month" label="Month" {...pSp}/>
+                <SortTh k="year" label="Year" {...pSp}/>
+                <SortTh k="submitter" label="Submitted By" {...pSp}/>
+                <SortTh k="activities" label="Activities" {...pSp}/>
+                <SortTh k="budget" label="Budget" {...pSp}/>
+                <SortTh k="retail" label="Retail" {...pSp}/>
+                <SortTh k="status" label="Status" {...pSp}/>
+                <SortTh k="date" label="Date" {...pSp}/>
                 <th>Action</th>
               </tr></thead>
               <tbody>
-                {[...filtered].sort((a,b) => new Date(b.createdAt??0).getTime()-new Date(a.createdAt??0).getTime()).map(p => (
+                {pTbl.pageRows.map(p => (
                   <tr key={p.id} style={{ cursor:"pointer", background:p.status==="NeedsRevision"?"#fffbeb":undefined }}
                     onClick={() => openModal(p)}>
                     <td style={{ fontFamily:"monospace",fontSize:11,color:"#1e3a5f",fontWeight:600 }}>{p.tokenNumber??"—"}</td>
@@ -1061,6 +1095,8 @@ export default function DealerDashboard() {
               </tbody>
             </table>
           </div>
+          {pTbl.total > pTbl.pageSize && <Pager page={pTbl.page} pageSize={pTbl.pageSize} total={pTbl.total} onPage={pTbl.setPage} onPageSize={pTbl.setPageSize} scrollTo="#dealer-proposals-wrap"/>}
+          </>
         )}
       </div>
 
