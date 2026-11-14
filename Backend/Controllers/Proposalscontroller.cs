@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using BGL_BT_App.Backend.Data;
 using BGL_BT_App.Backend.DTOs;
 using BGL_BT_App.Backend.Models;
@@ -1028,16 +1028,19 @@ public class ProposalsController : ControllerBase
     [HttpGet("forward-summary/status")]
     public async Task<IActionResult> ForwardSummaryStatus()
     {
-        var t = ProposalsTable();
+                var t = ProposalsTable();
         try
         {
-            var row = (await _db.Database.SqlQueryRaw<ForwardSummaryStatusRow>($@"
+            // [BTL-2026-11-14] SQL built in a variable first (no EF1002). Only the table name from
+            // the EF model is inserted — no user input in this query.
+            var sql = $@"
                 SELECT
                   SUM(CASE WHEN Status = 'Pending' AND CheckedByEmail IS NOT NULL AND ISNULL(DigestSent, 0) = 0 THEN 1 ELSE 0 END) AS PendingMail,
                   SUM(CASE WHEN Status = 'Pending' AND CheckedByEmail IS NOT NULL THEN 1 ELSE 0 END) AS WithApprover,
                   CAST(MAX(DigestSentAt) AS datetimeoffset) AS LastSentAt,
                   (SELECT COUNT(*) FROM {t} x WHERE x.DigestSentAt = (SELECT MAX(DigestSentAt) FROM {t})) AS LastBatch
-                FROM {t}").ToListAsync()).FirstOrDefault();
+                FROM {t}";
+            var row = (await _db.Database.SqlQueryRaw<ForwardSummaryStatusRow>(sql).ToListAsync()).FirstOrDefault();
             return Ok(new
             {
                 pendingMail  = row?.PendingMail ?? 0,
@@ -1061,9 +1064,11 @@ public class ProposalsController : ControllerBase
     public async Task<IActionResult> SendPendingSummary()
     {
         var t = ProposalsTable();
-        var ids = await _db.Database.SqlQueryRaw<Guid>($@"
+        // [BTL-2026-11-14] SQL built in a variable first (no EF1002). Only the EF table name is inserted.
+        var sql = $@"
             SELECT Id AS [Value] FROM {t}
-            WHERE Status = 'Pending' AND CheckedByEmail IS NOT NULL AND ISNULL(DigestSent, 0) = 0").ToListAsync();
+            WHERE Status = 'Pending' AND CheckedByEmail IS NOT NULL AND ISNULL(DigestSent, 0) = 0";
+        var ids = await _db.Database.SqlQueryRaw<Guid>(sql).ToListAsync();
         if (ids.Count == 0)
             return Ok(new { message = "Nothing waiting — every forwarded proposal has already been mailed.", mail = (ForwardSummaryResult?)null });
 
@@ -1102,10 +1107,11 @@ public class ProposalsController : ControllerBase
         {
             try
             {
+                // [BTL-2026-11-14] SQL built in a variable first (no EF1002). Ids are passed as
+                // SQL parameters ({0},{1},…), never inserted as text.
                 var p = string.Join(",", ids.Select((_, i) => $"{{{i}}}"));
-                await _db.Database.ExecuteSqlRawAsync(
-                    $"UPDATE {ProposalsTable()} SET DigestSent = 1, DigestSentAt = SYSUTCDATETIME(), DigestSendError = NULL WHERE Id IN ({p})",
-                    ids.Cast<object>().ToArray());
+                var sql = $"UPDATE {ProposalsTable()} SET DigestSent = 1, DigestSentAt = SYSUTCDATETIME(), DigestSendError = NULL WHERE Id IN ({p})";
+                await _db.Database.ExecuteSqlRawAsync(sql, ids.Cast<object>().ToArray());
             }
             catch (Exception ex) { _logger.LogWarning(ex, "Could not mark proposals as mailed (DigestSent)."); }
         }

@@ -9,6 +9,9 @@ public class UserService : IUserService
 {
     private readonly AppDbContext _db;
 
+    // [BTL-2026-11-14] Roles an Admin can assign. "Accounts" = Accounts team login (Credit Notes, /accounts).
+    private static readonly string[] AllowedRoles = { "Admin", "Manager", "User", "Accounts" };
+
     public UserService(AppDbContext db) => _db = db;
 
     public async Task<UserProfileDto> UpsertFromAzureAsync(
@@ -106,14 +109,16 @@ public class UserService : IUserService
 
         if (dto.Role is not null)
         {
-            var allowedRoles = new[] { "Admin", "Manager", "User" };
-            if (!allowedRoles.Contains(dto.Role))
-                throw new ArgumentException($"'{dto.Role}' is not a valid role.");
+            // [BTL-2026-11-14] Case-insensitive match; always saved in the standard spelling (e.g. "Accounts").
+            var role = AllowedRoles.FirstOrDefault(r =>
+                string.Equals(r, dto.Role.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (role is null)
+                throw new ArgumentException($"'{dto.Role}' is not a valid role. Allowed: {string.Join(", ", AllowedRoles)}.");
 
-            if (user.Email.Equals(actingUserEmail, StringComparison.OrdinalIgnoreCase) && dto.Role != "Admin")
+            if (user.Email.Equals(actingUserEmail, StringComparison.OrdinalIgnoreCase) && role != "Admin")
                 throw new InvalidOperationException("You cannot remove your own Admin role.");
 
-            user.Role = dto.Role;
+            user.Role = role;
         }
 
         if (dto.IsActive is not null)
