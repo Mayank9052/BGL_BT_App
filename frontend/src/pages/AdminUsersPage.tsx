@@ -1,9 +1,10 @@
 // src/pages/AdminUsersPage.tsx
 // [BTL-2026-11-02] Users / Dealer Accounts / Staff / Activity Types — every header sortable
 //                  (click ▲ → ▼ → off) + pagination (10/25/50/100). Search still filters first.
+// [BTL-2026-11-16] Users tab: "Azure AD directory" panel — add people who have never logged in.
 import { useEffect, useState, useRef, useMemo } from "react";
 import { useMsal } from "@azure/msal-react";
-import { fetchAllUsers, updateUser } from "../services/userService";
+import { fetchAllUsers, updateUser, syncDirectory, type DirectorySyncResult } from "../services/userService";   // DIRSYNC
 import {
   fetchAllActivityTypes, createActivityType, toggleActivityType,
   type ActivityType,
@@ -165,6 +166,12 @@ export default function AdminUsersPage() {
   const [draft,     setDraft]     = useState<Partial<UserProfile>>({});
   const [saving,    setSaving]    = useState(false);
   const [error,     setError]     = useState<string | null>(null);
+
+  // DIRSYNC — Azure AD directory sync (Users tab)
+  const [dirLoading, setDirLoading] = useState<"preview" | "apply" | null>(null);
+  const [dirPreview, setDirPreview] = useState<DirectorySyncResult | null>(null);
+  const [dirDone,    setDirDone]    = useState<DirectorySyncResult | null>(null);
+  const [dirError,   setDirError]   = useState<string | null>(null);
 
   // ── Search filters (one per tab) ─────────────────────────────────────────
   const [userSearch,     setUserSearch]     = useState("");
@@ -350,6 +357,27 @@ export default function AdminUsersPage() {
     try { setUsers(await fetchAllUsers(instance)); }
     catch (e) { setError(e instanceof Error ? e.message : "Failed to load users."); }
     finally { setLoading(false); }
+  };
+
+  // DIRSYNC — step 1: dry run (nothing is written), step 2: add the missing users
+  const previewDirectory = async () => {
+    setDirLoading("preview"); setDirError(null); setDirDone(null);
+    try { setDirPreview(await syncDirectory(true, instance)); }
+    catch (e) { setDirError(e instanceof Error ? e.message : "Failed to check the directory."); }
+    finally { setDirLoading(null); }
+  };
+  const applyDirectory = async () => {
+    if (!dirPreview) return;
+    if (!window.confirm(
+      `Add ${dirPreview.toCreate} new user(s) from Azure AD with role "User"?\n` +
+      `Existing users and their roles are not changed.`)) return;
+    setDirLoading("apply"); setDirError(null);
+    try {
+      setDirDone(await syncDirectory(false, instance));
+      setDirPreview(null);
+      await loadUsers();
+    } catch (e) { setDirError(e instanceof Error ? e.message : "Failed to sync the directory."); }
+    finally { setDirLoading(null); }
   };
 
   const loadActivities = async () => {
@@ -627,6 +655,58 @@ export default function AdminUsersPage() {
       {tab === "users" && (
         <>
           {error && <div className="admin-error">{error}</div>}
+
+          {/* DIRSYNC ── Azure AD directory panel ─────────────────────────── */}
+          <div style={{ background:"#fff", border:"1px solid #e2e8f0", borderRadius:10,
+            padding:"12px 16px", marginBottom:12 }}>
+            <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+              <b style={{ fontSize:13, color:"#0a2540" }}>☁ Azure AD directory</b>
+              <span style={{ fontSize:12, color:"#6b7280", flex:"1 1 260px" }}>
+                A person appears in this list only after their first login. Sync adds everyone else
+                in the company directory with role <b>User</b> — existing users are never changed.
+              </span>
+              <button className="admin-edit-btn" onClick={previewDirectory} disabled={!!dirLoading}>
+                {dirLoading === "preview" ? "Checking…" : "🔍 Check for new users"}
+              </button>
+              {dirPreview && dirPreview.toCreate > 0 && (
+                <button className="admin-save-btn" onClick={applyDirectory} disabled={!!dirLoading}>
+                  {dirLoading === "apply" ? "Adding…" : `✓ Add ${dirPreview.toCreate} users`}
+                </button>
+              )}
+            </div>
+
+            {dirError && <div className="admin-error" style={{ marginTop:8 }}>{dirError}</div>}
+
+            {dirPreview && (
+              <div style={{ fontSize:12, color:"#374151", marginTop:8 }}>
+                {dirPreview.totalInDirectory} in directory · <b>{dirPreview.toCreate}</b> new ·{" "}
+                {dirPreview.linked} existing row(s) will be linked · {dirPreview.alreadyPresent} already here
+                {dirPreview.conflicts > 0 && (
+                  <> · <span style={{ color:"#b45309" }}>{dirPreview.conflicts} email conflict(s) skipped</span></>
+                )}
+                {dirPreview.toCreate === 0 && dirPreview.linked === 0 && (
+                  <div style={{ color:"#16a34a", fontWeight:600, marginTop:4 }}>
+                    ✓ Everyone in the directory is already in this list.
+                  </div>
+                )}
+                {dirPreview.newUsers.length > 0 && (
+                  <details style={{ marginTop:6 }}>
+                    <summary style={{ cursor:"pointer" }}>Show new users</summary>
+                    <ul style={{ margin:"6px 0 0", paddingLeft:18, maxHeight:200, overflowY:"auto" }}>
+                      {dirPreview.newUsers.map((u) => <li key={u.email}>{u.displayName} — {u.email}</li>)}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            )}
+
+            {dirDone && (
+              <div className="admin-success" style={{ marginTop:8 }}>
+                ✓ Added {dirDone.toCreate} user(s), linked {dirDone.linked}. Use Edit to set roles (e.g. Accounts).
+              </div>
+            )}
+          </div>
+          {/* DIRSYNC ── end ───────────────────────────────────────────────── */}
 
           <TableSearchBox
             value={userSearch}

@@ -36,6 +36,9 @@ public class AppDbContext : DbContext
 
     // ── NEW: Dealer Mapping (DB-backed replacement for dealerTeamMap.ts) ───────
     public DbSet<DealerTeamMapping> DealerTeamMappings => Set<DealerTeamMapping>();
+    public DbSet<CnEmailLog> CnEmailLogs => Set<CnEmailLog>();
+    public DbSet<AccountsPagePermission> AccountsPagePermissions => Set<AccountsPagePermission>();
+    public DbSet<AccountsAccessAudit>    AccountsAccessAudits    => Set<AccountsAccessAudit>();
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -449,5 +452,10 @@ public class AppDbContext : DbContext
             e.HasIndex(x => x.DealerCode);
             e.HasIndex(x => x.State);
         });
+
+        modelBuilder.Entity<CnEmailLog>().HasIndex(x => x.ActivityId);
+        modelBuilder.Entity<AccountsPagePermission>().HasIndex(x => new { x.UserEmail, x.PageKey }).IsUnique();
+        modelBuilder.Entity<AccountsAccessAudit>().HasIndex(x => x.At);
+        modelBuilder.Entity<AccountsAccessAudit>().HasIndex(x => x.TargetEmail);
     }
 }

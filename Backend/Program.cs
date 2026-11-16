@@ -200,6 +200,8 @@ builder.Services.AddHttpClient<GraphEmailService>();
 builder.Services.AddScoped<IEmailService, GraphEmailService>();
 builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 builder.Services.AddScoped<AuditLogService>();
+builder.Services.AddScoped<AccountsAccessService>();
+builder.Services.AddScoped<AzureDirectorySyncService>();
 // ── CN (Credit Note) workflow ─────────────────────────────────────────────────
 builder.Services.AddHttpClient("cn-graph", c => c.Timeout = TimeSpan.FromMinutes(5));
 builder.Services.AddHttpClient("cn-media", c => c.Timeout = TimeSpan.FromMinutes(2));

@@ -1,25 +1,16 @@
 // Backend/Controllers/CnController.cs
 //
-// CN (Credit Note) workflow — only for activities of APPROVED proposals.
-//
-//   NotStarted / RsmRejected ──Checker: send-to-rsm──► SentForRsmApproval
+//   NotStarted / RsmRejected / AccountsRejected ──Checker: send-to-rsm──► SentForRsmApproval
 //   SentForRsmApproval ──RSM: rsm-decision──► RsmApproved | RsmRejected
-//   RsmApproved ──Dealer/Team/Checker: final-invoice (file + amount)──► RsmApproved (+ invoice)
-//   RsmApproved (+ invoice) ──Checker: send-to-accounts──► SentToAccounts
-//   SentToAccounts ──Accounts team / Checker: mark-processed (CN number)──► CnProcessed
+//   RsmApproved / AccountsRevision ──Dealer/Team/Checker: final-invoice──► (+ invoice)
+//   RsmApproved / AccountsRevision (+ invoice) ──Checker: send-to-accounts──► SentToAccounts
+//   SentToAccounts ──Accounts: accounts-action "pending"──► CnPending
+//   SentToAccounts / CnPending ──Accounts: accounts-action "reject"/"revise"──► AccountsRejected / AccountsRevision
+//   SentToAccounts / CnPending ──Accounts: mark-processed (CN number)──► CnProcessed
+//   CnProcessed ──Accounts: accounts-action "cleared"──► CnCleared
 //
-// Accounts team = Users.Role "Accounts" OR email listed in Cn:AccountsTeamEmails.
-// Accounts can VIEW every CN (Accounts page /accounts) and MARK PROCESSED.
-//
-// Endpoints
-//   GET  /api/cn/me                                   caller's CN rights (isChecker / isAccounts / isViewer)
-//   GET  /api/cn/proposals/{proposalId}               CN state of every activity (+ allowed actions for caller)
-//   POST /api/cn/activities/{id}/send-to-rsm          Checker
-//   POST /api/cn/activities/{id}/rsm-decision         RSM (Checker may record on RSM's behalf, note mandatory)
-//   POST /api/cn/activities/{id}/final-invoice        Dealer / RSM / TSM / Commando / Checker
-//   POST /api/cn/activities/{id}/send-to-accounts     Checker (attachments: BGauss invoice, vendor invoices, photos)
-//   POST /api/cn/activities/{id}/mark-processed       Accounts team / Checker
-//   GET  /api/cn/report?month=&year=&status=&dealer=  Approved vs Actual, activity-wise (scoped to caller)
+// [2026-11-16] Accounts actions, email history, attachments endpoint.
+// [2026-11-16] Page-wise Accounts permissions (View / Download / Full) enforced server-side — see "// ACCESS".
 
 using System.Security.Claims;
 using BGL_BT_App.Backend.Data;
@@ -35,6 +26,9 @@ namespace BGL_BT_App.Backend.Controllers;
 public record CnRsmDecisionDto(bool Approved, string? Note);
 public record CnFinalInvoiceDto(string FileUrl, string? FileName, string? FileType, decimal Amount);
 public record CnMarkProcessedDto(string CnNumber);
+public record CnAccountsActionDto(string Action, string? Note);
+public record CnAttachmentDto(string Id, string Url, string Name, string? Type,
+    DateTimeOffset? CapturedAt, object? Latitude, object? Longitude);
 
 [ApiController]
 [Route("api/cn")]
@@ -45,16 +39,19 @@ public class CnController : ControllerBase
     private readonly CnEmailService        _mail;
     private readonly CnAttachmentLoader    _files;
     private readonly ILogger<CnController> _log;
+    private readonly AccountsAccessService _access;
 
-    public CnController(AppDbContext db, CnEmailService mail, CnAttachmentLoader files, ILogger<CnController> log)
+    public CnController(AppDbContext db, CnEmailService mail, CnAttachmentLoader files,
+                        ILogger<CnController> log, AccountsAccessService access)
     {
-        _db = db; _mail = mail; _files = files; _log = log;
+        _db = db; _mail = mail; _files = files; _log = log; _access = access;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // CALLER + RELATIONSHIPS
     // ═══════════════════════════════════════════════════════════════════════════
-    private sealed record Caller(string Email, string Name, string Role, User? User, bool IsChecker, bool IsViewer, bool IsAccounts);
+    private sealed record Caller(string Email, string Name, string Role, User? User,
+        bool IsChecker, bool IsViewer, bool IsAccounts, bool AccountsOnly);
 
     private async Task<Caller?> GetCallerAsync()
     {
@@ -77,14 +74,17 @@ public class CnController : ControllerBase
 
         var isChecker = _mail.CheckerEmails.Contains(email, StringComparer.OrdinalIgnoreCase)
                         || role.Equals("Admin", StringComparison.OrdinalIgnoreCase);
-        // Accounts team: Role "Accounts" or listed in Cn:AccountsTeamEmails
+        // Accounts team: Role "Accounts", listed in Cn:AccountsTeamEmails, access admin, or added via Access Management
         var isAccounts = _mail.AccountsEmails.Contains(email, StringComparer.OrdinalIgnoreCase)
-                         || role.Equals("Accounts", StringComparison.OrdinalIgnoreCase);
+                         || role.Equals("Accounts", StringComparison.OrdinalIgnoreCase)
+                         || _access.IsAdmin(email)
+                         || await _access.HasAnyRowsAsync(email);
         var isViewer  = isChecker || isAccounts
                         || _mail.ViewerEmails.Contains(email, StringComparer.OrdinalIgnoreCase)
                         || role.Equals("Manager", StringComparison.OrdinalIgnoreCase);
 
-        return new Caller(email, name, role, u, isChecker, isViewer, isAccounts);
+        return new Caller(email, name, role, u, isChecker, isViewer, isAccounts,
+                          AccountsOnly: isAccounts && !isChecker);
     }
 
     private static bool EmailIn(string email, params string?[] lists) =>
@@ -115,6 +115,16 @@ public class CnController : ControllerBase
     private static bool CanView(Caller c, Proposal p, DealerTeamMapping? m) =>
         c.IsViewer || IsTeamFor(c, p, m) || IsDealerFor(c, p, m);
 
+    // ACCESS — page-wise permission check. Only Accounts-only users are restricted;
+    // Checker / Admin / RSM / Dealer flows are unchanged.
+    private async Task<bool> Can(Caller c, string page, string level) =>
+        !c.AccountsOnly || await _access.HasAsync(c.Email, page, level);
+
+    private IActionResult Denied(string what) => StatusCode(403, new
+    {
+        message = $"You do not have {what} access. Ask an Accounts access admin (Ankit Heda / Gaurav Zore).",
+    });
+
     private async Task<(Proposal? P, ProposalActivity? A)> LoadAsync(Guid activityId)
     {
         var a = await _db.Set<ProposalActivity>()
@@ -136,6 +146,10 @@ public class CnController : ControllerBase
         var approved   = p.Status == "Approved";
         var isRsm      = IsRsmFor(c, p, m);
         var canUpload  = IsDealerFor(c, p, m) || IsTeamFor(c, p, m) || c.IsChecker;
+
+        var invoiceStage = s == CnStatus.RsmApproved || s == CnStatus.AccountsRevision;
+        var redoRsmStage = s == CnStatus.NotStarted || s == CnStatus.RsmRejected || s == CnStatus.AccountsRejected;
+        var accountsOpen = s == CnStatus.SentToAccounts || s == CnStatus.CnPending;
 
         var blockers = new List<string>();
         if (!approved)                  blockers.Add("Proposal is not Approved.");
@@ -167,17 +181,23 @@ public class CnController : ControllerBase
             cnProcessedAt          = a.CnProcessedAt,
             cnProcessedByEmail     = a.CnProcessedByEmail,
             cnNumber               = a.CnNumber,
+            cnAccountsNote          = a.CnAccountsNote,
+            cnAccountsActionAt      = a.CnAccountsActionAt,
+            cnAccountsActionByEmail = a.CnAccountsActionByEmail,
+            cnClearedAt             = a.CnClearedAt,
 
             isChecker  = c.IsChecker,
             isAccounts = c.IsAccounts,
-            canSendToRsm = c.IsChecker && (s == CnStatus.NotStarted || s == CnStatus.RsmRejected) && blockers.Count == 0,
-            sendToRsmBlockers = (s == CnStatus.NotStarted || s == CnStatus.RsmRejected) ? blockers : new List<string>(),
+            canSendToRsm = c.IsChecker && redoRsmStage && blockers.Count == 0,
+            sendToRsmBlockers = redoRsmStage ? blockers : new List<string>(),
             canRsmDecide       = approved && s == CnStatus.SentForRsmApproval && (isRsm || c.IsChecker),
             rsmDecideOnBehalf  = !isRsm && c.IsChecker,
-            canUploadFinalInvoice = approved && s == CnStatus.RsmApproved && canUpload,
-            canSendToAccounts  = c.IsChecker && approved && s == CnStatus.RsmApproved
+            canUploadFinalInvoice = approved && invoiceStage && canUpload,
+            canSendToAccounts  = c.IsChecker && approved && invoiceStage
                                  && !string.IsNullOrWhiteSpace(a.CnFinalInvoiceUrl) && (a.CnInvoiceAmount ?? 0) > 0,
-            canMarkProcessed   = (c.IsChecker || c.IsAccounts) && s == CnStatus.SentToAccounts,
+            canMarkProcessed   = (c.IsChecker || c.IsAccounts) && accountsOpen,
+            canAccountsAct     = (c.IsChecker || c.IsAccounts) && accountsOpen,
+            canClear           = (c.IsChecker || c.IsAccounts) && s == CnStatus.CnProcessed,
         };
     }
 
@@ -195,7 +215,7 @@ public class CnController : ControllerBase
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // GET — caller's CN rights (used by the frontend to show the Accounts menu)
+    // GET — caller's CN rights
     // ═══════════════════════════════════════════════════════════════════════════
     [HttpGet("me")]
     public async Task<IActionResult> Me()
@@ -222,12 +242,13 @@ public class CnController : ControllerBase
 
         var m = await MappingFor(p);
         if (!CanView(c, p, m)) return Forbid();
+        if (!await Can(c, "cn-process", "view")) return Denied("Process CN (view)");          // ACCESS
 
         return Ok(p.Activities.Select(a => ToView(c, p, a, m)));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 1 — Checker → RSM
+    // STEP 1 — Checker → RSM  (also after Accounts rejection)
     // ═══════════════════════════════════════════════════════════════════════════
     [HttpPost("activities/{id:guid}/send-to-rsm")]
     public async Task<IActionResult> SendToRsm(Guid id)
@@ -240,7 +261,7 @@ public class CnController : ControllerBase
         if (p is null || a is null) return NotFound(new { message = "Activity not found." });
         if (p.Status != "Approved")
             return BadRequest(new { message = "CN can be raised only for activities of an Approved proposal." });
-        if (a.CnStatus is not (CnStatus.NotStarted or CnStatus.RsmRejected))
+        if (a.CnStatus is not (CnStatus.NotStarted or CnStatus.RsmRejected or CnStatus.AccountsRejected))
             return Conflict(new { message = $"CN is already at '{a.CnStatus}'." });
 
         var r = CnReportBuilder.Build(p, a);
@@ -320,7 +341,7 @@ public class CnController : ControllerBase
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 3 — BGauss-name invoice (file + amount)
+    // STEP 3 — BGauss-name invoice (file + amount); also after Accounts "revise"
     // ═══════════════════════════════════════════════════════════════════════════
     [HttpPost("activities/{id:guid}/final-invoice")]
     public async Task<IActionResult> FinalInvoice(Guid id, [FromBody] CnFinalInvoiceDto dto)
@@ -330,8 +351,8 @@ public class CnController : ControllerBase
 
         var (p, a) = await LoadAsync(id);
         if (p is null || a is null) return NotFound(new { message = "Activity not found." });
-        if (a.CnStatus != CnStatus.RsmApproved)
-            return Conflict(new { message = "The BGauss invoice can be uploaded only after RSM approval and before it is sent to Accounts." });
+        if (a.CnStatus is not (CnStatus.RsmApproved or CnStatus.AccountsRevision))
+            return Conflict(new { message = "The BGauss invoice can be uploaded only after RSM approval (or an Accounts revision request) and before it is sent to Accounts." });
 
         var m = await MappingFor(p);
         if (!(IsDealerFor(c, p, m) || IsTeamFor(c, p, m) || c.IsChecker)) return Forbid();
@@ -364,7 +385,7 @@ public class CnController : ControllerBase
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 4 — Checker → Accounts (with all supporting documents)
+    // STEP 4 — Checker → Accounts (also re-send after "revise")
     // ═══════════════════════════════════════════════════════════════════════════
     [HttpPost("activities/{id:guid}/send-to-accounts")]
     public async Task<IActionResult> SendToAccounts(Guid id)
@@ -375,8 +396,8 @@ public class CnController : ControllerBase
 
         var (p, a) = await LoadAsync(id);
         if (p is null || a is null) return NotFound(new { message = "Activity not found." });
-        if (a.CnStatus != CnStatus.RsmApproved)
-            return Conflict(new { message = $"CN is at '{a.CnStatus}'. It must be RSM-approved first." });
+        if (a.CnStatus is not (CnStatus.RsmApproved or CnStatus.AccountsRevision))
+            return Conflict(new { message = $"CN is at '{a.CnStatus}'. It must be RSM-approved (or revised after Accounts' request) first." });
         if (string.IsNullOrWhiteSpace(a.CnFinalInvoiceUrl) || (a.CnInvoiceAmount ?? 0) <= 0)
             return BadRequest(new { message = "The dealer's invoice in BGauss's name (file + amount) is not uploaded yet." });
         if (_mail.AccountsEmails.Count == 0)
@@ -400,7 +421,7 @@ public class CnController : ControllerBase
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 5 — CN processed (Accounts team, or Checker on their behalf, records the CN number)
+    // STEP 5 — CN processed (from SentToAccounts OR CnPending)
     // ═══════════════════════════════════════════════════════════════════════════
     [HttpPost("activities/{id:guid}/mark-processed")]
     public async Task<IActionResult> MarkProcessed(Guid id, [FromBody] CnMarkProcessedDto dto)
@@ -409,6 +430,7 @@ public class CnController : ControllerBase
         if (c is null) return Unauthorized();
         if (!c.IsChecker && !c.IsAccounts)
             return StatusCode(403, new { message = "Only the Accounts team or the Checker can mark a CN as processed." });
+        if (!await Can(c, "cn-process", "full")) return Denied("Process CN (full)");          // ACCESS
 
         var cnNo = (dto.CnNumber ?? "").Trim();
         if (cnNo.Length == 0 || cnNo.Length > 50)
@@ -416,8 +438,8 @@ public class CnController : ControllerBase
 
         var (p, a) = await LoadAsync(id);
         if (p is null || a is null) return NotFound(new { message = "Activity not found." });
-        if (a.CnStatus != CnStatus.SentToAccounts)
-            return Conflict(new { message = $"CN is at '{a.CnStatus}'. It must be sent to Accounts first." });
+        if (a.CnStatus is not (CnStatus.SentToAccounts or CnStatus.CnPending))
+            return Conflict(new { message = $"CN is at '{a.CnStatus}'. It must be with Accounts first." });
 
         a.CnStatus           = CnStatus.CnProcessed;
         a.CnNumber           = cnNo;
@@ -438,7 +460,129 @@ public class CnController : ControllerBase
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // REPORT — activity-wise Approved vs Actual (approved proposals only)
+    // Accounts actions: pending | reject | revise | cleared
+    // ═══════════════════════════════════════════════════════════════════════════
+    [HttpPost("activities/{id:guid}/accounts-action")]
+    public async Task<IActionResult> AccountsAction(Guid id, [FromBody] CnAccountsActionDto dto)
+    {
+        var c = await GetCallerAsync();
+        if (c is null) return Unauthorized();
+        if (!c.IsChecker && !c.IsAccounts)
+            return StatusCode(403, new { message = "Only the Accounts team or the Checker can do this." });
+        if (!await Can(c, "cn-process", "full")) return Denied("Process CN (full)");          // ACCESS
+
+        var (p, a) = await LoadAsync(id);
+        if (p is null || a is null) return NotFound(new { message = "Activity not found." });
+
+        var act  = (dto.Action ?? "").Trim().ToLowerInvariant();
+        var note = (dto.Note ?? "").Trim();
+        if (note.Length > 1000) note = note[..1000];
+        var from = a.CnStatus;
+
+        CnStatus to;
+        switch (act)
+        {
+            case "pending":
+                if (from != CnStatus.SentToAccounts) return Conflict(new { message = $"CN is at '{from}'." });
+                to = CnStatus.CnPending; break;
+            case "reject":
+            case "revise":
+                if (from is not (CnStatus.SentToAccounts or CnStatus.CnPending)) return Conflict(new { message = $"CN is at '{from}'." });
+                if (note.Length == 0) return BadRequest(new { message = "A reason / note is required." });
+                to = act == "reject" ? CnStatus.AccountsRejected : CnStatus.AccountsRevision; break;
+            case "cleared":
+                if (from != CnStatus.CnProcessed) return Conflict(new { message = "CN must be processed (CN number recorded) before it can be cleared." });
+                to = CnStatus.CnCleared; break;
+            default: return BadRequest(new { message = "Unknown action." });
+        }
+
+        a.CnStatus                = to;
+        a.CnAccountsNote          = note.Length > 0 ? note : a.CnAccountsNote;
+        a.CnAccountsActionAt      = DateTimeOffset.UtcNow;
+        a.CnAccountsActionByEmail = c.Email;
+        if (to == CnStatus.CnCleared) a.CnClearedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync();
+
+        var m       = await MappingFor(p);
+        var r       = CnReportBuilder.Build(p, a);
+        var dealer  = CnEmailService.Split(p.DealerEmail, m?.DealerEmail);
+        var rsm     = CnEmailService.Split(m?.RsmEmail);
+        var team    = CnEmailService.Split(m?.RsmEmail, m?.TsmEmail, m?.CommandoEmail);
+        var checker = _mail.CheckerEmails;
+
+        List<string> toL, ccL;
+        if (act is "reject" or "revise") { toL = checker; ccL = dealer.Concat(rsm).ToList(); }
+        else { toL = dealer.Count > 0 ? dealer : checker; ccL = team.Concat(checker).ToList(); }   // pending / cleared
+
+        var mail = await _mail.SendAccountsActionAsync(act, p, a, r, toL, ccL, note, $"{c.Name} ({c.Email})");
+
+        _log.LogInformation("CN {Act}: accounts action {Action} → {Status} by {By}", a.Id, act, to, c.Email);
+        return Result(c, p, a, m, mail);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Email history (same data for Approver + Accounts dashboards)
+    // ═══════════════════════════════════════════════════════════════════════════
+    [HttpGet("activities/{id:guid}/emails")]
+    public async Task<IActionResult> Emails(Guid id)
+    {
+        var c = await GetCallerAsync();
+        if (c is null) return Unauthorized();
+        if (!await Can(c, "cn-emails", "view")) return Denied("Email History (view)");        // ACCESS
+
+        var (p, a) = await LoadAsync(id);
+        if (p is null || a is null) return NotFound(new { message = "Activity not found." });
+        if (!CanView(c, p, await MappingFor(p))) return Forbid();
+
+        var logs = await _db.CnEmailLogs.AsNoTracking()
+            .Where(x => x.ActivityId == id).OrderByDescending(x => x.SentAt).ToListAsync();
+        return Ok(logs);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // All CN attachments + photos. Counts use the SAME rules as CnReportBuilder
+    // (photo = image/*, invoice doc = not image/video) so "Activity Photos: N" matches the table.
+    // ═══════════════════════════════════════════════════════════════════════════
+    [HttpGet("activities/{id:guid}/attachments")]
+    public async Task<IActionResult> Attachments(Guid id)
+    {
+        var c = await GetCallerAsync();
+        if (c is null) return Unauthorized();
+        if (!await Can(c, "cn-attachments", "view")) return Denied("Attachments (view)");     // ACCESS
+
+        var (p, a) = await LoadAsync(id);
+        if (p is null || a is null) return NotFound(new { message = "Activity not found." });
+        if (!CanView(c, p, await MappingFor(p))) return Forbid();
+
+        var all = a.MediaFiles.OrderBy(x => x.CapturedAt)
+            .Select(x => new CnAttachmentDto(x.Id.ToString(), x.FileUrl, x.FileName, x.FileType,
+                x.CapturedAt, x.Latitude, x.Longitude))
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(a.MediaFileUrl) && all.All(x => x.Url != a.MediaFileUrl))
+            all.Insert(0, new CnAttachmentDto("legacy", a.MediaFileUrl!, a.MediaFileName ?? "Media file",
+                a.MediaFileType, null, null, null));
+
+        var photos   = all.Where(x => CnReportBuilder.IsPhoto(x.Type)).ToList();
+        var videos   = all.Where(x => CnReportBuilder.IsVideo(x.Type)).ToList();
+        var invoices = all.Where(x => CnReportBuilder.IsInvoiceDoc(x.Type)).ToList();
+
+        return Ok(new
+        {
+            photoCount     = photos.Count,
+            photos,
+            videos,
+            vendorInvoices = invoices,
+            finalInvoice   = string.IsNullOrWhiteSpace(a.CnFinalInvoiceUrl) ? null : new
+            {
+                url = a.CnFinalInvoiceUrl, name = a.CnFinalInvoiceFileName,
+                amount = a.CnInvoiceAmount, at = a.CnFinalInvoiceAt,
+            },
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REPORT
     // ═══════════════════════════════════════════════════════════════════════════
     [HttpGet("report")]
     public async Task<IActionResult> Report(
@@ -446,6 +590,7 @@ public class CnController : ControllerBase
     {
         var c = await GetCallerAsync();
         if (c is null) return Unauthorized();
+        if (!await Can(c, "cn-dashboard", "view")) return Denied("Credit Notes Dashboard (view)");   // ACCESS
 
         var query = _db.Proposals.AsNoTracking().Where(p => p.Status == "Approved");
         if (!string.IsNullOrWhiteSpace(month)) query = query.Where(p => p.Month == month);

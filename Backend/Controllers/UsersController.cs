@@ -12,8 +12,13 @@ namespace BGL_BT_App.Backend.Controllers;
 public class UsersController : ControllerBase
 {
     private readonly IUserService _userService;
+    private readonly AzureDirectorySyncService _dirSync;
 
-    public UsersController(IUserService userService) => _userService = userService;
+    public UsersController(IUserService userService, AzureDirectorySyncService dirSync)
+    {
+        _userService = userService;
+        _dirSync = dirSync;
+    }
 
     // GET /api/users — list everyone (frontend restricts the page to Admins,
     // but the API itself just needs a valid signed-in user).
@@ -48,6 +53,25 @@ public class UsersController : ControllerBase
         catch (InvalidOperationException ex)
         {
             return Conflict(new { message = ex.Message });
+        }
+    }
+
+    // POST /api/users/sync-directory?dryRun=true — Admin only.
+    // Adds Azure AD users that have never logged in (role "User"). Existing users' roles / active flags
+    // are never changed. dryRun=true only reports what would be added.
+    [HttpPost("sync-directory")]
+    public async Task<IActionResult> SyncDirectory([FromQuery] bool dryRun = true)
+    {
+        var guard = await EnsureCallerIsAdmin();
+        if (guard.Error is not null) return guard.Error;
+
+        try
+        {
+            return Ok(await _dirSync.SyncAsync(dryRun));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return StatusCode(502, new { message = ex.Message });
         }
     }
 

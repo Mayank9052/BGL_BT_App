@@ -1,15 +1,15 @@
 // src/services/cnService.ts
 // CN (Credit Note) workflow API. Works for Azure (staff) and local (Dealer / RSM / TSM / Commando) logins.
-//  - Pass the MSAL `instance` from Azure pages (ApproverDashboard, CN Tracker).
-//  - Pass nothing from DealerDashboard → the local dealer/staff JWT is used.
+// [2026-11-16] Accounts actions (CN Pending / Reject / Revise / Cleared), email history, attachments.
 import type { IPublicClientApplication } from "@azure/msal-browser";
-import { apiRequest } from "../authConfig";            // same import proposalService.ts uses — adjust path if different
+import { apiRequest } from "../authConfig";
 import { getDealerToken } from "./dealerAuthService";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 export type CnStatus =
-  | "NotStarted" | "SentForRsmApproval" | "RsmApproved" | "RsmRejected" | "SentToAccounts" | "CnProcessed";
+  | "NotStarted" | "SentForRsmApproval" | "RsmApproved" | "RsmRejected" | "SentToAccounts" | "CnProcessed"
+  | "CnPending" | "CnCleared" | "AccountsRejected" | "AccountsRevision";
 
 export interface CnReportRow {
   proposalId: string; activityId: string; tokenNumber: string;
@@ -35,10 +35,14 @@ export interface CnActivityState {
   cnInvoiceAmount: number | null;
   cnSentToAccountsAt: string | null; cnSentToAccountsByEmail: string | null;
   cnProcessedAt: string | null; cnNumber: string | null;
+  // NEW
+  cnAccountsNote: string | null; cnAccountsActionAt: string | null; cnAccountsActionByEmail: string | null;
+  cnClearedAt: string | null;
   isChecker: boolean;
   canSendToRsm: boolean; sendToRsmBlockers: string[];
   canRsmDecide: boolean; rsmDecideOnBehalf: boolean;
   canUploadFinalInvoice: boolean; canSendToAccounts: boolean; canMarkProcessed: boolean;
+  canAccountsAct: boolean; canClear: boolean;   // NEW
 }
 
 export interface CnActionResult {
@@ -47,7 +51,25 @@ export interface CnActionResult {
   mailMessage: string | null;
 }
 
-type MsalLike = IPublicClientApplication | null | undefined;
+export interface CnEmailLogEntry {
+  id: string; action: string; subject: string; toEmails: string; ccEmails: string;
+  bodyHtml: string; attachmentNames: string | null; success: boolean; error: string | null;
+  sentBy: string; sentAt: string;
+}
+export interface CnAttachment {
+  id: string; url: string; name: string; type: string | null;
+  capturedAt: string | null; latitude: number | null; longitude: number | null;
+}
+export interface CnAttachmentsResult {
+  photoCount: number;
+  photos: CnAttachment[];
+  videos: CnAttachment[];
+  vendorInvoices: CnAttachment[];
+  finalInvoice: { url: string; name: string | null; amount: number | null; at: string | null } | null;
+}
+
+export type AccountsAction = "pending" | "reject" | "revise" | "cleared";
+export type MsalLike = IPublicClientApplication | null | undefined;
 
 async function authHeader(instance?: MsalLike): Promise<string> {
   if (instance) {
@@ -68,7 +90,7 @@ async function errText(r: Response): Promise<string> {
   catch { return t || `HTTP ${r.status}`; }
 }
 
-async function call<T>(path: string, method: "GET" | "POST", body: unknown, instance?: MsalLike): Promise<T> {
+export async function call<T>(path: string, method: "GET" | "POST" | "PUT", body: unknown, instance?: MsalLike): Promise<T> {
   const auth = await authHeader(instance);
   const resp = await fetch(`${API_BASE}${path}`, {
     method,
@@ -93,6 +115,16 @@ export const cnSendToAccounts = (activityId: string, instance?: MsalLike) =>
 
 export const cnMarkProcessed = (activityId: string, cnNumber: string, instance?: MsalLike) =>
   call<CnActionResult>(`/api/cn/activities/${activityId}/mark-processed`, "POST", { cnNumber }, instance);
+
+// NEW
+export const cnAccountsAction = (activityId: string, action: AccountsAction, note: string, instance?: MsalLike) =>
+  call<CnActionResult>(`/api/cn/activities/${activityId}/accounts-action`, "POST", { action, note }, instance);
+
+export const fetchCnEmails = (activityId: string, instance?: MsalLike) =>
+  call<CnEmailLogEntry[]>(`/api/cn/activities/${activityId}/emails`, "GET", undefined, instance);
+
+export const fetchCnAttachments = (activityId: string, instance?: MsalLike) =>
+  call<CnAttachmentsResult>(`/api/cn/activities/${activityId}/attachments`, "GET", undefined, instance);
 
 export async function cnUploadFinalInvoice(
   activityId: string, file: File, amount: number, instance?: MsalLike,
@@ -133,4 +165,9 @@ export const CN_STATUS_META: Record<CnStatus, { label: string; bg: string; color
   RsmRejected:        { label: "Rejected by RSM",        bg: "#fee2e2", color: "#991b1b" },
   SentToAccounts:     { label: "With Accounts",          bg: "#ede9fe", color: "#5b21b6" },
   CnProcessed:        { label: "CN processed",           bg: "#dcfce7", color: "#166534" },
+  // NEW
+  CnPending:          { label: "CN Pending",             bg: "#fef3c7", color: "#b45309" },
+  CnCleared:          { label: "CN Cleared",             bg: "#d1fae5", color: "#065f46" },
+  AccountsRejected:   { label: "Rejected by Accounts",   bg: "#fee2e2", color: "#991b1b" },
+  AccountsRevision:   { label: "Revision (Accounts)",    bg: "#ffedd5", color: "#9a3412" },
 };
