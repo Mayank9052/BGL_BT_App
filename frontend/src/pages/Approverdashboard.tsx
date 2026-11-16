@@ -25,6 +25,8 @@ import ForwardSummaryStatus from "../components/ForwardSummaryStatus";
 import MultiSelectDropdown from "../components/MultiSelectDropdown";   // [BTL-2026-10-26c]
 import { fetchDealerStatus, buildInactiveMatcher } from "../services/dealerStatusService";
 import { useSortPage, SortTh, Pager } from "../components/TableTools";   // [BTL-2026-10-28]
+import CnAttachments from "../components/CnAttachments";
+import CnEmailHistory from "../components/CnEmailHistory";
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 // [BTL-2026-10-28] no space after ₹ so the amount never splits onto two lines
@@ -2278,6 +2280,14 @@ export default function ApproverDashboard() {
                                 <div style={{ marginTop:14 }}>
                                   <CnPanel proposalId={selected.id} activityId={a.id} instance={instance}
                                     refreshKey={`${d.proofMedia.length}-${d.invoiceMedia.length}-${a.actualEndDate ?? ""}`} />
+                                </div>
+                                <div style={{ marginTop:10 }}>
+                                  <CnAttachments activityId={a.id} instance={instance}
+                                    refreshKey={`${d.proofMedia.length}-${d.invoiceMedia.length}`} />
+                                </div>
+                                <div style={{ marginTop:10 }}>
+                                  <CnEmailHistory activityId={a.id} instance={instance}
+                                    refreshKey={`${a.actualEndDate ?? ""}`} />
                                 </div>
 
                               </div>

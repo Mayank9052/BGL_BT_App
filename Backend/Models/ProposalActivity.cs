@@ -70,10 +70,18 @@ public class ProposalActivity
     // Step 5: Accounts issued the CN — Checker records the CN number
     public DateTimeOffset? CnProcessedAt { get; set; }
     [MaxLength(50)]
-    public string?         CnNumber           { get; set; }   // NEW
-    public string?         CnProcessedByEmail { get; set; }   // NEW
+    public string?         CnNumber           { get; set; }
+    public string?         CnProcessedByEmail { get; set; }
 
-    public string? DailyData { get; set; }  // JSON: [{date, enquiryPlanned, enquiryActual, ...}]
+    // ── NEW [2026-11-16] Accounts actions (Pending / Reject / Revise / Cleared) ──
+    [MaxLength(1000)]
+    public string?         CnAccountsNote          { get; set; }   // last Accounts note (reject/revise reason)
+    public DateTimeOffset? CnAccountsActionAt      { get; set; }
+    [MaxLength(200)]
+    public string?         CnAccountsActionByEmail { get; set; }
+    public DateTimeOffset? CnClearedAt             { get; set; }
+
+    public string? DailyData { get; set; }
 
     public List<ActivityMedia> MediaFiles { get; set; } = new();
 }
@@ -86,4 +94,9 @@ public enum CnStatus
     RsmRejected         = 3,
     SentToAccounts      = 4,
     CnProcessed         = 5,
+    // ── NEW [2026-11-16] — appended so existing stored values stay valid ──
+    CnPending           = 6,   // Accounts acknowledged, CN to be issued
+    CnCleared           = 7,   // Accounts closed the CN after processing
+    AccountsRejected    = 8,   // Accounts rejected → back to Checker (re-send to RSM)
+    AccountsRevision    = 9,   // Accounts asked for correction → Checker/dealer fix and re-send to Accounts
 }

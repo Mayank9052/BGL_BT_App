@@ -1,18 +1,7 @@
 // Backend/Services/CnEmailService.cs
-//
-// All CN workflow emails. Sent with an APP-ONLY Graph token from the Checker
-// mailbox (Cn:SenderMailbox → Smtp:DigestSenderMailbox → Smtp:ApproverEmail),
-// because RSM / Dealer logins are local and have no Microsoft token.
-// Copy of every mail lands in that mailbox's Sent Items.
-//
-// Attachments:
-//   ≤ 3 MB total  → one /sendMail call (Graph request limit is ~4 MB).
-//   >  3 MB total → draft + upload session (needs Mail.ReadWrite Application permission).
-//                   If that fails, small files are attached and the rest go as portal links.
-//
-// Graph permissions (app registration, admin consent):
-//   Mail.Send      (Application) — already used by password-reset mail
-//   Mail.ReadWrite (Application) — only for attachments > 3 MB total
+// All CN workflow emails. App-only Graph token, sent from the Checker mailbox.
+// [2026-11-16] every mail is now saved in CnEmailLogs (recipients, subject, body, status, time)
+//              + Accounts actions mail (CN Pending / Reject / Revise / Cleared).
 
 using System.Globalization;
 using System.Net;
@@ -22,6 +11,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using BGL_BT_App.Backend.Data;
 using BGL_BT_App.Backend.Helpers;
 using BGL_BT_App.Backend.Models;
 using Microsoft.Extensions.Options;
@@ -31,6 +21,7 @@ namespace BGL_BT_App.Backend.Services;
 public record CnMailAttachment(string FileName, string ContentType, byte[] Content, string? SourceUrl = null);
 public record CnMailLink(string Label, string Url);
 public record CnMailResult(bool Sent, string? Error, List<string> Notes);
+public record CnMailContext(Guid ProposalId, Guid ActivityId, string Action);
 
 internal sealed class CnGraphFileAttachment
 {
@@ -44,7 +35,7 @@ public class CnEmailService
 {
     private const string GraphBase        = "https://graph.microsoft.com/v1.0";
     private const int    SimpleLimitBytes = 3 * 1024 * 1024;
-    private const int    ChunkBytes       = 320 * 1024 * 10;   // must be a multiple of 320 KiB
+    private const int    ChunkBytes       = 320 * 1024 * 10;
     private static readonly CultureInfo Inr = new("en-IN");
     private static readonly TimeSpan    Ist = new(5, 30, 0);
     private static readonly Regex EmailRx = new(@"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$", RegexOptions.Compiled);
@@ -54,11 +45,14 @@ public class CnEmailService
     private readonly SmtpSettings            _smtp;
     private readonly IConfiguration          _cfg;
     private readonly ILogger<CnEmailService> _log;
+    private readonly IServiceScopeFactory    _scopeFactory;   // NEW — to write CnEmailLogs
 
     public CnEmailService(IHttpClientFactory httpFactory, GraphAppTokenService appToken,
-                          IOptions<SmtpSettings> smtp, IConfiguration cfg, ILogger<CnEmailService> log)
+                          IOptions<SmtpSettings> smtp, IConfiguration cfg, ILogger<CnEmailService> log,
+                          IServiceScopeFactory scopeFactory)
     {
         _httpFactory = httpFactory; _appToken = appToken; _smtp = smtp.Value; _cfg = cfg; _log = log;
+        _scopeFactory = scopeFactory;
     }
 
     // ── Configuration ─────────────────────────────────────────────────────────
@@ -100,7 +94,8 @@ public class CnEmailService
             {Button(PortalUrl, "🔍 Review &amp; Approve in Portal")}
             <p style="margin:8px 0 0;font-size:11px;color:#6b7280;">Portal path: Approved proposal → {H(a.ActivityType)} → Post-Activity → Credit Note.</p>
             """);
-        return SendAsync(rsmEmails, new(), Subject("RSM Approval Required", p, a), html);
+        return SendAsync(rsmEmails, new(), Subject("RSM Approval Required", p, a), html,
+            null, new(p.Id, a.Id, "RsmApprovalRequest"));
     }
 
     // Step 2a — RSM approved → Dealer: raise invoice in BGauss's name
@@ -125,7 +120,8 @@ public class CnEmailService
               (enter the invoice amount while uploading).</div>
             {Button(PortalUrl, "📤 Upload BGauss Invoice")}
             """);
-        return SendAsync(dealerEmails, cc, Subject("RSM Approved — Upload BGauss Invoice", p, a), html);
+        return SendAsync(dealerEmails, cc, Subject("RSM Approved — Upload BGauss Invoice", p, a), html,
+            null, new(p.Id, a.Id, "RsmApproved"));
     }
 
     // Step 2b — RSM rejected → Checker (+ Dealer + RSM cc)
@@ -142,7 +138,8 @@ public class CnEmailService
               Checker: re-verify and click <strong>Send for RSM Approval</strong> again.</p>
             {Button(PortalUrl, "Open Portal", "#991B1B")}
             """);
-        return SendAsync(CheckerEmails, cc, Subject("Rejected by RSM", p, a), html);
+        return SendAsync(CheckerEmails, cc, Subject("Rejected by RSM", p, a), html,
+            null, new(p.Id, a.Id, "RsmRejected"));
     }
 
     // Step 3 — BGauss-name invoice uploaded → Checker
@@ -157,7 +154,8 @@ public class CnEmailService
             {PlanVsActual(r, includeActualBudget: true)}
             {Button(PortalUrl, "📧 Verify &amp; Send to Accounts", "#0369a1")}
             """);
-        return SendAsync(CheckerEmails, cc, Subject("BGauss Invoice Received", p, a), html);
+        return SendAsync(CheckerEmails, cc, Subject("BGauss Invoice Received", p, a), html,
+            null, new(p.Id, a.Id, "FinalInvoiceReceived"));
     }
 
     // Step 4 — Checker → Accounts, with all supporting documents attached
@@ -193,7 +191,8 @@ public class CnEmailService
             {linkList}
             <p style="margin:12px 0 0;font-size:11px;color:#6b7280;">Once the CN is issued, please reply with the <strong>CN number</strong> so it can be recorded in the portal.<br/>Portal reference: {H(p.TokenNumber)}</p>
             """);
-        return SendAsync(AccountsEmails, cc, Subject("", p, a), html, attachments);
+        return SendAsync(AccountsEmails, cc, Subject("", p, a), html, attachments,
+            new(p.Id, a.Id, "SentToAccounts"));
     }
 
     // Step 5 — CN processed → Dealer + team
@@ -210,13 +209,75 @@ public class CnEmailService
             </table>
             {InfoTable(p, a)}
             """);
-        return SendAsync(to, cc, Subject($"CN Processed — {a.CnNumber}", p, a), html);
+        return SendAsync(to, cc, Subject($"CN Processed — {a.CnNumber}", p, a), html,
+            null, new(p.Id, a.Id, "CnProcessed"));
+    }
+
+    // ── NEW: Accounts actions — pending | reject | revise | cleared ──────────
+    public Task<CnMailResult> SendAccountsActionAsync(
+        string action, Proposal p, ProposalActivity a, CnReportRow r,
+        List<string> to, List<string> cc, string note, string by)
+    {
+        var (color, title, tag, msg) = action switch
+        {
+            "pending" => ("#b45309", "Credit Note — CN Pending", "CN Pending",
+                "Accounts has acknowledged this CN request. The Credit Note is <strong>pending</strong> and will be issued shortly."),
+            "reject"  => ("#991B1B", "Credit Note — Rejected by Accounts", "Rejected by Accounts",
+                "Accounts has <strong>rejected</strong> this CN request. Checker: please review and re-send for RSM approval after correction."),
+            "revise"  => ("#92400e", "Credit Note — Revision Requested by Accounts", "Revision Requested by Accounts",
+                "Accounts has requested a <strong>revision</strong>. Please correct the invoice / documents in the portal and send to Accounts again."),
+            _         => ("#166534", "Credit Note — Cleared", $"CN Cleared — {a.CnNumber}",
+                "The Credit Note below is now <strong>cleared</strong> by Accounts."),
+        };
+        var noteHtml = string.IsNullOrWhiteSpace(note) ? "" :
+            $"<div style=\"background:#fefce8;border-left:3px solid #f59e0b;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:12px;\"><strong>Accounts note:</strong> {H(note)}</div>";
+        var cnLine = string.IsNullOrWhiteSpace(a.CnNumber) ? "" :
+            $"<table cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;border-collapse:collapse;background:#f0fdf4;border:1px solid #bbf7d0;margin-bottom:12px;font-size:12px;\">{KV("CN number", H(a.CnNumber))}{KV("CN amount", Rs(a.CnInvoiceAmount))}</table>";
+
+        var html = Shell(color, title, p.TokenNumber, $"""
+            <p style="margin:0 0 12px;font-size:13px;">{msg}<br/><span style="color:#6b7280;font-size:11px;">Action by {H(by)} · {D(DateTimeOffset.UtcNow)}</span></p>
+            {noteHtml}{cnLine}
+            {InfoTable(p, a)}
+            {PlanVsActual(r, includeActualBudget: true)}
+            {Button(PortalUrl, "Open Portal", color)}
+            """);
+        return SendAsync(to, cc, Subject(tag, p, a), html, null, new(p.Id, a.Id, "Accounts_" + action));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // CORE SEND
+    // CORE SEND (+ logging)
     // ═══════════════════════════════════════════════════════════════════════════
     private async Task<CnMailResult> SendAsync(
+        List<string> to, List<string> cc, string subject, string html,
+        List<CnMailAttachment>? attachments = null, CnMailContext? ctx = null)
+    {
+        var res = await SendCoreAsync(to, cc, subject, html, attachments);
+        await LogAsync(ctx, subject, html, to, cc, attachments, res);
+        return res;
+    }
+
+    private async Task LogAsync(CnMailContext? ctx, string subject, string html,
+        List<string> to, List<string> cc, List<CnMailAttachment>? atts, CnMailResult r)
+    {
+        if (ctx is null) return;
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.CnEmailLogs.Add(new CnEmailLog
+            {
+                ProposalId = ctx.ProposalId, ActivityId = ctx.ActivityId, Action = ctx.Action,
+                Subject = Trim(subject, 500), BodyHtml = html,
+                ToEmails = string.Join("; ", to), CcEmails = string.Join("; ", cc),
+                AttachmentNames = atts is { Count: > 0 } ? string.Join("; ", atts.Select(x => x.FileName)) : null,
+                Success = r.Sent, Error = r.Error, SentBy = SenderMailbox, SentAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "CN mail log could not be saved"); }
+    }
+
+    private async Task<CnMailResult> SendCoreAsync(
         List<string> to, List<string> cc, string subject, string html, List<CnMailAttachment>? attachments = null)
     {
         var notes  = new List<string>();
@@ -362,7 +423,7 @@ public class CnEmailService
                     var chunk = new ByteArrayContent(a.Content, (int)start, (int)(end - start + 1));
                     chunk.Headers.ContentType  = new MediaTypeHeaderValue("application/octet-stream");
                     chunk.Headers.ContentRange = new ContentRangeHeaderValue(start, end, len);
-                    using var put  = new HttpRequestMessage(HttpMethod.Put, uploadUrl) { Content = chunk }; // pre-authorised URL: no Bearer
+                    using var put  = new HttpRequestMessage(HttpMethod.Put, uploadUrl) { Content = chunk };
                     using var resp = await http.SendAsync(put);
                     if (!resp.IsSuccessStatusCode)
                         throw new InvalidOperationException(
@@ -377,7 +438,7 @@ public class CnEmailService
         }
         catch (Exception ex)
         {
-            await GraphAsync(http, token, HttpMethod.Delete, msgUrl, null);   // remove the orphan draft
+            await GraphAsync(http, token, HttpMethod.Delete, msgUrl, null);
             return (false, ex.Message);
         }
     }
