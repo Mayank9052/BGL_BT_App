@@ -183,8 +183,8 @@ export default function Sidebar({
             </>
           )}
 
-          {/* Reports */}
-          {isReportsUser && (
+          {/* Reports — [BTL-2026-11-17] hidden for Accounts-only users */}
+          {isReportsUser && !accountsOnly && (
             <>
               <div className="sb-divider" />
               {!collapsed && <span className="sb-section-lbl"></span>}

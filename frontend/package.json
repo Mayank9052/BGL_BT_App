@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node -e \"require('fs').rmSync('../Backend/wwwroot/assets',{recursive:true,force:true})\"",
     "build": "tsc && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
