@@ -1,8 +1,12 @@
 // src/components/layout/Sidebar.tsx
+// [BTL-2026-11-17] Accounts section: "Access Management" (/accounts/access) for Accounts users who are
+//                  access admins (as per GET /api/accounts-access/me). Others never see the link.
 // 28.10.2026: Accounts section — "Credit Notes (Accounts)" link for the Accounts team (and Admin).
 //             Accounts-only users see just Accounts + Download Reports.
 import { NavLink, useLocation } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { useMsal } from "@azure/msal-react";
+import { fetchAccessMe } from "../../services/accountsAccessService";
 import "./Sidebar.css";
 
 interface SidebarProps {
@@ -31,6 +35,7 @@ const Icon = ({ name, size = 18 }: { name: string; size?: number }) => {
     case "newproposal": return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>;
     case "analytics":   return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>;
     case "credit":      return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="10" y2="15"/><line x1="14" y1="15" x2="18" y2="15"/></svg>;
+    case "shield":      return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><rect x="9" y="10" width="6" height="5" rx="1"/><path d="M10 10V8.5a2 2 0 0 1 4 0V10"/></svg>;
     case "logout":      return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>;
     case "logs":        return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3h18v4H3z"/><path d="M3 3v18h18V3"/><line x1="7" y1="11" x2="17" y2="11"/><line x1="7" y1="15" x2="17" y2="15"/><line x1="7" y1="19" x2="13" y2="19"/></svg>;
     case "chevron-r":   return <svg style={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9,18 15,12 9,6"/></svg>;
@@ -66,6 +71,18 @@ export default function Sidebar({
 
   // Accounts team member who is not Admin/Manager → only Accounts + Reports
   const accountsOnly = isAccounts && !isAdmin;
+
+  // Access Management link — only for Accounts users who are access admins (server decides)
+  const { instance, accounts } = useMsal();
+  const [accessAdmin, setAccessAdmin] = useState(false);
+  useEffect(() => {
+    if (!isAccounts) { setAccessAdmin(false); return; }
+    let live = true;
+    fetchAccessMe(accounts.length > 0 ? instance : null)
+      .then((m) => live && setAccessAdmin(!!m.isAdmin))
+      .catch(() => live && setAccessAdmin(false));
+    return () => { live = false; };
+  }, [isAccounts, instance, accounts.length]);
 
   useEffect(() => { onMobileClose(); }, [location.pathname]);
 
@@ -149,12 +166,20 @@ export default function Sidebar({
             <>
               {!accountsOnly && <div className="sb-divider" />}
               {!collapsed && <span className="sb-section-lbl">Accounts</span>}
-              <NavLink to="/accounts" className={linkClass}
+              <NavLink to="/accounts" end className={linkClass}
                 title="Credit Notes (Accounts)"
                 onClick={(e) => e.stopPropagation()}>
                 <Icon name="credit" />
                 {!collapsed && <span className="sb-link-label">Credit Notes (Accounts)</span>}
               </NavLink>
+              {accessAdmin && (
+                <NavLink to="/accounts/access" className={linkClass}
+                  title="Access Management (Accounts)"
+                  onClick={(e) => e.stopPropagation()}>
+                  <Icon name="shield" />
+                  {!collapsed && <span className="sb-link-label">Access Management</span>}
+                </NavLink>
+              )}
             </>
           )}
 

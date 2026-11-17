@@ -1,4 +1,6 @@
 // src/pages/AccountsDashboard.tsx
+// [BTL-2026-11-17] Compact one-line KPI strip (all statuses, clickable) + Insights charts
+//                  (status donut, state-wise value, month-wise trend) — every bar / slice filters the table.
 // [BTL-2026-11-16] CN actions, attachments, email history, status filter, Excel export — now with page-wise
 // permissions (View / Download / Full) from Accounts Access Management. The API enforces the same rules.
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -23,6 +25,31 @@ const ALL_STATUS_LABELS = Object.values(STATUS_LABEL);
 const labelOf = (s: CnStatus | string) => STATUS_LABEL[s] ?? s;
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
 const ACTIONABLE: string[] = ["SentToAccounts", "CnPending"];
+
+// KPI strip — order = CN life-cycle on the Accounts side. "pipe" = everything still before Accounts.
+type KpiDef = { key: string; label: string; icon: string; color: string; st: CnStatus[] };
+const PIPE: CnStatus[] = ["NotStarted", "SentForRsmApproval", "RsmApproved", "RsmRejected"];
+const KPIS: KpiDef[] = [
+  { key: "todo",   label: "To process",   icon: "📥", color: "#7c3aed", st: ["SentToAccounts"] },
+  { key: "pend",   label: "CN Pending",   icon: "⏳", color: "#d97706", st: ["CnPending"] },
+  { key: "rev",    label: "Revision",     icon: "↩",  color: "#ea580c", st: ["AccountsRevision"] },
+  { key: "rej",    label: "Rejected",     icon: "✕",  color: "#dc2626", st: ["AccountsRejected"] },
+  { key: "proc",   label: "Processed",    icon: "✓",  color: "#16a34a", st: ["CnProcessed"] },
+  { key: "clear",  label: "CN Cleared",   icon: "🏁", color: "#047857", st: ["CnCleared"] },
+  { key: "pipe",   label: "Pipeline", icon: "🕓", color: "#64748b", st: PIPE },
+];
+// Donut order + colours (all 10 statuses)
+const STATUS_ORDER: CnStatus[] = ["SentToAccounts", "CnPending", "AccountsRevision", "AccountsRejected", "CnProcessed", "CnCleared",
+  "NotStarted", "SentForRsmApproval", "RsmApproved", "RsmRejected"];
+const STATUS_COLOR: Record<string, string> = {
+  SentToAccounts: "#7c3aed", CnPending: "#f59e0b", AccountsRevision: "#ea580c", AccountsRejected: "#dc2626",
+  CnProcessed: "#22c55e", CnCleared: "#047857", NotStarted: "#cbd5e1", SentForRsmApproval: "#94a3b8",
+  RsmApproved: "#60a5fa", RsmRejected: "#f87171",
+};
+const compactInr = (v: number) =>
+  v >= 1_00_00_000 ? `₹${(v / 1_00_00_000).toFixed(2)} Cr` : v >= 1_00_000 ? `₹${(v / 1_00_000).toFixed(1)} L`
+  : v >= 1_000 ? `₹${(v / 1_000).toFixed(0)}K` : `₹${Math.round(v)}`;
+const INSIGHTS_KEY = "acc_insights_open";
 
 const exportColumns = [
   { header: "Token", key: "tokenNumber" }, { header: "Dealer", key: "dealerName" }, { header: "State", key: "state" },
@@ -74,20 +101,54 @@ export default function AccountsDashboard() {
     if (access.can("cn-dashboard", "view")) load(); else setLoading(false);
   }, [access.ready, access.can, load]);
 
-  const count = (...st: CnStatus[]) => rows.filter((r) => st.includes(r.cnStatus));
   const sum = (rs: CnReportRow[]) => rs.reduce((s, r) => s + (r.actualBudget ?? r.approvedBudget), 0);
 
-  const filtered = useMemo(() => {
+  // Filter with an optional dimension left out — charts use it so a chart never filters itself away.
+  const match = useCallback((r: CnReportRow, skip?: "status" | "state" | "month") => {
     const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (statusSel.length && !statusSel.includes(labelOf(r.cnStatus))) return false;
-      if (stateSel.length && !stateSel.includes(r.state)) return false;
-      if (monthSel.length && !monthSel.includes(r.month)) return false;
-      if (yearSel.length && !yearSel.includes(String(r.year))) return false;
-      if (q && ![r.tokenNumber, r.dealerName, r.state, r.activityName, r.rsmName, r.cnNumber ?? ""].join(" ").toLowerCase().includes(q)) return false;
-      return true;
+    if (skip !== "status" && statusSel.length && !statusSel.includes(labelOf(r.cnStatus))) return false;
+    if (skip !== "state" && stateSel.length && !stateSel.includes(r.state)) return false;
+    if (skip !== "month" && monthSel.length && !monthSel.includes(r.month)) return false;
+    if (yearSel.length && !yearSel.includes(String(r.year))) return false;
+    if (q && ![r.tokenNumber, r.dealerName, r.state, r.activityName, r.rsmName, r.cnNumber ?? ""].join(" ").toLowerCase().includes(q)) return false;
+    return true;
+  }, [search, statusSel, stateSel, monthSel, yearSel]);
+
+  const filtered = useMemo(() => rows.filter((r) => match(r)), [rows, match]);
+  // KPI counts follow every filter EXCEPT status (clicking a KPI sets the status)
+  const kpiBase = useMemo(() => rows.filter((r) => match(r, "status")), [rows, match]);
+
+  const [insightsOpen, setInsightsOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem(INSIGHTS_KEY) !== "0"; } catch { return true; }
+  });
+  const toggleInsights = () => setInsightsOpen((v) => {
+    try { localStorage.setItem(INSIGHTS_KEY, v ? "0" : "1"); } catch { /* ignore */ }
+    return !v;
+  });
+
+  const statusChart = useMemo(() => STATUS_ORDER
+    .map((st) => ({ st, n: kpiBase.filter((r) => r.cnStatus === st).length }))
+    .filter((x) => x.n > 0), [kpiBase]);
+
+  const stateChart = useMemo(() => {
+    const m = new Map<string, { n: number; v: number }>();
+    rows.filter((r) => match(r, "state")).forEach((r) => {
+      const k = r.state || "—"; const cur = m.get(k) ?? { n: 0, v: 0 };
+      cur.n++; cur.v += r.actualBudget ?? r.approvedBudget; m.set(k, cur);
     });
-  }, [rows, search, statusSel, stateSel, monthSel, yearSel]);
+    return Array.from(m, ([state, x]) => ({ state, ...x })).sort((a, b) => b.v - a.v).slice(0, 8);
+  }, [rows, match]);
+
+  const monthChart = useMemo(() => {
+    const base = rows.filter((r) => match(r, "month"));
+    return MONTHS.map((m) => {
+      const list = base.filter((r) => r.month === m);
+      return { m, n: list.length, done: list.filter((r) => r.cnStatus === "CnProcessed" || r.cnStatus === "CnCleared").length };
+    }).filter((x) => x.n > 0);
+  }, [rows, match]);
+
+  const toggleIn = (list: string[], v: string, set: (x: string[]) => void) =>
+    set(list.length === 1 && list[0] === v ? [] : [v]);
 
   const getters = useMemo(() => ({
     token: (r: CnReportRow) => r.tokenNumber, dealer: (r: CnReportRow) => r.dealerName, state: (r: CnReportRow) => r.state,
@@ -124,11 +185,7 @@ export default function AccountsDashboard() {
   const dealersInView = new Set(filtered.map((r) => r.dealerName)).size;
 
   const isStatus = (...st: CnStatus[]) => statusSel.length === st.length && st.every((s) => statusSel.includes(labelOf(s)));
-  const Kpi = ({ cls, label, st, list }: { cls: string; label: string; st: CnStatus[]; list: CnReportRow[] }) => (
-    <button className={`acc-kpi acc-kpi--${cls}${isStatus(...st) ? " is-active" : ""}`} onClick={() => setStatusSel(st.map(labelOf))}>
-      <span>{label}</span><b>{list.length}</b><small><Inr value={sum(list)} /></small>
-    </button>
-  );
+  const pickKpi = (st: CnStatus[]) => setStatusSel(isStatus(...st) ? [] : st.map(labelOf));   // 2nd click = back to All
   const closeModal = () => { setOpen(null); load(); };
 
   const Head = (
@@ -136,7 +193,7 @@ export default function AccountsDashboard() {
       <div className="acc-head-text">
         <div className="acc-eyebrow">Accounts</div>
         <h1>Credit Notes</h1>
-        <p>Credit notes sent by the Checker. Verify invoice and actuals, then mark CN Pending, Reject, Request Revision, enter the CN number, and finally mark it Cleared — every step is mailed and logged.</p>
+        {/* <p>Credit notes sent by the Checker. Verify invoice and actuals, then mark CN Pending, Reject, Request Revision, enter the CN number, and finally mark it Cleared — every step is mailed and logged.</p> */}
       </div>
       <div className="acc-head-actions">
         {access.isAdmin && <Link className="acc-link-btn" to="/accounts/access">🔐 Access Management</Link>}
@@ -160,14 +217,122 @@ export default function AccountsDashboard() {
     <div className="acc-page">
       {Head}
 
-      <div className="acc-kpis">
-        <Kpi cls="amber" label="To process" st={["SentToAccounts"]} list={count("SentToAccounts")} />
-        <Kpi cls="amber" label="CN Pending" st={["CnPending"]} list={count("CnPending")} />
-        <Kpi cls="green" label="Processed" st={["CnProcessed"]} list={count("CnProcessed")} />
-        <Kpi cls="green" label="CN Cleared" st={["CnCleared"]} list={count("CnCleared")} />
-        <button className={`acc-kpi acc-kpi--navy${statusSel.length === 0 ? " is-active" : ""}`} onClick={() => setStatusSel([])}>
-          <span>All</span><b>{rows.length}</b><small>{dealersInView} dealer{dealersInView === 1 ? "" : "s"} in view</small>
+      {/* ── KPI strip: one line, compact, every chip filters the table (click again = All) ── */}
+      <div className="acc-kpis" role="tablist" aria-label="Credit note status">
+        {KPIS.map((k) => {
+          const list = kpiBase.filter((r) => k.st.includes(r.cnStatus));
+          const active = isStatus(...k.st);
+          return (
+            <button key={k.key} type="button" role="tab" aria-selected={active}
+              className={`acc-kpi${active ? " is-active" : ""}`} style={{ ["--kpi" as string]: k.color }}
+              onClick={() => pickKpi(k.st)} title={`${k.label}: ${list.length} · ${compactInr(sum(list))} — click to filter`}>
+              <span className="acc-kpi-ico" aria-hidden="true">{k.icon}</span>
+              <span className="acc-kpi-txt">
+                <span className="acc-kpi-lbl">{k.label}</span>
+                <span className="acc-kpi-val"><b>{list.length}</b><small>{compactInr(sum(list))}</small></span>
+              </span>
+            </button>
+          );
+        })}
+        <button type="button" role="tab" aria-selected={statusSel.length === 0}
+          className={`acc-kpi acc-kpi--all${statusSel.length === 0 ? " is-active" : ""}`} style={{ ["--kpi" as string]: "#0a2540" }}
+          onClick={() => setStatusSel([])} title="Show every status">
+          <span className="acc-kpi-ico" aria-hidden="true">Σ</span>
+          <span className="acc-kpi-txt">
+            <span className="acc-kpi-lbl">All</span>
+            <span className="acc-kpi-val"><b>{kpiBase.length}</b><small>{dealersInView} dealer{dealersInView === 1 ? "" : "s"}</small></span>
+          </span>
         </button>
+      </div>
+
+      {/* ── Insights: status donut · state-wise value · month-wise trend (all clickable) ── */}
+      <div className="acc-insights">
+        <button type="button" className="acc-insights-toggle" onClick={toggleInsights} aria-expanded={insightsOpen}>
+          📊 Insights <span>{insightsOpen ? "Hide ▲" : "Show ▼"}</span>
+        </button>
+        {insightsOpen && (
+          <div className="acc-charts">
+            {/* Donut — CN status mix */}
+            <div className="acc-chart">
+              <div className="acc-chart-title">Status mix <small>click a slice</small></div>
+              {statusChart.length === 0 ? <div className="acc-chart-empty">No data</div> : (() => {
+                const total = statusChart.reduce((a, x) => a + x.n, 0);
+                const R = 42, C = 2 * Math.PI * R; let off = 0;
+                return (
+                  <div className="acc-donut-wrap">
+                    <svg viewBox="0 0 120 120" className="acc-donut" role="img" aria-label="CN status mix">
+                      <circle cx="60" cy="60" r={R} fill="none" stroke="#f1f5f9" strokeWidth="16" />
+                      {statusChart.map((x) => {
+                        const len = (x.n / total) * C; const dash = `${len} ${C - len}`;
+                        const el = (
+                          <circle key={x.st} cx="60" cy="60" r={R} fill="none" stroke={STATUS_COLOR[x.st]}
+                            strokeWidth={isStatus(x.st) ? 20 : 16} strokeDasharray={dash} strokeDashoffset={-off}
+                            transform="rotate(-90 60 60)" className="acc-donut-seg"
+                            onClick={() => pickKpi([x.st])}>
+                            <title>{`${labelOf(x.st)}: ${x.n}`}</title>
+                          </circle>);
+                        off += len; return el;
+                      })}
+                      <text x="60" y="57" textAnchor="middle" className="acc-donut-num">{total}</text>
+                      <text x="60" y="72" textAnchor="middle" className="acc-donut-lbl">activities</text>
+                    </svg>
+                    <ul className="acc-legend">
+                      {statusChart.map((x) => (
+                        <li key={x.st}>
+                          <button type="button" className={isStatus(x.st) ? "is-active" : ""} onClick={() => pickKpi([x.st])}>
+                            <i style={{ background: STATUS_COLOR[x.st] }} />{labelOf(x.st)}<b>{x.n}</b>
+                          </button>
+                        </li>))}
+                    </ul>
+                  </div>);
+              })()}
+            </div>
+
+            {/* Bars — value by state */}
+            <div className="acc-chart">
+              <div className="acc-chart-title">Value by state <small>top 8 · click a bar</small></div>
+              {stateChart.length === 0 ? <div className="acc-chart-empty">No data</div> : (() => {
+                const max = Math.max(...stateChart.map((x) => x.v), 1);
+                return (
+                  <div className="acc-hbars">
+                    {stateChart.map((x) => {
+                      const on = stateSel.length === 1 && stateSel[0] === x.state;
+                      return (
+                        <button key={x.state} type="button" className={`acc-hbar${on ? " is-active" : ""}`}
+                          onClick={() => toggleIn(stateSel, x.state, setStateSel)} title={`${x.state}: ${x.n} CN · ${compactInr(x.v)}`}>
+                          <span className="acc-hbar-lbl">{x.state}</span>
+                          <span className="acc-hbar-track"><span style={{ width: `${Math.max(4, (x.v / max) * 100)}%` }} /></span>
+                          <span className="acc-hbar-val">{compactInr(x.v)}<small>{x.n}</small></span>
+                        </button>);
+                    })}
+                  </div>);
+              })()}
+            </div>
+
+            {/* Columns — month-wise count, processed part highlighted */}
+            <div className="acc-chart">
+              <div className="acc-chart-title">Month-wise <small><i className="acc-key acc-key--all" />total <i className="acc-key acc-key--done" />processed / cleared</small></div>
+              {monthChart.length === 0 ? <div className="acc-chart-empty">No data</div> : (() => {
+                const max = Math.max(...monthChart.map((x) => x.n), 1);
+                return (
+                  <div className="acc-cols">
+                    {monthChart.map((x) => {
+                      const on = monthSel.length === 1 && monthSel[0] === x.m;
+                      return (
+                        <button key={x.m} type="button" className={`acc-col${on ? " is-active" : ""}`}
+                          onClick={() => toggleIn(monthSel, x.m, setMonthSel)} title={`${x.m}: ${x.n} total · ${x.done} processed/cleared`}>
+                          <span className="acc-col-n">{x.n}</span>
+                          <span className="acc-col-bar" style={{ height: `${Math.max(6, (x.n / max) * 100)}%` }}>
+                            <span style={{ height: `${x.n ? (x.done / x.n) * 100 : 0}%` }} />
+                          </span>
+                          <span className="acc-col-lbl">{x.m.slice(0, 3)}</span>
+                        </button>);
+                    })}
+                  </div>);
+              })()}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="acc-toolbar">

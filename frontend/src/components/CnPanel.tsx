@@ -28,7 +28,13 @@ function doneSteps(cn: CnActivityState): number {
     case "RsmApproved":        return cn.cnFinalInvoiceUrl ? 3 : 2;
     case "SentToAccounts":     return 4;
     case "CnProcessed":        return 5;
+    // [BTL-2026-11-17] Accounts statuses (CnPending / CnCleared / AccountsRejected / AccountsRevision)
+    case "CnPending":          return 4;
+    case "CnCleared":          return 5;
+    case "AccountsRejected":   return 1;
+    case "AccountsRevision":   return cn.cnFinalInvoiceUrl ? 3 : 2;
   }
+  return 0;
 }
 
 interface Props {
@@ -91,6 +97,7 @@ export default function CnPanel({ proposalId, activityId, instance, refreshKey, 
   const meta = CN_STATUS_META[cn.cnStatus];
   const done = doneSteps(cn);
   const rejected = cn.cnStatus === "RsmRejected";
+  const byAccounts = cn.cnStatus === "AccountsRejected" || cn.cnStatus === "AccountsRevision";   // [BTL-2026-11-17]
   const amt = parseFloat(invAmt);
   const amtInvalid = invAmt !== "" && (!(amt > 0) || amt > cn.approvedBgaussAmount);
 
@@ -166,8 +173,16 @@ export default function CnPanel({ proposalId, activityId, instance, refreshKey, 
         </div>
       )}
 
-      {/* ── STEP 1: Checker → RSM ── */}
-      {cn.isChecker && (cn.cnStatus === "NotStarted" || cn.cnStatus === "RsmRejected") && (
+      {/* [BTL-2026-11-17] Accounts sent it back — show the reason to Checker / team */}
+      {byAccounts && cn.cnAccountsNote && (
+        <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderLeft: "3px solid #ea580c",
+          borderRadius: 6, padding: "6px 10px", fontSize: 12, color: "#9a3412", marginBottom: 10 }}>
+          <strong>{cn.cnStatus === "AccountsRejected" ? "Rejected by Accounts" : "Revision requested by Accounts"}:</strong> {cn.cnAccountsNote}
+        </div>
+      )}
+
+      {/* ── STEP 1: Checker → RSM (also after Accounts rejection) ── */}
+      {cn.isChecker && (cn.cnStatus === "NotStarted" || cn.cnStatus === "RsmRejected" || cn.cnStatus === "AccountsRejected") && (
         <div style={actionBox}>
           {cn.sendToRsmBlockers.length > 0 && (
             <ul style={{ margin: "0 0 8px", paddingLeft: 18, fontSize: 11, color: "#92400e" }}>
@@ -176,7 +191,7 @@ export default function CnPanel({ proposalId, activityId, instance, refreshKey, 
           )}
           <button disabled={busy || !cn.canSendToRsm} onClick={() => act(() => cnSendToRsm(activityId, instance), "Sent for RSM approval")}
             style={btn("#1e3a5f", busy || !cn.canSendToRsm)}>
-            {busy ? "Sending…" : rejected ? "📤 Re-send for RSM Approval" : "📤 Verify & Send for RSM Approval"}
+            {busy ? "Sending…" : (rejected || cn.cnStatus === "AccountsRejected") ? "📤 Re-send for RSM Approval" : "📤 Verify & Send for RSM Approval"}
           </button>
           {cn.rsmEmails.length > 0 && <span style={{ fontSize: 11, color: "#64748b", marginLeft: 8 }}>to {cn.rsmEmails.join(", ")}</span>}
         </div>
@@ -229,7 +244,7 @@ export default function CnPanel({ proposalId, activityId, instance, refreshKey, 
       )}
 
       {/* ── STEP 4: Checker → Accounts ── */}
-      {cn.isChecker && cn.cnStatus === "RsmApproved" && (
+      {cn.isChecker && (cn.cnStatus === "RsmApproved" || cn.cnStatus === "AccountsRevision") && (
         <div style={actionBox}>
           <button disabled={busy || !cn.canSendToAccounts}
             onClick={() => {
@@ -237,7 +252,7 @@ export default function CnPanel({ proposalId, activityId, instance, refreshKey, 
               act(() => cnSendToAccounts(activityId, instance), "Sent to Accounts");
             }}
             style={btn("#166534", busy || !cn.canSendToAccounts)}>
-            {busy ? "Sending…" : "📧 Send to Accounts for CN"}
+            {busy ? "Sending…" : cn.cnStatus === "AccountsRevision" ? "📧 Re-send to Accounts" : "📧 Send to Accounts for CN"}
           </button>
           <span style={{ fontSize: 11, color: "#64748b", marginLeft: 8 }}>
             {cn.canSendToAccounts ? `to ${cn.accountsEmails.join(", ")} · BGauss invoice + vendor invoices + photos attached`
