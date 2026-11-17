@@ -34,7 +34,7 @@ public class AccountsAccessController : ControllerBase
     {
         var e = Email();
         if (e.Length == 0) return Unauthorized();
-        if (_access.IsAdmin(e)) return null;
+        if (await _access.IsAdminAsync(e)) return null;   // [BTL-2026-11-17] config admins + portal Admin role
 
         _db.AccountsAccessAudits.Add(new AccountsAccessAudit
         {
@@ -43,7 +43,7 @@ public class AccountsAccessController : ControllerBase
         });
         await _db.SaveChangesAsync();
         _log.LogWarning("Access-management call denied for {User}: {What}", e, what);
-        return StatusCode(403, new { message = "Only Accounts access admins (Ankit Heda, Gaurav Zore) can manage access rights." });
+        return StatusCode(403, new { message = "Only Admins and Accounts access admins (Ankit Heda, Gaurav Zore) can manage access rights." });
     }
 
     private async Task<bool> InAccountsTeamAsync(string email)
@@ -60,7 +60,7 @@ public class AccountsAccessController : ControllerBase
         var e = Email();
         if (e.Length == 0) return Unauthorized();
         var (perms, legacy) = await _access.EffectiveAsync(e, await InAccountsTeamAsync(e));
-        return Ok(new { email = e, isAdmin = _access.IsAdmin(e), legacy, pages = AccountsAccessService.Pages, permissions = perms });
+        return Ok(new { email = e, isAdmin = await _access.IsAdminAsync(e), legacy, pages = AccountsAccessService.Pages, permissions = perms });
     }
 
     // ── GET /api/accounts-access/users — all Accounts team users + their permissions (admin) ──
@@ -92,7 +92,7 @@ public class AccountsAccessController : ControllerBase
             list.Add(new
             {
                 email = em, displayName = n?.DisplayName, role = n?.Role,
-                isAdmin = _access.IsAdmin(em), configured = mine.Count > 0, legacy,
+                isAdmin = await _access.IsAdminAsync(em), configured = mine.Count > 0, legacy,
                 permissions = perms, updatedAt = last?.UpdatedAt, updatedBy = last?.UpdatedBy,
             });
         }
@@ -108,7 +108,7 @@ public class AccountsAccessController : ControllerBase
         var actor = Email();
         var target = (email ?? "").Trim().ToLowerInvariant();
         if (!CnEmailService.IsEmail(target)) return BadRequest(new { message = "Enter a valid email address." });
-        if (_access.IsAdmin(target))
+        if (await _access.IsAdminAsync(target))
             return BadRequest(new { message = "Access admins always have full access and cannot be edited." });
         if (dto?.Permissions is null) return BadRequest(new { message = "Permissions are required." });
         if (dto.Permissions.Any(p => AccountsAccessService.Find(p.PageKey) is null))

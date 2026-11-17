@@ -28,8 +28,19 @@ public class AccountsAccessService
             .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(x => x.ToLowerInvariant()).Distinct().ToList();
 
+    /// Access admin by config list only (Ankit Heda / Gaurav Zore). Use IsAdminAsync for the full rule.
     public bool IsAdmin(string? email) =>
         !string.IsNullOrWhiteSpace(email) && Admins.Contains(email.Trim().ToLowerInvariant());
+
+    // [BTL-2026-11-17] Portal Admins (Users.Role = "Admin") have ALL Accounts access, incl. Access Management.
+    public async Task<bool> IsAdminAsync(string? email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return false;
+        var e = email.Trim().ToLowerInvariant();
+        if (Admins.Contains(e)) return true;
+        return await _db.Users.AsNoTracking()
+            .AnyAsync(u => u.Email.ToLower() == e && u.IsActive && u.Role == "Admin");
+    }
 
     public static PagePerm Normalize(AccessPage p, bool view, bool download, bool full)
     {
@@ -51,7 +62,7 @@ public class AccountsAccessService
     public async Task<(List<PagePerm> Perms, bool Legacy)> EffectiveAsync(string email, bool inAccountsTeam)
     {
         email = email.Trim().ToLowerInvariant();
-        if (IsAdmin(email)) return (Pages.Select(All).ToList(), false);
+        if (await IsAdminAsync(email)) return (Pages.Select(All).ToList(), false);
 
         var rows = await _db.AccountsPagePermissions.AsNoTracking().Where(x => x.UserEmail == email).ToListAsync();
         if (rows.Count == 0)

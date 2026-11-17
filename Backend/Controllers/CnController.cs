@@ -77,7 +77,7 @@ public class CnController : ControllerBase
         // Accounts team: Role "Accounts", listed in Cn:AccountsTeamEmails, access admin, or added via Access Management
         var isAccounts = _mail.AccountsEmails.Contains(email, StringComparer.OrdinalIgnoreCase)
                          || role.Equals("Accounts", StringComparison.OrdinalIgnoreCase)
-                         || _access.IsAdmin(email)
+                         || await _access.IsAdminAsync(email)
                          || await _access.HasAnyRowsAsync(email);
         var isViewer  = isChecker || isAccounts
                         || _mail.ViewerEmails.Contains(email, StringComparer.OrdinalIgnoreCase)
